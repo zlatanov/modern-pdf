@@ -35,6 +35,11 @@ public sealed class PdfDocument
     public static PdfDocument Open(ReadOnlySpan<byte> data)
     {
         PdfFile file = PdfFileReader.Read(data);
+        if (TryGetDictionaryEntry(file.Trailer, "Encrypt", out _))
+        {
+            throw new NotSupportedException("Encrypted PDFs are not supported yet.");
+        }
+
         PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
         return new PdfDocument(file, model);
     }

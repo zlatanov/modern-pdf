@@ -57,6 +57,14 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void OpenThrowsForEncryptedPdfUntilSecuritySupportArrives()
+    {
+        byte[] encryptedPdfBytes = CreateEncryptedPdf();
+
+        Assert.Throws<NotSupportedException>(() => PdfDocument.Open(encryptedPdfBytes));
+    }
+
+    [Fact]
     public void AddPageIncreasesPageCountAndRoundTrips()
     {
         PdfDocument document = PdfDocument.Create();
@@ -274,6 +282,45 @@ public sealed class PdfDocumentTests
                 new PdfIndirectObject(new PdfObjectId(2, 0), pages),
                 new PdfIndirectObject(new PdfObjectId(3, 0), page),
                 new PdfIndirectObject(new PdfObjectId(4, 0), stream),
+            ],
+            trailer);
+
+        return PdfFileWriter.Write(file);
+    }
+
+    private static byte[] CreateEncryptedPdf()
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(0, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject encryptDictionary = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("V", new PdfNumberObject(4, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+            new PdfDictionaryEntry("Encrypt", new PdfReferenceObject(new PdfObjectId(3, 0))),
+        ]);
+
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+                new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+                new PdfIndirectObject(new PdfObjectId(3, 0), encryptDictionary),
             ],
             trailer);
 
