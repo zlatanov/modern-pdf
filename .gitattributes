@@ -1,0 +1,18 @@
+# Normalize text files by default.
+* text=auto
+
+# Keep command scripts with Windows line endings.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Treat common binary assets as binary.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
