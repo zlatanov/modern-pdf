@@ -27,6 +27,21 @@ public sealed class PdfFileReaderTests
         Assert.Equal(1, rootReference.ObjectId.ObjectNumber);
     }
 
+    [Fact]
+    public void ReadParsesWrittenStreamObject()
+    {
+        PdfFile source = CreateStreamFile();
+        byte[] bytes = PdfFileWriter.Write(source);
+
+        PdfFile parsed = PdfFileReader.Read(bytes);
+
+        PdfStreamObject stream = Assert.IsType<PdfStreamObject>(parsed.Objects[0].Value);
+        Assert.Equal("DATA!", System.Text.Encoding.ASCII.GetString(stream.Data.Span));
+        PdfDictionaryEntry lengthEntry = Assert.Single(stream.Dictionary.Entries, entry => entry.Key == "Length");
+        PdfNumberObject length = Assert.IsType<PdfNumberObject>(lengthEntry.Value);
+        Assert.Equal(5, length.Value);
+    }
+
     private static PdfFile CreateMinimalFile()
     {
         PdfDictionaryObject catalog = new(
@@ -35,6 +50,23 @@ public sealed class PdfFileReaderTests
         ]);
 
         PdfIndirectObject object1 = new(new ModernPDF.Primitives.PdfObjectId(1, 0), catalog);
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new ModernPDF.Primitives.PdfObjectId(1, 0))),
+        ]);
+
+        return new PdfFile("2.0", [object1], trailer);
+    }
+
+    private static PdfFile CreateStreamFile()
+    {
+        PdfDictionaryObject streamDictionary = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("DemoStream")),
+        ]);
+
+        PdfStreamObject stream = new(streamDictionary, System.Text.Encoding.ASCII.GetBytes("DATA!"));
+        PdfIndirectObject object1 = new(new ModernPDF.Primitives.PdfObjectId(1, 0), stream);
         PdfDictionaryObject trailer = new(
         [
             new PdfDictionaryEntry("Root", new PdfReferenceObject(new ModernPDF.Primitives.PdfObjectId(1, 0))),

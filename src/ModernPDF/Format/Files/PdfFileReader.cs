@@ -208,13 +208,98 @@ internal static class PdfFileReader
                 throw new PdfFormatException($"Missing endobj marker for object {objectNumber}.");
             }
 
-            string objectBody = objectTail.Substring(objectBodyStart, endObject - objectBodyStart).Trim();
-            PdfObject parsedObject = PdfObjectParser.ParseAscii(objectBody);
+            PdfObject parsedObject = ParseIndirectObjectValue(bytes, entry.Offset, objectTail, objectBodyStart, endObject);
             PdfObjectId id = new(objectNumber, entry.Generation);
             objects.Add(new PdfIndirectObject(id, parsedObject));
         }
 
         return objects;
+    }
+
+    private static PdfObject ParseIndirectObjectValue(
+        ReadOnlySpan<byte> bytes,
+        int objectOffset,
+        string objectTail,
+        int objectBodyStart,
+        int endObject)
+    {
+        int streamKeywordIndex = FindStreamKeyword(objectTail, objectBodyStart, endObject);
+        if (streamKeywordIndex < 0)
+        {
+            string objectBody = objectTail.Substring(objectBodyStart, endObject - objectBodyStart).Trim();
+            return PdfObjectParser.ParseAscii(objectBody);
+        }
+
+        string dictionaryText = objectTail.Substring(objectBodyStart, streamKeywordIndex - objectBodyStart).Trim();
+        PdfDictionaryObject dictionary = PdfObjectParser.ParseAscii(dictionaryText) as PdfDictionaryObject
+            ?? throw new PdfFormatException("Stream object dictionary could not be parsed.");
+
+        int length = GetRequiredStreamLength(dictionary);
+        int streamDataStartInTail = streamKeywordIndex + "stream".Length;
+
+        if (streamDataStartInTail < objectTail.Length && objectTail[streamDataStartInTail] == '\r')
+        {
+            streamDataStartInTail++;
+        }
+
+        if (streamDataStartInTail < objectTail.Length && objectTail[streamDataStartInTail] == '\n')
+        {
+            streamDataStartInTail++;
+        }
+
+        int absoluteStreamDataStart = objectOffset + streamDataStartInTail;
+        if (absoluteStreamDataStart + length > bytes.Length)
+        {
+            throw new PdfFormatException("Stream data exceeds available PDF bytes.");
+        }
+
+        byte[] streamBytes = bytes.Slice(absoluteStreamDataStart, length).ToArray();
+        return new PdfStreamObject(dictionary, streamBytes);
+    }
+
+    private static int FindStreamKeyword(string objectTail, int startIndex, int endObject)
+    {
+        int searchIndex = startIndex;
+        while (searchIndex < endObject)
+        {
+            int match = objectTail.IndexOf("stream", searchIndex, StringComparison.Ordinal);
+            if (match < 0 || match >= endObject)
+            {
+                return -1;
+            }
+
+            bool validPrefix = match == 0 || char.IsWhiteSpace(objectTail[match - 1]);
+            bool validSuffix = match + "stream".Length >= objectTail.Length || char.IsWhiteSpace(objectTail[match + "stream".Length]);
+            if (validPrefix && validSuffix)
+            {
+                return match;
+            }
+
+            searchIndex = match + 1;
+        }
+
+        return -1;
+    }
+
+    private static int GetRequiredStreamLength(PdfDictionaryObject dictionary)
+    {
+        PdfDictionaryEntry? lengthEntry = dictionary.Entries.FirstOrDefault(entry => entry.Key == "Length");
+        if (lengthEntry is null)
+        {
+            throw new PdfFormatException("Stream dictionary is missing /Length.");
+        }
+
+        if (lengthEntry.Value is not PdfNumberObject numberValue || !numberValue.IsInteger)
+        {
+            throw new PdfFormatException("Stream /Length must be an integer number.");
+        }
+
+        if (numberValue.Value < 0)
+        {
+            throw new PdfFormatException("Stream /Length cannot be negative.");
+        }
+
+        return Convert.ToInt32(numberValue.Value, CultureInfo.InvariantCulture);
     }
 
     private static int ReadInteger(string text, ref int cursor)

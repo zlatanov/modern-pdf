@@ -21,6 +21,18 @@ public sealed class PdfFileWriterTests
         Assert.Contains("%%EOF", text, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void WriteEmitsStreamObjectMarkersAndLength()
+    {
+        PdfFile file = CreateStreamFile();
+        byte[] bytes = PdfFileWriter.Write(file);
+        string text = Encoding.ASCII.GetString(bytes);
+
+        Assert.Contains("stream", text, StringComparison.Ordinal);
+        Assert.Contains("endstream", text, StringComparison.Ordinal);
+        Assert.Contains("/Length 5", text, StringComparison.Ordinal);
+    }
+
     private static PdfFile CreateMinimalFile()
     {
         PdfDictionaryObject catalog = new(
@@ -29,6 +41,23 @@ public sealed class PdfFileWriterTests
         ]);
 
         PdfIndirectObject object1 = new(new PdfObjectId(1, 0), catalog);
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+        ]);
+
+        return new PdfFile("2.0", [object1], trailer);
+    }
+
+    private static PdfFile CreateStreamFile()
+    {
+        PdfDictionaryObject streamDictionary = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("DemoStream")),
+        ]);
+
+        PdfStreamObject streamObject = new(streamDictionary, Encoding.ASCII.GetBytes("Hello"));
+        PdfIndirectObject object1 = new(new PdfObjectId(1, 0), streamObject);
         PdfDictionaryObject trailer = new(
         [
             new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),

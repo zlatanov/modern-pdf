@@ -24,7 +24,7 @@ internal static class PdfFileWriter
             objectOffsets[objectNumber] = writer.WrittenCount;
 
             WriteAscii(writer, $"{objectNumber} {indirectObject.ObjectId.GenerationNumber} obj\n");
-            writer.Write(PdfObjectWriter.Write(indirectObject.Value));
+            WriteIndirectObjectValue(writer, indirectObject.Value);
             WriteAscii(writer, "\nendobj\n");
         }
 
@@ -39,6 +39,37 @@ internal static class PdfFileWriter
         WriteAscii(writer, "\n%%EOF\n");
 
         return writer.ToArray();
+    }
+
+    private static void WriteIndirectObjectValue(ByteBufferWriter writer, PdfObject value)
+    {
+        if (value is PdfStreamObject streamObject)
+        {
+            PdfDictionaryObject streamDictionary = BuildStreamDictionaryWithLength(streamObject.Dictionary, streamObject.Data.Length);
+            writer.Write(PdfObjectWriter.Write(streamDictionary));
+            WriteAscii(writer, "\nstream\n");
+            writer.Write(streamObject.Data.Span);
+            WriteAscii(writer, "\nendstream");
+            return;
+        }
+
+        writer.Write(PdfObjectWriter.Write(value));
+    }
+
+    private static PdfDictionaryObject BuildStreamDictionaryWithLength(PdfDictionaryObject originalDictionary, int length)
+    {
+        List<PdfDictionaryEntry> entries = [];
+
+        foreach (PdfDictionaryEntry entry in originalDictionary.Entries)
+        {
+            if (!string.Equals(entry.Key, "Length", StringComparison.Ordinal))
+            {
+                entries.Add(entry);
+            }
+        }
+
+        entries.Add(new PdfDictionaryEntry("Length", new PdfNumberObject(length, isInteger: true)));
+        return new PdfDictionaryObject(entries);
     }
 
     private static void WriteHeader(ByteBufferWriter writer, string version)

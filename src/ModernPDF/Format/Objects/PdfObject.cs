@@ -115,3 +115,16 @@ internal sealed class PdfDictionaryObject : PdfObject
 
     public IReadOnlyList<PdfDictionaryEntry> Entries { get; }
 }
+
+internal sealed class PdfStreamObject : PdfObject
+{
+    public PdfStreamObject(PdfDictionaryObject dictionary, ReadOnlyMemory<byte> data)
+    {
+        Dictionary = dictionary ?? throw new ArgumentNullException(nameof(dictionary));
+        Data = data;
+    }
+
+    public PdfDictionaryObject Dictionary { get; }
+
+    public ReadOnlyMemory<byte> Data { get; }
+}
