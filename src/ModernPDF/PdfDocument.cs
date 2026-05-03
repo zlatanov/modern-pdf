@@ -29,15 +29,32 @@ public sealed class PdfDocument
     public static PdfDocument Open(byte[] data)
     {
         ArgumentNullException.ThrowIfNull(data);
-        return Open(data.AsSpan());
+        return Open(data.AsSpan(), password: null);
+    }
+
+    public static PdfDocument Open(byte[] data, string password)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentNullException.ThrowIfNull(password);
+        return Open(data.AsSpan(), password);
     }
 
     public static PdfDocument Open(ReadOnlySpan<byte> data)
     {
+        return Open(data, password: null);
+    }
+
+    public static PdfDocument Open(ReadOnlySpan<byte> data, string? password)
+    {
         PdfFile file = PdfFileReader.Read(data);
         if (TryGetDictionaryEntry(file.Trailer, "Encrypt", out _))
         {
-            throw new NotSupportedException("Encrypted PDFs are not supported yet.");
+            if (string.IsNullOrEmpty(password))
+            {
+                throw new NotSupportedException("Encrypted PDFs are not supported yet.");
+            }
+
+            throw new NotSupportedException("Encrypted PDF password handling is not supported yet.");
         }
 
         PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
@@ -48,6 +65,13 @@ public sealed class PdfDocument
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         return Open(File.ReadAllBytes(path));
+    }
+
+    public static PdfDocument Open(string path, string password)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(password);
+        return Open(File.ReadAllBytes(path), password);
     }
 
     public string Version => _file.Version;
@@ -85,6 +109,12 @@ public sealed class PdfDocument
         if (effectiveOptions.Mode == PdfSaveMode.Incremental)
         {
             throw new NotSupportedException("Incremental save is not supported yet.");
+        }
+
+        if (effectiveOptions.Security is not null)
+        {
+            ValidateSecurityOptions(effectiveOptions.Security);
+            throw new NotSupportedException("Password encryption and permissions are not supported yet.");
         }
 
         return PdfFileWriter.Write(_file);
@@ -596,6 +626,25 @@ public sealed class PdfDocument
         if (!double.IsFinite(options.Y))
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Text Y position must be finite.");
+        }
+    }
+
+    private static void ValidateSecurityOptions(PdfSecurityOptions security)
+    {
+        if (string.IsNullOrWhiteSpace(security.UserPassword))
+        {
+            throw new ArgumentException("Security UserPassword is required when security options are provided.", nameof(security));
+        }
+
+        if (security.OwnerPassword is not null && security.OwnerPassword.Length == 0)
+        {
+            throw new ArgumentException("Security OwnerPassword cannot be empty when provided.", nameof(security));
+        }
+
+        const PdfPermissions knownPermissions = PdfPermissions.All;
+        if ((security.Permissions & ~knownPermissions) != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(security), "Security permissions contain unsupported flags.");
         }
     }
 }

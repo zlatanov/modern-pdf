@@ -31,11 +31,55 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void OpenWithPasswordAcceptsUnencryptedPdf()
+    {
+        PdfDocument original = PdfDocument.Create();
+        byte[] bytes = original.Save();
+
+        PdfDocument opened = PdfDocument.Open(bytes, "unused-password");
+
+        Assert.Equal(0, opened.PageCount);
+    }
+
+    [Fact]
     public void SaveWithIncrementalModeThrowsUntilImplemented()
     {
         PdfDocument document = PdfDocument.Create();
 
         Assert.Throws<NotSupportedException>(() => document.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental }));
+    }
+
+    [Fact]
+    public void SaveWithSecurityOptionsThrowsUntilImplemented()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        Assert.Throws<NotSupportedException>(
+            () => document.Save(new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "user-pass",
+                    OwnerPassword = "owner-pass",
+                    Permissions = PdfPermissions.Print | PdfPermissions.Copy,
+                },
+            }));
+    }
+
+    [Fact]
+    public void SaveWithSecurityOptionsRejectsMissingUserPassword()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        Assert.Throws<ArgumentException>(
+            () => document.Save(new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "",
+                    Permissions = PdfPermissions.All,
+                },
+            }));
     }
 
     [Fact]
@@ -62,6 +106,14 @@ public sealed class PdfDocumentTests
         byte[] encryptedPdfBytes = CreateEncryptedPdf();
 
         Assert.Throws<NotSupportedException>(() => PdfDocument.Open(encryptedPdfBytes));
+    }
+
+    [Fact]
+    public void OpenWithPasswordThrowsForEncryptedPdfUntilSecuritySupportArrives()
+    {
+        byte[] encryptedPdfBytes = CreateEncryptedPdf();
+
+        Assert.Throws<NotSupportedException>(() => PdfDocument.Open(encryptedPdfBytes, "password"));
     }
 
     [Fact]
