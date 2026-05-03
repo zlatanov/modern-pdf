@@ -1,0 +1,1155 @@
+{
+  "version": 2,
+  "fixtures": [
+    {
+      "id": "qpdf-bad1",
+      "sourcePath": "qpdf/qtest/qpdf/bad1.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/bad1.pdf",
+      "sha256": "fe19778cf1ce280658154f2b9c01ffbccd825a23460141dcf3794e7a2c0eb629",
+      "profiles": [
+        "smoke",
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "format_error",
+      "password": null
+    },
+    {
+      "id": "qpdf-extend-bad",
+      "sourcePath": "examples/qtest/extend-c-api/bad.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/extend-c-api-bad.pdf",
+      "sha256": "aa25ee2c3e0c91d0fcc67a356cee7fa0b6750085a92b788b7d4747c6b086f3f2",
+      "profiles": [
+        "smoke",
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "format_error",
+      "password": null
+    },
+    {
+      "id": "qpdf-issue-147",
+      "sourcePath": "qpdf/qtest/qpdf/issue-147.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/issue-147.pdf",
+      "sha256": "f0193ccdceca0c7239b7e537878992233e26f1fd843b4a749bfd9334f96cb98f",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-issue-263",
+      "sourcePath": "qpdf/qtest/qpdf/issue-263.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/issue-263.pdf",
+      "sha256": "eb7b86a9d99f9d4c9466fa577b5f2e1555c33215eb8a6a0b73e0393510bf44ea",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-issue-143",
+      "sourcePath": "qpdf/qtest/qpdf/issue-143.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/issue-143.pdf",
+      "sha256": "4bb02358331734103f4386101c4c0c33fe0ef66b68394dfa1f0fc2124693da32",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-issue-141a",
+      "sourcePath": "qpdf/qtest/qpdf/issue-141a.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/issue-141a.pdf",
+      "sha256": "f8f3e84b5d972d1c2e60f990d3b1750f44e7d89349ab4425bcf405556c0cd7ac",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-bookmarks-3",
+      "sourcePath": "examples/qtest/bookmarks/3.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/bookmarks-3.pdf",
+      "sha256": "675a23a0c456ba3a7f593ac567deb7891f4bab407da795c43683a8daeef0ac58",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-cweb",
+      "sourcePath": "pdfbox/src/test/resources/input/cweb.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/cweb.pdf",
+      "sha256": "cdc74cc6db82dae5f68ae30a32ac154a6b35eb698f08749f3c6d5a2c2a0a2680",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-data-000001",
+      "sourcePath": "pdfbox/src/test/resources/input/data-000001.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/data-000001.pdf",
+      "sha256": "d86e452e26a91f5dced4b903eefcdaa1bb3c0acc0bb19afcd45e526074e197a7",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-eu-001",
+      "sourcePath": "pdfbox/src/test/resources/input/eu-001.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/eu-001.pdf",
+      "sha256": "ef7a64967276181a563e781bab46ea52dd376155ad2287c4e1303781203f91d8",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-fc60-times",
+      "sourcePath": "pdfbox/src/test/resources/input/FC60_Times.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/FC60_Times.pdf",
+      "sha256": "1616a1fc70fb70812f9865e4e6648736b218ab0d44775380adaf668e4300cc0d",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-hello3",
+      "sourcePath": "pdfbox/src/test/resources/input/hello3.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/hello3.pdf",
+      "sha256": "2b4aa9b63f3eed9a5e544b10bc677fcf70e1baaa62651e786a9d22d5dec860b2",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-liste732004001452-001-0-pdf-0",
+      "sourcePath": "pdfbox/src/test/resources/input/Liste732004001452_001_0.pdf_0_.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/Liste732004001452_001_0.pdf_0_.pdf",
+      "sha256": "467c9b4bd29e155cd80447c36bfeba95ee39bc105781c28d1e05019026b14064",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-openoffice-test-document",
+      "sourcePath": "pdfbox/src/test/resources/input/openoffice-test-document.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/openoffice-test-document.pdf",
+      "sha256": "93256e712348392f3841a51d6e6e16774dcf5e2405073ebc55c64b64ac606446",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-2984-rotations",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-2984-rotations.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-2984-rotations.pdf",
+      "sha256": "7d8a182b2d8ef95d75bb610159289959bee9c26746413d0c01b10bb65f27cce7",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3025",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3025.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3025.pdf",
+      "sha256": "602816bd821db5116ba9fd59d8c81a7d63058f6d21a302e190e19c0eddf76b15",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3038-001033-p2",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3038-001033-p2.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3038-001033-p2.pdf",
+      "sha256": "f4489abfd221fea0520e00fa9e769e1844c875f67aa130c0243acf6f1e4379e9",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3042-003177-p2",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3042-003177-p2.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3042-003177-p2.pdf",
+      "sha256": "4db9f5e127325b375689ed8336fa71fa61b2d3068a796fbdf1ae78ee396e1576",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3044-010197-p5-ligatures",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3044-010197-p5-ligatures.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3044-010197-p5-ligatures.pdf",
+      "sha256": "79f6d8bf755e3d39409f50b62b7de3b0e3592ba2b6904fd60e06e340554cc7b5",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3053-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3053-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3053-reduced.pdf",
+      "sha256": "de02fe12323bb7b8cdcf375715c91ecd72628483f9bef75aede850efa8ff110e",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3061-092465-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3061-092465-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3061-092465-reduced.pdf",
+      "sha256": "7fdd5d70efc39ab4d34a6931b30448a4f716bde5dc9ff22ca95343e7b4479234",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3062-002207-p1",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3062-002207-p1.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3062-002207-p1.pdf",
+      "sha256": "be6adc030bef968741ccc825ed59d0aef65462f86f19fd7b535dd89e6137aa97",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3062-005717-p1",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3062-005717-p1.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3062-005717-p1.pdf",
+      "sha256": "f0bd011b78841db29376f648e455663600aab1685c196251f293f995162dae08",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3062-n2moq7yziciygtplqjawj4hln6ccemhz-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3062-N2MOQ7YZICIYGTPLQJAWJ4HLN6CCEMHZ-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3062-N2MOQ7YZICIYGTPLQJAWJ4HLN6CCEMHZ-reduced.pdf",
+      "sha256": "6e1a635a085fece06f85025e3bb9dfb5aa1b4e1415f3d2d09ad361cbc531b95b",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3067-negativetf",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3067-negativeTf.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3067-negativeTf.pdf",
+      "sha256": "2d4adb040c964c00b2dc3f36f2bb04645b68aa9db9f96783f710364b8d86b191",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3110-poems-beads-cropbox",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3110-poems-beads-cropbox.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3110-poems-beads-cropbox.pdf",
+      "sha256": "bc24610183079923dcb7a292167b7eed96aecf3c6a8a91bd254a526b553ede50",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3110-poems-beads",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3110-poems-beads.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3110-poems-beads.pdf",
+      "sha256": "9d715ce4e964f6ccbf50e1d1c42ca5f01425a079a5c39a9581c876c56afca1b3",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3123-adsfwtrb3hbzbzkevesvtbrzc2mnkzf5-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3123-ADSFWTRB3HBZBZKEVESVTBRZC2MNKZF5_reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3123-ADSFWTRB3HBZBZKEVESVTBRZC2MNKZF5_reduced.pdf",
+      "sha256": "8524eeedbd348b98baabaae5d0233c9e91474b3c8cbd19611907041a88c34d56",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3127-rau4g6qmovrybisju7r6movzcrfuo7p4-vfont",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3127-RAU4G6QMOVRYBISJU7R6MOVZCRFUO7P4-VFont.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3127-RAU4G6QMOVRYBISJU7R6MOVZCRFUO7P4-VFont.pdf",
+      "sha256": "e915930e95fef0727acc1ea2c674640d39ba2f820f4487e59f0ceb96a986762d",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3195",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3195.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3195.pdf",
+      "sha256": "7aaedc9bcf71d8b726c986db3cb4cc22f6d7ec90fe19a61ecbd2574e251feb85",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3498-y5tlcwtiae3fydvjtv2txrzgxledunsw",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3498-Y5TLCWTIAE3FYDVJTV2TXRZGXLEDUNSW.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3498-Y5TLCWTIAE3FYDVJTV2TXRZGXLEDUNSW.pdf",
+      "sha256": "44c23b08f4da2db659ab4f98ea098f0fc2b9f9bb532624e99d4efebae7ab4685",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-3833-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3833-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-3833-reduced.pdf",
+      "sha256": "69eeb7845a36925556ec8c67847864752e4421bfcb4d810b415f4f716d0ce0bd",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-4322-empty-tounicode-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-4322-Empty-ToUnicode-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-4322-Empty-ToUnicode-reduced.pdf",
+      "sha256": "c3b4a465b7664677f13aa3079ef4e5223eac9a1cf82719a863d07034388d2798",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-4531-bidi-ligature-1",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-4531-bidi-ligature-1.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-4531-bidi-ligature-1.pdf",
+      "sha256": "05449b36c6b147652ef3c0b5404ae84b9d8c4352a43f96ec27cef8714f99b13f",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-4531-bidi-ligature-2",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-4531-bidi-ligature-2.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-4531-bidi-ligature-2.pdf",
+      "sha256": "cf4d80ac8466d07678de7651d63fda747a34b600c57fb4a8eb8faf9d612465ae",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-4532-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-4532-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-4532-reduced.pdf",
+      "sha256": "600a823076ccfdf20cc4fbe128797de58728dac80d5b088df5a066106325fa91",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-5002",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-5002.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-5002.pdf",
+      "sha256": "401586241a33742d6c562ac18859d4fb3f7d078c828c2eca9db3d3a8dff5fcb1",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-5350-jx57o5e5yg6xm4fzabpulqgtw4oxpcwa-p1-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-5350-JX57O5E5YG6XM4FZABPULQGTW4OXPCWA-p1-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-5350-JX57O5E5YG6XM4FZABPULQGTW4OXPCWA-p1-reduced.pdf",
+      "sha256": "ad13a85449c62b7665d552e3702be867de213efb0defd8742a1d5a3d748fbfc9",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-5747-unicode-surrogate-with-diacritic-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-5747-unicode-surrogate-with-diacritic-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-5747-unicode-surrogate-with-diacritic-reduced.pdf",
+      "sha256": "4e822ba5255923364baf5fdc14141a6cb6b860a5f4f86261043e7e08c7fce382",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-5838-0024320-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-5838-0024320-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-5838-0024320-reduced.pdf",
+      "sha256": "2c0d8cccc130e50582bac9dd7786fc068d8e25a271debc341f5e724fc601d042",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-5920-4mqtg6zxoysmtq444kgqovc6zfqhwfny-spaces-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-5920-4MQTG6ZXOYSMTQ444KGQOVC6ZFQHWFNY-spaces-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-5920-4MQTG6ZXOYSMTQ444KGQOVC6ZFQHWFNY-spaces-reduced.pdf",
+      "sha256": "5d817c599e1d0e12d2568b75598d34df4a376a694465f14e94bbd73304754d47",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-pdfbox-5920-y5u2xzckg2u6to3fc36ncgozechqa2py-p39-reduced",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-5920-Y5U2XZCKG2U6TO3FC36NCGOZECHQA2PY-p39-reduced.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/PDFBOX-5920-Y5U2XZCKG2U6TO3FC36NCGOZECHQA2PY-p39-reduced.pdf",
+      "sha256": "890533587524ffc1a591214690e725326420e5c4714a81b28f11597ac3d307e1",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-rotation",
+      "sourcePath": "pdfbox/src/test/resources/input/rotation.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/rotation.pdf",
+      "sha256": "5087c2afe763d145537d652bb3bc6c321ace3a267b2679ae2c178add3ba7f1d9",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-sample-fonts-solidconvertor",
+      "sourcePath": "pdfbox/src/test/resources/input/sample_fonts_solidconvertor.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/sample_fonts_solidconvertor.pdf",
+      "sha256": "7400ec41f4274975fc4ae2d3eea076a2910491a74c97a7c2dfa653a84eac9c0a",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-sampleforspec",
+      "sourcePath": "pdfbox/src/test/resources/input/sampleForSpec.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/sampleForSpec.pdf",
+      "sha256": "bef74b4a96b426b56a87e7646d6e7b4e03e20793226df95af40d31ec68dfa8ec",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-simple-openoffice",
+      "sourcePath": "pdfbox/src/test/resources/input/simple-openoffice.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/simple-openoffice.pdf",
+      "sha256": "85e84837601e3c21899bd4b89237fb83771179c69be4565f3f0d7248bd76c74b",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfbox-yaddatest",
+      "sourcePath": "pdfbox/src/test/resources/input/yaddatest.pdf",
+      "sourceRepository": "apache/pdfbox",
+      "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
+      "localPath": "pdfbox/yaddatest.pdf",
+      "sha256": "fb3c58f73069b6f449c0c2033ff0429f4b2fbae087479eb2d11f9a554a975b34",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-acroform-calculation-order",
+      "sourcePath": "test/pdfs/acroform_calculation_order.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/acroform_calculation_order.pdf",
+      "sha256": "9081aad78cb6bb1871eb5c51addbe75ce73e4617a3e1fa15aa3da21232b6b755",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-alphatrans",
+      "sourcePath": "test/pdfs/alphatrans.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/alphatrans.pdf",
+      "sha256": "234c0ab8e9458f4d17133b08d2b66170eeb92be2a80e1508aa5117a2bf568f63",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-hidden-noview",
+      "sourcePath": "test/pdfs/annotation_hidden_noview.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation_hidden_noview.pdf",
+      "sha256": "97fd9418a5e24d326e66734462de0db215d40a6dd0e0734e12924fa364e5b390",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-hidden-print",
+      "sourcePath": "test/pdfs/annotation_hidden_print.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation_hidden_print.pdf",
+      "sha256": "d084450dfbb7d5c53593ed8f0a005553bd0ae797e34b3a1c8c00c7eec2fc5a9d",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-border-styles",
+      "sourcePath": "test/pdfs/annotation-border-styles.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-border-styles.pdf",
+      "sha256": "ba3a3c67030f9be2ad2c1989b78ec302501f71cecb4e5ebf193f6ce9ca51ff56",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-button-widget",
+      "sourcePath": "test/pdfs/annotation-button-widget.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-button-widget.pdf",
+      "sha256": "f7b1c9c7b2ecb909f6b168cc1b137230076533f977a205472b212b7f0d3a78d7",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-caret-ink",
+      "sourcePath": "test/pdfs/annotation-caret-ink.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-caret-ink.pdf",
+      "sha256": "afdc6fb72e8dcb8f0796a48388fc011e9db212e18d1d7b8cf95b327e88cf6ce9",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-choice-widget",
+      "sourcePath": "test/pdfs/annotation-choice-widget.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-choice-widget.pdf",
+      "sha256": "2fcab2aed82afe9775359c1d166fb7aae77e99d25fe03be177e233d02d572538",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-fileattachment",
+      "sourcePath": "test/pdfs/annotation-fileattachment.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-fileattachment.pdf",
+      "sha256": "b2f3751cd63e2402d95673f763e52fb105e6ce8e0b41406ca6d9965f5c894d43",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-freetext",
+      "sourcePath": "test/pdfs/annotation-freetext.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-freetext.pdf",
+      "sha256": "318ed4bead93fa6ff023571b17ddca41e82fe2347b497ea24903a11e1892fb71",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-highlight-without-appearance",
+      "sourcePath": "test/pdfs/annotation-highlight-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-highlight-without-appearance.pdf",
+      "sha256": "ea323f17899de03e7499d0e8531c49e873512a26b40058f357ca399312bf65d6",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-highlight",
+      "sourcePath": "test/pdfs/annotation-highlight.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-highlight.pdf",
+      "sha256": "72b6387356ccfdfb95a0a5eff5e1ceb9b7667019807d7b04abaf64dad7ea143a",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-ink-without-appearance",
+      "sourcePath": "test/pdfs/annotation-ink-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-ink-without-appearance.pdf",
+      "sha256": "663c7419206b1995c6ae651a1cbf8dbf9d89f0f6b3e61014cf545e21335e75b8",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-line-without-appearance",
+      "sourcePath": "test/pdfs/annotation-line-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-line-without-appearance.pdf",
+      "sha256": "9408cc19a56ef122ea956799a2e5a63b2b3cc70bbd307ed76d2ba89fd9c54fc3",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-line",
+      "sourcePath": "test/pdfs/annotation-line.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-line.pdf",
+      "sha256": "cea9ed8cf5726fa643da0c083bc8db8df790ab5e7ee9a2b62224aab73d9fa742",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-link-text-popup",
+      "sourcePath": "test/pdfs/annotation-link-text-popup.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-link-text-popup.pdf",
+      "sha256": "06917202feda6b6bb8b57b048655f946f749bdff5a8bfcb35eb0116f38910312",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-polyline-polygon-without-appearance",
+      "sourcePath": "test/pdfs/annotation-polyline-polygon-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-polyline-polygon-without-appearance.pdf",
+      "sha256": "710e7dbac4fcd2021e5a9cf7072e00284a1882d1ebacac43430b15c027902932",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-polyline-polygon",
+      "sourcePath": "test/pdfs/annotation-polyline-polygon.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-polyline-polygon.pdf",
+      "sha256": "66303646dd550366994f6715678863536617093335825dda3c123616555b69e2",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-square-circle-without-appearance",
+      "sourcePath": "test/pdfs/annotation-square-circle-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-square-circle-without-appearance.pdf",
+      "sha256": "d0a98bb14150b1bc2bc028876198098c99420ea10d30d43b4f9c5cb36bb023a7",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-square-circle",
+      "sourcePath": "test/pdfs/annotation-square-circle.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-square-circle.pdf",
+      "sha256": "88ed9ed813c3585b3098b9f4eef5107426f7829044117cd87f77bdc38a8e3f72",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-squiggly-without-appearance",
+      "sourcePath": "test/pdfs/annotation-squiggly-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-squiggly-without-appearance.pdf",
+      "sha256": "771698679397da9423bcb26e641c8cba173f00dc54f60656898143403e2bfbdd",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-squiggly",
+      "sourcePath": "test/pdfs/annotation-squiggly.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-squiggly.pdf",
+      "sha256": "95a2af9d01c2e532711a1483d58a258e469f3ff0e7dd1c2ae45c70bd8f9bb6e8",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-stamp",
+      "sourcePath": "test/pdfs/annotation-stamp.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-stamp.pdf",
+      "sha256": "76d566c092c23ccbec4bb488c40dc6daec8a381cb5386452b186728652436704",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-strikeout-without-appearance",
+      "sourcePath": "test/pdfs/annotation-strikeout-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-strikeout-without-appearance.pdf",
+      "sha256": "9a99e1469ad4e285381016df440fada4d94b9384d051760b145fd63b794943a8",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-strikeout",
+      "sourcePath": "test/pdfs/annotation-strikeout.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-strikeout.pdf",
+      "sha256": "ca7225dbdc6f8a26814cf0d67f5c509589e2cc09ace6bdb04a375a266db5b708",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-text-widget",
+      "sourcePath": "test/pdfs/annotation-text-widget.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-text-widget.pdf",
+      "sha256": "9f091ceb368ad0406094efaa6c50d5033735ee52f383e0973dc53a7467089d7c",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-text-without-popup",
+      "sourcePath": "test/pdfs/annotation-text-without-popup.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-text-without-popup.pdf",
+      "sha256": "2e0c788c795ab08178c12d26f73bebb6e18455a885568005770e8b6b947c4ceb",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-tx",
+      "sourcePath": "test/pdfs/annotation-tx.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-tx.pdf",
+      "sha256": "c7be52654eaede8a9f33757168957f938f56e73fcd4c53539db5672dee426208",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-tx2",
+      "sourcePath": "test/pdfs/annotation-tx2.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-tx2.pdf",
+      "sha256": "9612df43f8c48b574ddc7a81c0781b864235f7ff328dc9b9e646b924a8706650",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-tx3",
+      "sourcePath": "test/pdfs/annotation-tx3.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-tx3.pdf",
+      "sha256": "15e3ac008cc848e593474aa312a9ef1fbecad1f69b4580361ffd2d334575bb91",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-underline-without-appearance",
+      "sourcePath": "test/pdfs/annotation-underline-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-underline-without-appearance.pdf",
+      "sha256": "3a88f23b262ff72e613aecbdd75c2aa76bde7a5e84eef1acac04d355397876b6",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-underline",
+      "sourcePath": "test/pdfs/annotation-underline.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-underline.pdf",
+      "sha256": "ef04b7049d5cab49c702887c423f20cfecf76d36905772209cc6781425d8f671",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-arabiccidtruetype",
+      "sourcePath": "test/pdfs/ArabicCIDTrueType.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/ArabicCIDTrueType.pdf",
+      "sha256": "1cad1de912ba29f89a6d8b08bc5b0f84382874ffedab2c8f9e05ef608c265bb1",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-arial-unicode-ab-cidfont",
+      "sourcePath": "test/pdfs/arial_unicode_ab_cidfont.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/arial_unicode_ab_cidfont.pdf",
+      "sha256": "049a4330710d8470896061acf7ee486735e94cef2769f6cc13fec3cb13bb65aa",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-arial-unicode-en-cidfont",
+      "sourcePath": "test/pdfs/arial_unicode_en_cidfont.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/arial_unicode_en_cidfont.pdf",
+      "sha256": "1c4a08108d8074f543c04e9b2ea2b93a842e2b29eb05ee9d99766f430fd365ab",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    }
+  ]
+}

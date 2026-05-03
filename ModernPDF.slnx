@@ -4,5 +4,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/ModernPDF.Tests/ModernPDF.Tests.csproj" />
+    <Project Path="tests/ModernPDF.CorpusTests/ModernPDF.CorpusTests.csproj" />
   </Folder>
 </Solution>
