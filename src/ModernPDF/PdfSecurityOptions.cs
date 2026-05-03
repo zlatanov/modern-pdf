@@ -6,5 +6,6 @@ public sealed class PdfSecurityOptions
 
     public string? OwnerPassword { get; init; }
 
-    public PdfPermissions Permissions { get; init; } = PdfPermissions.All;
+    public PdfPermissions Permissions { get; init; } =
+        PdfPermissions.Print | PdfPermissions.Modify | PdfPermissions.Copy | PdfPermissions.Annotate;
 }

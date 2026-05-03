@@ -64,6 +64,16 @@ internal sealed class PdfStringObject : PdfObject
     public string Value { get; }
 }
 
+internal sealed class PdfByteStringObject : PdfObject
+{
+    public PdfByteStringObject(ReadOnlyMemory<byte> bytes)
+    {
+        Bytes = bytes;
+    }
+
+    public ReadOnlyMemory<byte> Bytes { get; }
+}
+
 internal sealed class PdfReferenceObject : PdfObject
 {
     public PdfReferenceObject(PdfObjectId objectId)

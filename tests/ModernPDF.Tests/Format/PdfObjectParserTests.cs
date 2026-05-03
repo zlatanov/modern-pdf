@@ -36,4 +36,28 @@ public sealed class PdfObjectParserTests
     {
         Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("true false"));
     }
+
+    [Fact]
+    public void ParseHandlesHexStringObject()
+    {
+        PdfObject parsed = PdfObjectParser.ParseAscii("<48656C6C6F>");
+        PdfByteStringObject bytes = Assert.IsType<PdfByteStringObject>(parsed);
+
+        Assert.Equal("Hello", System.Text.Encoding.ASCII.GetString(bytes.Bytes.Span));
+    }
+
+    [Fact]
+    public void ParsePadsOddLengthHexStringObject()
+    {
+        PdfObject parsed = PdfObjectParser.ParseAscii("<414>");
+        PdfByteStringObject bytes = Assert.IsType<PdfByteStringObject>(parsed);
+
+        Assert.Equal(new byte[] { 0x41, 0x40 }, bytes.Bytes.ToArray());
+    }
+
+    [Fact]
+    public void ParseThrowsForInvalidHexStringCharacter()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("<4G>"));
+    }
 }

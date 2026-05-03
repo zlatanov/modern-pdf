@@ -1,5 +1,6 @@
 using System.Text;
 using ModernPDF.DocumentModel;
+using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
 using ModernPDF.Primitives;
@@ -53,9 +54,10 @@ public sealed class PdfDocumentTests
     public void SaveWithSecurityOptionsThrowsUntilImplemented()
     {
         PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("secure text");
 
-        Assert.Throws<NotSupportedException>(
-            () => document.Save(new PdfSaveOptions
+        byte[] encryptedBytes = document.Save(
+            new PdfSaveOptions
             {
                 Security = new PdfSecurityOptions
                 {
@@ -63,7 +65,16 @@ public sealed class PdfDocumentTests
                     OwnerPassword = "owner-pass",
                     Permissions = PdfPermissions.Print | PdfPermissions.Copy,
                 },
-            }));
+            });
+
+        PdfEncryptionInfo? info = PdfDocument.InspectEncryption(encryptedBytes);
+        Assert.NotNull(info);
+        Assert.Equal("Standard", info.Filter);
+        Assert.Equal(1, info.AlgorithmVersion);
+        Assert.Equal(40, info.KeyLengthBits);
+
+        PdfDocument opened = PdfDocument.Open(encryptedBytes, "user-pass");
+        Assert.Equal("secure text", opened.ExtractText());
     }
 
     [Fact]
@@ -78,6 +89,22 @@ public sealed class PdfDocumentTests
                 {
                     UserPassword = "",
                     Permissions = PdfPermissions.All,
+                },
+            }));
+    }
+
+    [Fact]
+    public void SaveWithSecurityOptionsRejectsUnsupportedPermissionFlags()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        Assert.Throws<NotSupportedException>(
+            () => document.Save(new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "user-pass",
+                    Permissions = PdfPermissions.FillForms,
                 },
             }));
     }
@@ -101,7 +128,7 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
-    public void OpenThrowsForEncryptedPdfUntilSecuritySupportArrives()
+    public void OpenThrowsForUnsupportedEncryptedProfile()
     {
         byte[] encryptedPdfBytes = CreateEncryptedPdf();
 
@@ -138,6 +165,38 @@ public sealed class PdfDocumentTests
         Assert.Equal("Standard", info.Filter);
         Assert.Equal(4, info.AlgorithmVersion);
         Assert.Equal(128, info.KeyLengthBits);
+    }
+
+    [Fact]
+    public void OpenWithWrongPasswordThrowsUnauthorizedAccessException()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("protected");
+        byte[] encryptedBytes = document.Save(new PdfSaveOptions
+        {
+            Security = new PdfSecurityOptions
+            {
+                UserPassword = "correct-password",
+            },
+        });
+
+        Assert.Throws<UnauthorizedAccessException>(() => PdfDocument.Open(encryptedBytes, "wrong-password"));
+    }
+
+    [Fact]
+    public void InspectEncryptionThrowsForMalformedEncryptionDictionaryWithoutDocumentId()
+    {
+        byte[] malformedPdfBytes = CreateMalformedEncryptedPdfWithoutDocumentId();
+
+        Assert.Throws<PdfFormatException>(() => PdfDocument.InspectEncryption(malformedPdfBytes));
+    }
+
+    [Fact]
+    public void OpenThrowsForMalformedEncryptionDictionaryWithInvalidOwnerEntryLength()
+    {
+        byte[] malformedPdfBytes = CreateMalformedEncryptedPdfWithInvalidOwnerEntry();
+
+        Assert.Throws<PdfFormatException>(() => PdfDocument.Open(malformedPdfBytes, "password"));
     }
 
     [Fact]
@@ -383,13 +442,119 @@ public sealed class PdfDocumentTests
         [
             new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
             new PdfDictionaryEntry("V", new PdfNumberObject(4, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(4, isInteger: true)),
             new PdfDictionaryEntry("Length", new PdfNumberObject(128, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfStringObject("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
+            new PdfDictionaryEntry("U", new PdfStringObject("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")),
         ]);
 
         PdfDictionaryObject trailer = new(
         [
             new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
             new PdfDictionaryEntry("Encrypt", new PdfReferenceObject(new PdfObjectId(3, 0))),
+            new PdfDictionaryEntry(
+                "ID",
+                new PdfArrayObject(
+                [
+                    new PdfStringObject("0123456789ABCDEF"),
+                    new PdfStringObject("0123456789ABCDEF"),
+                ])),
+        ]);
+
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+                new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+                new PdfIndirectObject(new PdfObjectId(3, 0), encryptDictionary),
+            ],
+            trailer);
+
+        return PdfFileWriter.Write(file);
+    }
+
+    private static byte[] CreateMalformedEncryptedPdfWithoutDocumentId()
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(0, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject encryptDictionary = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("V", new PdfNumberObject(1, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(40, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfStringObject("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
+            new PdfDictionaryEntry("U", new PdfStringObject("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")),
+        ]);
+
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+            new PdfDictionaryEntry("Encrypt", new PdfReferenceObject(new PdfObjectId(3, 0))),
+        ]);
+
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+                new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+                new PdfIndirectObject(new PdfObjectId(3, 0), encryptDictionary),
+            ],
+            trailer);
+
+        return PdfFileWriter.Write(file);
+    }
+
+    private static byte[] CreateMalformedEncryptedPdfWithInvalidOwnerEntry()
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(0, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject encryptDictionary = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("V", new PdfNumberObject(1, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(40, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfStringObject("short-owner")),
+            new PdfDictionaryEntry("U", new PdfStringObject("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")),
+        ]);
+
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+            new PdfDictionaryEntry("Encrypt", new PdfReferenceObject(new PdfObjectId(3, 0))),
+            new PdfDictionaryEntry(
+                "ID",
+                new PdfArrayObject(
+                [
+                    new PdfStringObject("0123456789ABCDEF"),
+                    new PdfStringObject("0123456789ABCDEF"),
+                ])),
         ]);
 
         PdfFile file = new(

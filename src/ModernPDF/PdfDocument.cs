@@ -3,6 +3,7 @@ using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
 using ModernPDF.Primitives;
+using ModernPDF.Security;
 using ModernPDF.Text;
 using System.Globalization;
 
@@ -47,14 +48,19 @@ public sealed class PdfDocument
     public static PdfDocument Open(ReadOnlySpan<byte> data, string? password)
     {
         PdfFile file = PdfFileReader.Read(data);
-        if (TryReadEncryptionInfo(file, out _))
+        if (PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out _))
         {
-            if (string.IsNullOrEmpty(password))
+            if (!PdfStandardSecurityProcessor.IsSupportedStandardHandler(file))
             {
-                throw new NotSupportedException("Encrypted PDFs are not supported yet.");
+                throw new NotSupportedException("Only Standard security handler V=1 R=2 (40-bit) is currently supported.");
             }
 
-            throw new NotSupportedException("Encrypted PDF password handling is not supported yet.");
+            if (string.IsNullOrEmpty(password))
+            {
+                throw new UnauthorizedAccessException("Password is required to open encrypted PDFs.");
+            }
+
+            file = PdfStandardSecurityProcessor.Decrypt(file, password);
         }
 
         PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
@@ -83,7 +89,7 @@ public sealed class PdfDocument
     public static PdfEncryptionInfo? InspectEncryption(ReadOnlySpan<byte> data)
     {
         PdfFile file = PdfFileReader.Read(data);
-        return TryReadEncryptionInfo(file, out PdfEncryptionInfo? info) ? info : null;
+        return PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out PdfEncryptionInfo? info) ? info : null;
     }
 
     public static PdfEncryptionInfo? InspectEncryption(string path)
@@ -129,13 +135,14 @@ public sealed class PdfDocument
             throw new NotSupportedException("Incremental save is not supported yet.");
         }
 
+        PdfFile outputFile = _file;
         if (effectiveOptions.Security is not null)
         {
             ValidateSecurityOptions(effectiveOptions.Security);
-            throw new NotSupportedException("Password encryption and permissions are not supported yet.");
+            outputFile = PdfStandardSecurityProcessor.Encrypt(_file, effectiveOptions.Security);
         }
 
-        return PdfFileWriter.Write(_file);
+        return PdfFileWriter.Write(outputFile);
     }
 
     public void Save(string path, PdfSaveOptions? options = null)
@@ -467,79 +474,6 @@ public sealed class PdfDocument
 
         value = null;
         return false;
-    }
-
-    private static bool TryReadEncryptionInfo(PdfFile file, out PdfEncryptionInfo? info)
-    {
-        info = null;
-
-        if (!TryGetDictionaryEntry(file.Trailer, "Encrypt", out PdfObject? encryptObject) || encryptObject is null)
-        {
-            return false;
-        }
-
-        PdfDictionaryObject encryptionDictionary = ResolveEncryptionDictionary(file, encryptObject);
-        string? filter = TryReadName(encryptionDictionary, "Filter");
-        string? subFilter = TryReadName(encryptionDictionary, "SubFilter");
-        int? algorithmVersion = TryReadInteger(encryptionDictionary, "V");
-        int? keyLengthBits = TryReadInteger(encryptionDictionary, "Length");
-
-        info = new PdfEncryptionInfo(filter, subFilter, algorithmVersion, keyLengthBits);
-        return true;
-    }
-
-    private static PdfDictionaryObject ResolveEncryptionDictionary(PdfFile file, PdfObject encryptObject)
-    {
-        if (encryptObject is PdfDictionaryObject dictionary)
-        {
-            return dictionary;
-        }
-
-        if (encryptObject is PdfReferenceObject reference)
-        {
-            foreach (PdfIndirectObject objectItem in file.Objects)
-            {
-                if (objectItem.ObjectId == reference.ObjectId)
-                {
-                    return objectItem.Value as PdfDictionaryObject
-                        ?? throw new PdfFormatException($"Encryption object {reference.ObjectId} is not a dictionary.");
-                }
-            }
-
-            throw new PdfFormatException($"Encryption object {reference.ObjectId} was not found.");
-        }
-
-        throw new PdfFormatException("Trailer /Encrypt entry must be a dictionary or reference.");
-    }
-
-    private static string? TryReadName(PdfDictionaryObject dictionary, string key)
-    {
-        if (!TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
-        {
-            return null;
-        }
-
-        return value is PdfNameObject nameObject ? nameObject.Value : null;
-    }
-
-    private static int? TryReadInteger(PdfDictionaryObject dictionary, string key)
-    {
-        if (!TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
-        {
-            return null;
-        }
-
-        if (value is not PdfNumberObject numberObject || !numberObject.IsInteger)
-        {
-            return null;
-        }
-
-        if (numberObject.Value < int.MinValue || numberObject.Value > int.MaxValue)
-        {
-            return null;
-        }
-
-        return Convert.ToInt32(numberObject.Value, CultureInfo.InvariantCulture);
     }
 
     private static IEnumerable<PdfObjectId> EnumerateContentStreamReferences(PdfObject? contents)

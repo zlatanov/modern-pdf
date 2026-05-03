@@ -35,6 +35,9 @@ internal static class PdfObjectWriter
             case PdfStringObject stringValue:
                 WriteLiteralString(writer, stringValue.Value);
                 return;
+            case PdfByteStringObject byteStringValue:
+                WriteHexString(writer, byteStringValue.Bytes.Span);
+                return;
             case PdfReferenceObject referenceValue:
                 WriteAscii(writer, $"{referenceValue.ObjectId.ObjectNumber} {referenceValue.ObjectId.GenerationNumber} R");
                 return;
@@ -123,6 +126,13 @@ internal static class PdfObjectWriter
         }
 
         writer.WriteByte((byte)')');
+    }
+
+    private static void WriteHexString(ByteBufferWriter writer, ReadOnlySpan<byte> bytes)
+    {
+        writer.WriteByte((byte)'<');
+        WriteAscii(writer, Convert.ToHexString(bytes));
+        writer.WriteByte((byte)'>');
     }
 
     private static void WriteArray(ByteBufferWriter writer, PdfArrayObject value)

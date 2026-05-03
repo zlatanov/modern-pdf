@@ -28,4 +28,24 @@ public sealed class PdfObjectWriterTests
 
         Assert.Equal("(A \\(test\\) \\\\ sample)", text);
     }
+
+    [Fact]
+    public void WriteEmitsHexStringForByteStringObjects()
+    {
+        PdfByteStringObject value = new(Encoding.ASCII.GetBytes("Hi"));
+        byte[] serialized = PdfObjectWriter.Write(value);
+        string text = Encoding.ASCII.GetString(serialized);
+
+        Assert.Equal("<4869>", text);
+    }
+
+    [Fact]
+    public void WriteEmitsTwoDigitUppercaseHexForBinaryBytes()
+    {
+        PdfByteStringObject value = new(new byte[] { 0x00, 0xFF, 0x7A });
+        byte[] serialized = PdfObjectWriter.Write(value);
+        string text = Encoding.ASCII.GetString(serialized);
+
+        Assert.Equal("<00FF7A>", text);
+    }
 }

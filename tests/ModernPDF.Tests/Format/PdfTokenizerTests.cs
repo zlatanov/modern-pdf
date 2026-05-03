@@ -49,4 +49,36 @@ public sealed class PdfTokenizerTests
         Assert.Equal(PdfTokenKind.String, tokens[0].Kind);
         Assert.Equal("Hello (PDF)", tokens[0].Lexeme);
     }
+
+    [Fact]
+    public void TokenizeParsesHexString()
+    {
+        byte[] data = Encoding.ASCII.GetBytes("<48656C6C6F>");
+
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(data);
+
+        Assert.Single(tokens);
+        Assert.Equal(PdfTokenKind.HexString, tokens[0].Kind);
+        Assert.Equal("48656C6C6F", tokens[0].Lexeme);
+    }
+
+    [Fact]
+    public void TokenizePadsOddLengthHexString()
+    {
+        byte[] data = Encoding.ASCII.GetBytes("<ABC>");
+
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(data);
+
+        Assert.Single(tokens);
+        Assert.Equal(PdfTokenKind.HexString, tokens[0].Kind);
+        Assert.Equal("ABC0", tokens[0].Lexeme);
+    }
+
+    [Fact]
+    public void TokenizeThrowsForInvalidHexStringCharacter()
+    {
+        byte[] data = Encoding.ASCII.GetBytes("<A?C>");
+
+        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(data));
+    }
 }

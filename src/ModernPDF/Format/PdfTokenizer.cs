@@ -42,7 +42,8 @@ internal static class PdfTokenizer
                         continue;
                     }
 
-                    throw new PdfFormatException("Hex strings are not supported in the current tokenizer slice.");
+                    tokens.Add(ReadHexStringToken(data, ref position));
+                    continue;
                 case (byte)'>':
                     if (TryReadDoubleCharacterToken(data, ref position, (byte)'>', (byte)'>'))
                     {
@@ -182,6 +183,42 @@ internal static class PdfTokenizer
         }
 
         throw new PdfFormatException("Unterminated literal string.");
+    }
+
+    private static PdfToken ReadHexStringToken(ReadOnlySpan<byte> data, ref int position)
+    {
+        position++;
+        StringBuilder builder = new();
+
+        while (position < data.Length)
+        {
+            char current = (char)data[position];
+            position++;
+
+            if (current == '>')
+            {
+                if ((builder.Length & 1) == 1)
+                {
+                    builder.Append('0');
+                }
+
+                return new PdfToken(PdfTokenKind.HexString, builder.ToString());
+            }
+
+            if (char.IsWhiteSpace(current))
+            {
+                continue;
+            }
+
+            if (!char.IsAsciiHexDigit(current))
+            {
+                throw new PdfFormatException($"Invalid hex string character '{current}'.");
+            }
+
+            builder.Append(char.ToUpperInvariant(current));
+        }
+
+        throw new PdfFormatException("Unterminated hex string.");
     }
 
     private static char DecodeEscapedCharacter(char value)

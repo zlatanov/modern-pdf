@@ -49,6 +49,7 @@ internal static class PdfObjectParser
             PdfTokenKind.Real => ParseReal(token),
             PdfTokenKind.Name => new PdfNameObject(token.Lexeme),
             PdfTokenKind.String => new PdfStringObject(token.Lexeme),
+            PdfTokenKind.HexString => new PdfByteStringObject(ParseHexBytes(token.Lexeme)),
             PdfTokenKind.StartArray => ParseArray(tokens, ref index),
             PdfTokenKind.StartDictionary => ParseDictionary(tokens, ref index),
             PdfTokenKind.Keyword => throw new PdfFormatException($"Unsupported keyword token '{token.Lexeme}'."),
@@ -165,5 +166,32 @@ internal static class PdfObjectParser
         reference = new PdfReferenceObject(new PdfObjectId(objectNumber, generationNumber));
         index += 3;
         return true;
+    }
+
+    private static byte[] ParseHexBytes(string hex)
+    {
+        if (string.IsNullOrEmpty(hex))
+        {
+            return [];
+        }
+
+        if ((hex.Length & 1) == 1)
+        {
+            throw new PdfFormatException("Hex string token length must be even.");
+        }
+
+        byte[] buffer = new byte[hex.Length / 2];
+        for (int index = 0; index < hex.Length; index += 2)
+        {
+            string pair = hex.Substring(index, 2);
+            if (!byte.TryParse(pair, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte value))
+            {
+                throw new PdfFormatException($"Invalid hex byte pair '{pair}'.");
+            }
+
+            buffer[index / 2] = value;
+        }
+
+        return buffer;
     }
 }
