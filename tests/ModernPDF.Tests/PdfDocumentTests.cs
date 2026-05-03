@@ -1,4 +1,5 @@
 using System.Text;
+using ModernPDF.DocumentModel;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
 using ModernPDF.Primitives;
@@ -56,6 +57,68 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void AddPageIncreasesPageCountAndRoundTrips()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        int pageIndex = document.AddPage();
+
+        Assert.Equal(0, pageIndex);
+        Assert.Equal(1, document.PageCount);
+
+        byte[] bytes = document.Save();
+        PdfDocument reopened = PdfDocument.Open(bytes);
+        Assert.Equal(1, reopened.PageCount);
+    }
+
+    [Fact]
+    public void AddTextPageMakesTextExtractable()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        int pageIndex = document.AddTextPage("Hello ModernPDF");
+
+        Assert.Equal(0, pageIndex);
+        Assert.Equal("Hello ModernPDF", document.ExtractText());
+    }
+
+    [Fact]
+    public void AddTextPageEscapesLiteralStringCharacters()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string expected = "Text (with) \\ characters";
+
+        document.AddTextPage(expected);
+
+        Assert.Equal(expected, document.ExtractText());
+    }
+
+    [Fact]
+    public void AddPageUsesProvidedDimensions()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddPage(new PdfPageOptions { Width = 300, Height = 400 });
+
+        byte[] bytes = document.Save();
+        PdfFile file = PdfFileReader.Read(bytes);
+        PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
+
+        Assert.Single(model.Pages);
+        Assert.NotNull(model.Pages[0].MediaBox);
+        Assert.Equal(300, model.Pages[0].MediaBox?.Right);
+        Assert.Equal(400, model.Pages[0].MediaBox?.Top);
+    }
+
+    [Fact]
+    public void AddPageRejectsInvalidPageOptions()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.AddPage(new PdfPageOptions { Width = 0 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.AddPage(new PdfPageOptions { Height = double.PositiveInfinity }));
+    }
+
+    [Fact]
     public void ExtractTextReturnsTextFromTjOperators()
     {
         byte[] pdfBytes = CreateSinglePageTextPdf("BT (Hello) Tj ( World) Tj ET");
@@ -80,6 +143,38 @@ public sealed class PdfDocumentTests
         PdfDocument document = PdfDocument.Create();
 
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ExtractText(1));
+    }
+
+    [Fact]
+    public void ReplacePageTextUpdatesExtractedText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("Old text");
+
+        document.ReplacePageText(0, "New text");
+
+        Assert.Equal("New text", document.ExtractText());
+    }
+
+    [Fact]
+    public void ReplacePageContentsRejectsInvalidPageIndex()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageContents(0, "BT (X) Tj ET"));
+    }
+
+    [Fact]
+    public void SetInfoProducerPersistsThroughSaveAndOpen()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        document.SetInfoProducer("ModernPDF Unit Test");
+        Assert.Equal("ModernPDF Unit Test", document.GetInfoProducer());
+
+        byte[] bytes = document.Save();
+        PdfDocument reopened = PdfDocument.Open(bytes);
+        Assert.Equal("ModernPDF Unit Test", reopened.GetInfoProducer());
     }
 
     private static byte[] CreateSinglePageTextPdf(string contentStream)
