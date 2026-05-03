@@ -89,6 +89,14 @@ internal static class CorpusManifestLoader
         {
             return "format_error";
         }
+        catch (Exception exception) when (exception is FormatException or OverflowException)
+        {
+            return "format_error";
+        }
+        catch
+        {
+            return "other_error";
+        }
     }
 
     private static string GetManifestPath()

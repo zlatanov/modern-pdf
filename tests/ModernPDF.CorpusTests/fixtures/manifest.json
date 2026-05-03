@@ -2,106 +2,6 @@
   "version": 2,
   "fixtures": [
     {
-      "id": "qpdf-bad1",
-      "sourcePath": "qpdf/qtest/qpdf/bad1.pdf",
-      "sourceRepository": "qpdf/qpdf",
-      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
-      "localPath": "qpdf/bad1.pdf",
-      "sha256": "fe19778cf1ce280658154f2b9c01ffbccd825a23460141dcf3794e7a2c0eb629",
-      "profiles": [
-        "smoke",
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "format_error",
-      "password": null
-    },
-    {
-      "id": "qpdf-extend-bad",
-      "sourcePath": "examples/qtest/extend-c-api/bad.pdf",
-      "sourceRepository": "qpdf/qpdf",
-      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
-      "localPath": "qpdf/extend-c-api-bad.pdf",
-      "sha256": "aa25ee2c3e0c91d0fcc67a356cee7fa0b6750085a92b788b7d4747c6b086f3f2",
-      "profiles": [
-        "smoke",
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "format_error",
-      "password": null
-    },
-    {
-      "id": "qpdf-issue-147",
-      "sourcePath": "qpdf/qtest/qpdf/issue-147.pdf",
-      "sourceRepository": "qpdf/qpdf",
-      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
-      "localPath": "qpdf/issue-147.pdf",
-      "sha256": "f0193ccdceca0c7239b7e537878992233e26f1fd843b4a749bfd9334f96cb98f",
-      "profiles": [
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "any",
-      "password": null
-    },
-    {
-      "id": "qpdf-issue-263",
-      "sourcePath": "qpdf/qtest/qpdf/issue-263.pdf",
-      "sourceRepository": "qpdf/qpdf",
-      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
-      "localPath": "qpdf/issue-263.pdf",
-      "sha256": "eb7b86a9d99f9d4c9466fa577b5f2e1555c33215eb8a6a0b73e0393510bf44ea",
-      "profiles": [
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "any",
-      "password": null
-    },
-    {
-      "id": "qpdf-issue-143",
-      "sourcePath": "qpdf/qtest/qpdf/issue-143.pdf",
-      "sourceRepository": "qpdf/qpdf",
-      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
-      "localPath": "qpdf/issue-143.pdf",
-      "sha256": "4bb02358331734103f4386101c4c0c33fe0ef66b68394dfa1f0fc2124693da32",
-      "profiles": [
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "any",
-      "password": null
-    },
-    {
-      "id": "qpdf-issue-141a",
-      "sourcePath": "qpdf/qtest/qpdf/issue-141a.pdf",
-      "sourceRepository": "qpdf/qpdf",
-      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
-      "localPath": "qpdf/issue-141a.pdf",
-      "sha256": "f8f3e84b5d972d1c2e60f990d3b1750f44e7d89349ab4425bcf405556c0cd7ac",
-      "profiles": [
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "any",
-      "password": null
-    },
-    {
-      "id": "qpdf-bookmarks-3",
-      "sourcePath": "examples/qtest/bookmarks/3.pdf",
-      "sourceRepository": "qpdf/qpdf",
-      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
-      "localPath": "qpdf/bookmarks-3.pdf",
-      "sha256": "675a23a0c456ba3a7f593ac567deb7891f4bab407da795c43683a8daeef0ac58",
-      "profiles": [
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "any",
-      "password": null
-    },
-    {
       "id": "pdfbox-cweb",
       "sourcePath": "pdfbox/src/test/resources/input/cweb.pdf",
       "sourceRepository": "apache/pdfbox",
@@ -354,12 +254,12 @@
       "password": null
     },
     {
-      "id": "pdfbox-pdfbox-3110-poems-beads-cropbox",
-      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3110-poems-beads-cropbox.pdf",
+      "id": "pdfbox-pdfbox-3110-poems-beads",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3110-poems-beads.pdf",
       "sourceRepository": "apache/pdfbox",
       "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
-      "localPath": "pdfbox/PDFBOX-3110-poems-beads-cropbox.pdf",
-      "sha256": "bc24610183079923dcb7a292167b7eed96aecf3c6a8a91bd254a526b553ede50",
+      "localPath": "pdfbox/PDFBOX-3110-poems-beads.pdf",
+      "sha256": "9d715ce4e964f6ccbf50e1d1c42ca5f01425a079a5c39a9581c876c56afca1b3",
       "profiles": [
         "full"
       ],
@@ -368,12 +268,12 @@
       "password": null
     },
     {
-      "id": "pdfbox-pdfbox-3110-poems-beads",
-      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3110-poems-beads.pdf",
+      "id": "pdfbox-pdfbox-3110-poems-beads-cropbox",
+      "sourcePath": "pdfbox/src/test/resources/input/PDFBOX-3110-poems-beads-cropbox.pdf",
       "sourceRepository": "apache/pdfbox",
       "sourceCommit": "aba136447b22287e875496abbad3a14b5005459f",
-      "localPath": "pdfbox/PDFBOX-3110-poems-beads.pdf",
-      "sha256": "9d715ce4e964f6ccbf50e1d1c42ca5f01425a079a5c39a9581c876c56afca1b3",
+      "localPath": "pdfbox/PDFBOX-3110-poems-beads-cropbox.pdf",
+      "sha256": "bc24610183079923dcb7a292167b7eed96aecf3c6a8a91bd254a526b553ede50",
       "profiles": [
         "full"
       ],
@@ -690,34 +590,6 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-hidden-noview",
-      "sourcePath": "test/pdfs/annotation_hidden_noview.pdf",
-      "sourceRepository": "mozilla/pdf.js",
-      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation_hidden_noview.pdf",
-      "sha256": "97fd9418a5e24d326e66734462de0db215d40a6dd0e0734e12924fa364e5b390",
-      "profiles": [
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "any",
-      "password": null
-    },
-    {
-      "id": "pdfjs-annotation-hidden-print",
-      "sourcePath": "test/pdfs/annotation_hidden_print.pdf",
-      "sourceRepository": "mozilla/pdf.js",
-      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation_hidden_print.pdf",
-      "sha256": "d084450dfbb7d5c53593ed8f0a005553bd0ae797e34b3a1c8c00c7eec2fc5a9d",
-      "profiles": [
-        "full"
-      ],
-      "enabled": true,
-      "expectedOpenResult": "any",
-      "password": null
-    },
-    {
       "id": "pdfjs-annotation-border-styles",
       "sourcePath": "test/pdfs/annotation-border-styles.pdf",
       "sourceRepository": "mozilla/pdf.js",
@@ -802,12 +674,26 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-highlight-without-appearance",
-      "sourcePath": "test/pdfs/annotation-highlight-without-appearance.pdf",
+      "id": "pdfjs-annotation-hidden-noview",
+      "sourcePath": "test/pdfs/annotation_hidden_noview.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-highlight-without-appearance.pdf",
-      "sha256": "ea323f17899de03e7499d0e8531c49e873512a26b40058f357ca399312bf65d6",
+      "localPath": "pdfjs/annotation_hidden_noview.pdf",
+      "sha256": "97fd9418a5e24d326e66734462de0db215d40a6dd0e0734e12924fa364e5b390",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-annotation-hidden-print",
+      "sourcePath": "test/pdfs/annotation_hidden_print.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation_hidden_print.pdf",
+      "sha256": "d084450dfbb7d5c53593ed8f0a005553bd0ae797e34b3a1c8c00c7eec2fc5a9d",
       "profiles": [
         "full"
       ],
@@ -830,12 +716,12 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-ink-without-appearance",
-      "sourcePath": "test/pdfs/annotation-ink-without-appearance.pdf",
+      "id": "pdfjs-annotation-highlight-without-appearance",
+      "sourcePath": "test/pdfs/annotation-highlight-without-appearance.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-ink-without-appearance.pdf",
-      "sha256": "663c7419206b1995c6ae651a1cbf8dbf9d89f0f6b3e61014cf545e21335e75b8",
+      "localPath": "pdfjs/annotation-highlight-without-appearance.pdf",
+      "sha256": "ea323f17899de03e7499d0e8531c49e873512a26b40058f357ca399312bf65d6",
       "profiles": [
         "full"
       ],
@@ -844,12 +730,12 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-line-without-appearance",
-      "sourcePath": "test/pdfs/annotation-line-without-appearance.pdf",
+      "id": "pdfjs-annotation-ink-without-appearance",
+      "sourcePath": "test/pdfs/annotation-ink-without-appearance.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-line-without-appearance.pdf",
-      "sha256": "9408cc19a56ef122ea956799a2e5a63b2b3cc70bbd307ed76d2ba89fd9c54fc3",
+      "localPath": "pdfjs/annotation-ink-without-appearance.pdf",
+      "sha256": "663c7419206b1995c6ae651a1cbf8dbf9d89f0f6b3e61014cf545e21335e75b8",
       "profiles": [
         "full"
       ],
@@ -872,12 +758,12 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-link-text-popup",
-      "sourcePath": "test/pdfs/annotation-link-text-popup.pdf",
+      "id": "pdfjs-annotation-line-without-appearance",
+      "sourcePath": "test/pdfs/annotation-line-without-appearance.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-link-text-popup.pdf",
-      "sha256": "06917202feda6b6bb8b57b048655f946f749bdff5a8bfcb35eb0116f38910312",
+      "localPath": "pdfjs/annotation-line-without-appearance.pdf",
+      "sha256": "9408cc19a56ef122ea956799a2e5a63b2b3cc70bbd307ed76d2ba89fd9c54fc3",
       "profiles": [
         "full"
       ],
@@ -886,12 +772,12 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-polyline-polygon-without-appearance",
-      "sourcePath": "test/pdfs/annotation-polyline-polygon-without-appearance.pdf",
+      "id": "pdfjs-annotation-link-text-popup",
+      "sourcePath": "test/pdfs/annotation-link-text-popup.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-polyline-polygon-without-appearance.pdf",
-      "sha256": "710e7dbac4fcd2021e5a9cf7072e00284a1882d1ebacac43430b15c027902932",
+      "localPath": "pdfjs/annotation-link-text-popup.pdf",
+      "sha256": "06917202feda6b6bb8b57b048655f946f749bdff5a8bfcb35eb0116f38910312",
       "profiles": [
         "full"
       ],
@@ -914,12 +800,12 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-square-circle-without-appearance",
-      "sourcePath": "test/pdfs/annotation-square-circle-without-appearance.pdf",
+      "id": "pdfjs-annotation-polyline-polygon-without-appearance",
+      "sourcePath": "test/pdfs/annotation-polyline-polygon-without-appearance.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-square-circle-without-appearance.pdf",
-      "sha256": "d0a98bb14150b1bc2bc028876198098c99420ea10d30d43b4f9c5cb36bb023a7",
+      "localPath": "pdfjs/annotation-polyline-polygon-without-appearance.pdf",
+      "sha256": "710e7dbac4fcd2021e5a9cf7072e00284a1882d1ebacac43430b15c027902932",
       "profiles": [
         "full"
       ],
@@ -942,12 +828,12 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-squiggly-without-appearance",
-      "sourcePath": "test/pdfs/annotation-squiggly-without-appearance.pdf",
+      "id": "pdfjs-annotation-square-circle-without-appearance",
+      "sourcePath": "test/pdfs/annotation-square-circle-without-appearance.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-squiggly-without-appearance.pdf",
-      "sha256": "771698679397da9423bcb26e641c8cba173f00dc54f60656898143403e2bfbdd",
+      "localPath": "pdfjs/annotation-square-circle-without-appearance.pdf",
+      "sha256": "d0a98bb14150b1bc2bc028876198098c99420ea10d30d43b4f9c5cb36bb023a7",
       "profiles": [
         "full"
       ],
@@ -970,6 +856,20 @@
       "password": null
     },
     {
+      "id": "pdfjs-annotation-squiggly-without-appearance",
+      "sourcePath": "test/pdfs/annotation-squiggly-without-appearance.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-squiggly-without-appearance.pdf",
+      "sha256": "771698679397da9423bcb26e641c8cba173f00dc54f60656898143403e2bfbdd",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
       "id": "pdfjs-annotation-stamp",
       "sourcePath": "test/pdfs/annotation-stamp.pdf",
       "sourceRepository": "mozilla/pdf.js",
@@ -984,12 +884,12 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-strikeout-without-appearance",
-      "sourcePath": "test/pdfs/annotation-strikeout-without-appearance.pdf",
+      "id": "pdfjs-annotation-strikeout",
+      "sourcePath": "test/pdfs/annotation-strikeout.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-strikeout-without-appearance.pdf",
-      "sha256": "9a99e1469ad4e285381016df440fada4d94b9384d051760b145fd63b794943a8",
+      "localPath": "pdfjs/annotation-strikeout.pdf",
+      "sha256": "ca7225dbdc6f8a26814cf0d67f5c509589e2cc09ace6bdb04a375a266db5b708",
       "profiles": [
         "full"
       ],
@@ -998,12 +898,12 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-strikeout",
-      "sourcePath": "test/pdfs/annotation-strikeout.pdf",
+      "id": "pdfjs-annotation-strikeout-without-appearance",
+      "sourcePath": "test/pdfs/annotation-strikeout-without-appearance.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-strikeout.pdf",
-      "sha256": "ca7225dbdc6f8a26814cf0d67f5c509589e2cc09ace6bdb04a375a266db5b708",
+      "localPath": "pdfjs/annotation-strikeout-without-appearance.pdf",
+      "sha256": "9a99e1469ad4e285381016df440fada4d94b9384d051760b145fd63b794943a8",
       "profiles": [
         "full"
       ],
@@ -1082,6 +982,20 @@
       "password": null
     },
     {
+      "id": "pdfjs-annotation-underline",
+      "sourcePath": "test/pdfs/annotation-underline.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/annotation-underline.pdf",
+      "sha256": "ef04b7049d5cab49c702887c423f20cfecf76d36905772209cc6781425d8f671",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
       "id": "pdfjs-annotation-underline-without-appearance",
       "sourcePath": "test/pdfs/annotation-underline-without-appearance.pdf",
       "sourceRepository": "mozilla/pdf.js",
@@ -1096,12 +1010,292 @@
       "password": null
     },
     {
-      "id": "pdfjs-annotation-underline",
-      "sourcePath": "test/pdfs/annotation-underline.pdf",
+      "id": "pdfjs-api-basicapi",
+      "sourcePath": "test/pdfs/basicapi.pdf",
       "sourceRepository": "mozilla/pdf.js",
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
-      "localPath": "pdfjs/annotation-underline.pdf",
-      "sha256": "ef04b7049d5cab49c702887c423f20cfecf76d36905772209cc6781425d8f671",
+      "localPath": "pdfjs/api/basicapi.pdf",
+      "sha256": "925853d98d67d5dae7473c635f932958e1695ce1029d23b2ecd2531cb65f1f14",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-bug1020226",
+      "sourcePath": "test/pdfs/bug1020226.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/bug1020226.pdf",
+      "sha256": "50e91d373aa313537972519c65b050f8d4d5bd996859fa20756432c2029c3ff6",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-bug1980958",
+      "sourcePath": "test/pdfs/bug1980958.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/bug1980958.pdf",
+      "sha256": "777415748234d88f47f7ac09a3f620ed61f927089199698be993266c8ebddaaa",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-empty",
+      "sourcePath": "test/pdfs/empty.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/empty.pdf",
+      "sha256": "fcee6184c0d776126782cd2799797b106373278c8ea0a4354ee4e33cd8663d51",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-ghostscript-698804-1-fuzzed",
+      "sourcePath": "test/pdfs/GHOSTSCRIPT-698804-1-fuzzed.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/GHOSTSCRIPT-698804-1-fuzzed.pdf",
+      "sha256": "62e518ca7894e8b8b8ed9927da3007cdc5e9ccc5b111bbb22d6101d4a8d7490e",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-issue15150",
+      "sourcePath": "test/pdfs/issue15150.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/issue15150.pdf",
+      "sha256": "122016379efad59780860b34a2d16511a1f426c2167d2fc80f4ce7febedff396",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-issue15590",
+      "sourcePath": "test/pdfs/issue15590.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/issue15590.pdf",
+      "sha256": "c711bb3357eccec499968ac7b4e286ebd3f49910b458b0596d81731c890eedb6",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-issue3371",
+      "sourcePath": "test/pdfs/issue3371.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/issue3371.pdf",
+      "sha256": "0c3fb45d9b61ea762b4b3298c8c47e5375e83d151d356d87d740bcb85d953473",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-issue6010-1",
+      "sourcePath": "test/pdfs/issue6010_1.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/issue6010_1.pdf",
+      "sha256": "d7fd95e016b7d43bc9eed1041b0cdd6ee00e3dd902e50d0307b0a428782c543c",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-pdfbox-4352-0",
+      "sourcePath": "test/pdfs/PDFBOX-4352-0.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/PDFBOX-4352-0.pdf",
+      "sha256": "ede76ce3aaa8a5d9da0e6f7fadce8470083be748035da6db08ede9ea34813f40",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-poppler-395-0-fuzzed",
+      "sourcePath": "test/pdfs/poppler-395-0-fuzzed.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/poppler-395-0-fuzzed.pdf",
+      "sha256": "e2ec919e787c0069948598f9c9d7a39787acde602aacd2bb263298a85e2e0c64",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-poppler-67295-0",
+      "sourcePath": "test/pdfs/poppler-67295-0.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/poppler-67295-0.pdf",
+      "sha256": "f513f3b4b4a1cb223622e91f03701c0f396e6eed47121fb8cba5c0e515357d3b",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-poppler-742-0-fuzzed",
+      "sourcePath": "test/pdfs/poppler-742-0-fuzzed.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/poppler-742-0-fuzzed.pdf",
+      "sha256": "e651252b0d4fb2556c957c13844f5630b32352b0483fb2cc1592cd778290a01a",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-poppler-85140-0",
+      "sourcePath": "test/pdfs/poppler-85140-0.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/poppler-85140-0.pdf",
+      "sha256": "a358d66cfcf9bfd348908a54cde605b5d9b2f974ce68f7c8a327f074c0b76f9a",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-poppler-91414-0-53",
+      "sourcePath": "test/pdfs/poppler-91414-0-53.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/poppler-91414-0-53.pdf",
+      "sha256": "48650946b6037581b3fb8b399c82c6669557b599b917153edfc5d4a3d9b155bc",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-poppler-91414-0-54",
+      "sourcePath": "test/pdfs/poppler-91414-0-54.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/poppler-91414-0-54.pdf",
+      "sha256": "1b2290fda39d79506e2cc104199bda3a5fb1a38bbf67e213778e0fc3b83fa2a4",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-poppler-937-0-fuzzed",
+      "sourcePath": "test/pdfs/poppler-937-0-fuzzed.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/poppler-937-0-fuzzed.pdf",
+      "sha256": "732311f7b606c6360121644b9b7709dc8d369f37157704dc16e6791a4ca6e680",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-pr6531-1",
+      "sourcePath": "test/pdfs/pr6531_1.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/pr6531_1.pdf",
+      "sha256": "a5584ab7da3a77a2d3726e8289d7740ad11df06375af95f81bd4c7cc63a7e4fc",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-pr6531-2",
+      "sourcePath": "test/pdfs/pr6531_2.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/pr6531_2.pdf",
+      "sha256": "e85d22b832a61be1d302a811e29c5df5ccd2a3795633178449d0b2e0e2451118",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-redhat-1531897-0",
+      "sourcePath": "test/pdfs/REDHAT-1531897-0.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/REDHAT-1531897-0.pdf",
+      "sha256": "f468fc2f922bb179f3cb9994c9476fb1840445fe6deb6cdcca42244ab0218786",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "pdfjs-api-tracemonkey",
+      "sourcePath": "test/pdfs/tracemonkey.pdf",
+      "sourceRepository": "mozilla/pdf.js",
+      "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
+      "localPath": "pdfjs/api/tracemonkey.pdf",
+      "sha256": "3662ff519e485810520552bf301d8c3b2b917fd2f83303f4965d7abed367e113",
       "profiles": [
         "full"
       ],
@@ -1144,6 +1338,106 @@
       "sourceCommit": "f54f4b606d900d0f556492fda1a91437e87611ef",
       "localPath": "pdfjs/arial_unicode_en_cidfont.pdf",
       "sha256": "1c4a08108d8074f543c04e9b2ea2b93a842e2b29eb05ee9d99766f430fd365ab",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-bad1",
+      "sourcePath": "qpdf/qtest/qpdf/bad1.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/bad1.pdf",
+      "sha256": "fe19778cf1ce280658154f2b9c01ffbccd825a23460141dcf3794e7a2c0eb629",
+      "profiles": [
+        "smoke",
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "format_error",
+      "password": null
+    },
+    {
+      "id": "qpdf-bookmarks-3",
+      "sourcePath": "examples/qtest/bookmarks/3.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/bookmarks-3.pdf",
+      "sha256": "675a23a0c456ba3a7f593ac567deb7891f4bab407da795c43683a8daeef0ac58",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-extend-bad",
+      "sourcePath": "examples/qtest/extend-c-api/bad.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/extend-c-api-bad.pdf",
+      "sha256": "aa25ee2c3e0c91d0fcc67a356cee7fa0b6750085a92b788b7d4747c6b086f3f2",
+      "profiles": [
+        "smoke",
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "format_error",
+      "password": null
+    },
+    {
+      "id": "qpdf-issue-141a",
+      "sourcePath": "qpdf/qtest/qpdf/issue-141a.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/issue-141a.pdf",
+      "sha256": "f8f3e84b5d972d1c2e60f990d3b1750f44e7d89349ab4425bcf405556c0cd7ac",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-issue-143",
+      "sourcePath": "qpdf/qtest/qpdf/issue-143.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/issue-143.pdf",
+      "sha256": "4bb02358331734103f4386101c4c0c33fe0ef66b68394dfa1f0fc2124693da32",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-issue-147",
+      "sourcePath": "qpdf/qtest/qpdf/issue-147.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/issue-147.pdf",
+      "sha256": "f0193ccdceca0c7239b7e537878992233e26f1fd843b4a749bfd9334f96cb98f",
+      "profiles": [
+        "full"
+      ],
+      "enabled": true,
+      "expectedOpenResult": "any",
+      "password": null
+    },
+    {
+      "id": "qpdf-issue-263",
+      "sourcePath": "qpdf/qtest/qpdf/issue-263.pdf",
+      "sourceRepository": "qpdf/qpdf",
+      "sourceCommit": "40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0",
+      "localPath": "qpdf/issue-263.pdf",
+      "sha256": "eb7b86a9d99f9d4c9466fa577b5f2e1555c33215eb8a6a0b73e0393510bf44ea",
       "profiles": [
         "full"
       ],

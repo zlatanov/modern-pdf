@@ -2,7 +2,7 @@
 
 This repository uses a manifest-driven corpus harness under `tests\ModernPDF.CorpusTests`.
 
-Current manifest footprint: **82 enabled full fixtures** and **2 smoke fixtures**.
+Current manifest footprint: **103 enabled full fixtures** and **2 smoke fixtures**.
 
 ## Current external sources
 
@@ -11,6 +11,8 @@ Current manifest footprint: **82 enabled full fixtures** and **2 smoke fixtures*
 | `qpdf/qpdf` | `40801e523e1fb0ccbc1a09c4d573a3e92d2b46c0` | Apache-2.0 | Real malformed/edge-case PDFs for parser and open-path hardening |
 | `apache/pdfbox` | `aba136447b22287e875496abbad3a14b5005459f` | Apache-2.0 | Parser/extraction-oriented test fixtures from a mature Java PDF stack |
 | `mozilla/pdf.js` | `f54f4b606d900d0f556492fda1a91437e87611ef` | Apache-2.0 | Broad browser-focused PDF rendering/parser fixtures and annotation cases |
+
+In addition to corpus fixtures, `tests\ModernPDF.CorpusTests\PdfJsApiSpecAdaptedTests.cs` contains adapted loading/error scenarios based on `pdf.js` `test/unit/api_spec.js` at the same pinned commit.
 
 ## Fixture policy
 
