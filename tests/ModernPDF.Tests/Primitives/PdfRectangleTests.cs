@@ -33,5 +33,28 @@ public sealed class PdfRectangleTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => _ = new PdfRectangle(10, 0, 5, 1));
         Assert.Throws<ArgumentOutOfRangeException>(() => _ = new PdfRectangle(0, 10, 5, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _ = new PdfRectangle(double.NaN, 0, 1, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _ = new PdfRectangle(0, 0, double.PositiveInfinity, 1));
+    }
+
+    [Fact]
+    public void FromDimensionsRejectsNegativeAndNonFiniteValues()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => _ = PdfRectangle.FromDimensions(0, 0, -1, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _ = PdfRectangle.FromDimensions(0, 0, 1, -1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => _ = PdfRectangle.FromDimensions(0, 0, double.NaN, 1));
+    }
+
+    [Fact]
+    public void EqualityAndInequalityOperatorsCompareEdges()
+    {
+        PdfRectangle first = new(0, 0, 1, 1);
+        PdfRectangle second = new(0, 0, 1, 1);
+        PdfRectangle third = new(0, 0, 2, 1);
+
+        Assert.True(first == second);
+        Assert.False(first != second);
+        Assert.True(first != third);
+        Assert.Equal(first.GetHashCode(), second.GetHashCode());
     }
 }

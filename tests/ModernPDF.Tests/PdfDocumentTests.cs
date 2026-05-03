@@ -289,6 +289,37 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void ExtractTextReturnsEmptyStringWhenPageHasNoContents()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(contents: null);
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        Assert.Equal(string.Empty, document.ExtractText());
+    }
+
+    [Fact]
+    public void ExtractTextThrowsWhenContentsIsNotReferenceOrArray()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(new PdfStringObject("invalid"));
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        Assert.Throws<PdfFormatException>(() => document.ExtractText());
+    }
+
+    [Fact]
+    public void ExtractTextThrowsWhenContentsArrayContainsNonReference()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(
+            new PdfArrayObject(
+            [
+                new PdfStringObject("invalid"),
+            ]));
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        Assert.Throws<PdfFormatException>(() => document.ExtractText());
+    }
+
+    [Fact]
     public void ReplacePageTextUpdatesExtractedText()
     {
         PdfDocument document = PdfDocument.Create();
@@ -365,6 +396,52 @@ public sealed class PdfDocumentTests
         Assert.Throws<ArgumentException>(() => document.RedactText(""));
     }
 
+    [Fact]
+    public void RedactTextReturnsZeroWhenPageHasNoContents()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(contents: null);
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        int count = document.RedactText("secret");
+
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public void RedactTextThrowsWhenContentsIsNotReferenceOrArray()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(new PdfStringObject("invalid"));
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        Assert.Throws<NotSupportedException>(() => document.RedactText("invalid"));
+    }
+
+    [Fact]
+    public void RedactTextThrowsWhenContentsArrayContainsNonReference()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(
+            new PdfArrayObject(
+            [
+                new PdfStringObject("invalid"),
+            ]));
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        Assert.Throws<NotSupportedException>(() => document.RedactText("invalid"));
+    }
+
+    [Fact]
+    public void ReplacePageContentsThrowsWhenContentsIsNotReference()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(
+            new PdfArrayObject(
+            [
+                new PdfReferenceObject(new PdfObjectId(4, 0)),
+            ]));
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        Assert.Throws<NotSupportedException>(() => document.ReplacePageContents(0, "BT (X) Tj ET"));
+    }
+
     private static byte[] CreateSinglePageTextPdf(string contentStream)
     {
         PdfDictionaryObject catalog = new(
@@ -421,6 +498,68 @@ public sealed class PdfDocumentTests
             trailer);
 
         return PdfFileWriter.Write(file);
+    }
+
+    private static byte[] CreateSinglePagePdfWithCustomContents(PdfObject? contents)
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry(
+                "Kids",
+                new PdfArrayObject(
+                [
+                    new PdfReferenceObject(new PdfObjectId(3, 0)),
+                ])),
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(1, isInteger: true)),
+        ]);
+
+        List<PdfDictionaryEntry> pageEntries =
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Page")),
+            new PdfDictionaryEntry("Parent", new PdfReferenceObject(new PdfObjectId(2, 0))),
+            new PdfDictionaryEntry(
+                "MediaBox",
+                new PdfArrayObject(
+                [
+                    new PdfNumberObject(0, isInteger: true),
+                    new PdfNumberObject(0, isInteger: true),
+                    new PdfNumberObject(500, isInteger: true),
+                    new PdfNumberObject(700, isInteger: true),
+                ])),
+        ];
+
+        if (contents is not null)
+        {
+            pageEntries.Add(new PdfDictionaryEntry("Contents", contents));
+        }
+
+        PdfDictionaryObject page = new(pageEntries);
+
+        List<PdfIndirectObject> objects =
+        [
+            new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+            new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+            new PdfIndirectObject(new PdfObjectId(3, 0), page),
+        ];
+
+        objects.Add(
+            new PdfIndirectObject(
+                new PdfObjectId(4, 0),
+                new PdfStreamObject(new PdfDictionaryObject([]), Encoding.ASCII.GetBytes("BT (X) Tj ET"))));
+
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+        ]);
+
+        return PdfFileWriter.Write(new PdfFile("2.0", objects, trailer));
     }
 
     private static byte[] CreateEncryptedPdf()
