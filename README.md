@@ -30,6 +30,21 @@ dotnet build ModernPDF.slnx
 dotnet test ModernPDF.slnx
 ```
 
+## Samples
+
+The repository includes a runnable sample console app at `samples\ModernPDF.Samples` built with `System.CommandLine`.
+
+```powershell
+# list commands and options
+dotnet run --project samples\ModernPDF.Samples -- --help
+
+# run individual samples
+dotnet run --project samples\ModernPDF.Samples -- create
+dotnet run --project samples\ModernPDF.Samples -- extract --output .\artifacts\samples
+dotnet run --project samples\ModernPDF.Samples -- redact --output .\artifacts\samples
+dotnet run --project samples\ModernPDF.Samples -- secure --output .\artifacts\samples
+```
+
 ## Corpus tests
 
 Corpus tests are opt-in and use fixtures downloaded from pinned external source commits with SHA-256 verification.
