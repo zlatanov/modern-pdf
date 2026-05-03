@@ -1,0 +1,274 @@
+using System.Globalization;
+using System.Text;
+using ModernPDF.Format.Objects;
+using ModernPDF.Primitives;
+
+namespace ModernPDF.Format.Files;
+
+internal static class PdfFileReader
+{
+    public static PdfFile Read(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length == 0)
+        {
+            throw new PdfFormatException("PDF data cannot be empty.");
+        }
+
+        string text = Encoding.ASCII.GetString(bytes);
+        string version = ParseVersion(text);
+        int startXrefOffset = ParseStartXrefOffset(text);
+
+        Dictionary<int, XrefEntry> xrefEntries = ParseCrossReferenceEntries(bytes, startXrefOffset);
+        PdfDictionaryObject trailer = ParseTrailer(bytes, startXrefOffset);
+        List<PdfIndirectObject> objects = ParseIndirectObjects(bytes, xrefEntries);
+
+        return new PdfFile(version, objects, trailer);
+    }
+
+    private static string ParseVersion(string text)
+    {
+        const string prefix = "%PDF-";
+        if (!text.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            throw new PdfFormatException("Missing PDF header.");
+        }
+
+        int lineEnd = text.IndexOf('\n');
+        if (lineEnd < 0)
+        {
+            throw new PdfFormatException("Invalid PDF header line.");
+        }
+
+        return text.Substring(prefix.Length, lineEnd - prefix.Length).Trim();
+    }
+
+    private static int ParseStartXrefOffset(string text)
+    {
+        const string marker = "startxref";
+        int markerIndex = text.LastIndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0)
+        {
+            throw new PdfFormatException("Missing startxref marker.");
+        }
+
+        int cursor = markerIndex + marker.Length;
+        while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+        {
+            cursor++;
+        }
+
+        int numberStart = cursor;
+        while (cursor < text.Length && char.IsAsciiDigit(text[cursor]))
+        {
+            cursor++;
+        }
+
+        if (numberStart == cursor)
+        {
+            throw new PdfFormatException("Could not parse startxref offset.");
+        }
+
+        string numberText = text[numberStart..cursor];
+        if (!int.TryParse(numberText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int startXrefOffset))
+        {
+            throw new PdfFormatException("Invalid startxref numeric value.");
+        }
+
+        return startXrefOffset;
+    }
+
+    private static Dictionary<int, XrefEntry> ParseCrossReferenceEntries(ReadOnlySpan<byte> bytes, int startXrefOffset)
+    {
+        string tail = Encoding.ASCII.GetString(bytes[startXrefOffset..]);
+        int cursor = 0;
+
+        if (!tail.StartsWith("xref", StringComparison.Ordinal))
+        {
+            throw new PdfFormatException("Only classic xref tables are supported in the current reader slice.");
+        }
+
+        cursor += "xref".Length;
+        SkipWhitespace(tail, ref cursor);
+
+        Dictionary<int, XrefEntry> entries = [];
+
+        while (cursor < tail.Length && !tail.AsSpan(cursor).StartsWith("trailer".AsSpan(), StringComparison.Ordinal))
+        {
+            int firstObject = ReadInteger(tail, ref cursor);
+            SkipWhitespace(tail, ref cursor);
+            int count = ReadInteger(tail, ref cursor);
+            SkipWhitespace(tail, ref cursor);
+
+            for (int index = 0; index < count; index++)
+            {
+                int offset = ReadFixedWidthInteger(tail, ref cursor, 10);
+                SkipSpaces(tail, ref cursor);
+                int generation = ReadFixedWidthInteger(tail, ref cursor, 5);
+                SkipSpaces(tail, ref cursor);
+
+                if (cursor >= tail.Length)
+                {
+                    throw new PdfFormatException("Unexpected end of xref entry.");
+                }
+
+                char inUse = tail[cursor];
+                cursor++;
+                SkipLineEnding(tail, ref cursor);
+
+                if (inUse == 'n')
+                {
+                    int objectNumber = firstObject + index;
+                    entries[objectNumber] = new XrefEntry(offset, generation);
+                }
+            }
+
+            SkipWhitespace(tail, ref cursor);
+        }
+
+        return entries;
+    }
+
+    private static PdfDictionaryObject ParseTrailer(ReadOnlySpan<byte> bytes, int startXrefOffset)
+    {
+        string tail = Encoding.ASCII.GetString(bytes[startXrefOffset..]);
+        int trailerIndex = tail.IndexOf("trailer", StringComparison.Ordinal);
+        if (trailerIndex < 0)
+        {
+            throw new PdfFormatException("Missing trailer section.");
+        }
+
+        int dictionaryStart = tail.IndexOf("<<", trailerIndex, StringComparison.Ordinal);
+        if (dictionaryStart < 0)
+        {
+            throw new PdfFormatException("Trailer dictionary start was not found.");
+        }
+
+        int dictionaryEnd = FindMatchingDictionaryEnd(tail, dictionaryStart);
+        string dictionaryText = tail.Substring(dictionaryStart, dictionaryEnd - dictionaryStart);
+
+        PdfObject parsed = PdfObjectParser.ParseAscii(dictionaryText);
+        return parsed as PdfDictionaryObject
+            ?? throw new PdfFormatException("Trailer did not parse as a dictionary.");
+    }
+
+    private static int FindMatchingDictionaryEnd(string text, int dictionaryStart)
+    {
+        int depth = 0;
+
+        for (int index = dictionaryStart; index < text.Length - 1; index++)
+        {
+            if (text[index] == '<' && text[index + 1] == '<')
+            {
+                depth++;
+                index++;
+                continue;
+            }
+
+            if (text[index] == '>' && text[index + 1] == '>')
+            {
+                depth--;
+                index++;
+                if (depth == 0)
+                {
+                    return index + 1;
+                }
+            }
+        }
+
+        throw new PdfFormatException("Could not find dictionary terminator.");
+    }
+
+    private static List<PdfIndirectObject> ParseIndirectObjects(ReadOnlySpan<byte> bytes, IReadOnlyDictionary<int, XrefEntry> xrefEntries)
+    {
+        List<PdfIndirectObject> objects = [];
+
+        foreach ((int objectNumber, XrefEntry entry) in xrefEntries.OrderBy(pair => pair.Key))
+        {
+            if (entry.Offset < 0 || entry.Offset >= bytes.Length)
+            {
+                throw new PdfFormatException($"Invalid xref offset for object {objectNumber}.");
+            }
+
+            string objectTail = Encoding.ASCII.GetString(bytes[entry.Offset..]);
+            string header = $"{objectNumber} {entry.Generation} obj";
+            if (!objectTail.StartsWith(header, StringComparison.Ordinal))
+            {
+                throw new PdfFormatException($"Object header mismatch for object {objectNumber}.");
+            }
+
+            int objectBodyStart = header.Length;
+            while (objectBodyStart < objectTail.Length && char.IsWhiteSpace(objectTail[objectBodyStart]))
+            {
+                objectBodyStart++;
+            }
+
+            int endObject = objectTail.IndexOf("endobj", objectBodyStart, StringComparison.Ordinal);
+            if (endObject < 0)
+            {
+                throw new PdfFormatException($"Missing endobj marker for object {objectNumber}.");
+            }
+
+            string objectBody = objectTail.Substring(objectBodyStart, endObject - objectBodyStart).Trim();
+            PdfObject parsedObject = PdfObjectParser.ParseAscii(objectBody);
+            PdfObjectId id = new(objectNumber, entry.Generation);
+            objects.Add(new PdfIndirectObject(id, parsedObject));
+        }
+
+        return objects;
+    }
+
+    private static int ReadInteger(string text, ref int cursor)
+    {
+        int start = cursor;
+        while (cursor < text.Length && char.IsAsciiDigit(text[cursor]))
+        {
+            cursor++;
+        }
+
+        if (start == cursor)
+        {
+            throw new PdfFormatException("Expected integer while parsing xref section.");
+        }
+
+        string value = text[start..cursor];
+        return int.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
+    }
+
+    private static int ReadFixedWidthInteger(string text, ref int cursor, int width)
+    {
+        if (cursor + width > text.Length)
+        {
+            throw new PdfFormatException("Unexpected end while parsing fixed-width integer.");
+        }
+
+        string value = text.Substring(cursor, width);
+        cursor += width;
+        return int.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
+    }
+
+    private static void SkipWhitespace(string text, ref int cursor)
+    {
+        while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+        {
+            cursor++;
+        }
+    }
+
+    private static void SkipSpaces(string text, ref int cursor)
+    {
+        while (cursor < text.Length && text[cursor] == ' ')
+        {
+            cursor++;
+        }
+    }
+
+    private static void SkipLineEnding(string text, ref int cursor)
+    {
+        while (cursor < text.Length && (text[cursor] == '\r' || text[cursor] == '\n' || text[cursor] == ' '))
+        {
+            cursor++;
+        }
+    }
+
+    private readonly record struct XrefEntry(int Offset, int Generation);
+}
