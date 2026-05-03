@@ -16,12 +16,14 @@ internal static class PdfDocumentModelBuilder
         PdfReferenceObject rootReference = RequireTrailerReference(file.Trailer, "Root");
         PdfDictionaryObject catalog = RequireDictionary(objectMap, rootReference.ObjectId, "catalog");
         PdfReferenceObject pagesReference = RequireDictionaryReference(catalog, "Pages");
+        PdfObjectId? metadataObjectId = TryGetOptionalReference(catalog, "Metadata")?.ObjectId;
+        PdfObjectId? infoObjectId = TryGetOptionalReference(file.Trailer, "Info")?.ObjectId;
 
         List<PdfPageModel> pages = [];
         HashSet<PdfObjectId> visited = [];
-        CollectPages(objectMap, pagesReference.ObjectId, pages, visited);
+        CollectPages(objectMap, pagesReference.ObjectId, pages, visited, inheritedResources: null);
 
-        return new PdfDocumentModel(rootReference.ObjectId, pagesReference.ObjectId, pages);
+        return new PdfDocumentModel(rootReference.ObjectId, pagesReference.ObjectId, metadataObjectId, infoObjectId, pages);
     }
 
     private static Dictionary<PdfObjectId, PdfIndirectObject> BuildObjectMap(IEnumerable<PdfIndirectObject> objects)
@@ -68,7 +70,8 @@ internal static class PdfDocumentModelBuilder
         IReadOnlyDictionary<PdfObjectId, PdfIndirectObject> objectMap,
         PdfObjectId nodeId,
         List<PdfPageModel> pages,
-        HashSet<PdfObjectId> visited)
+        HashSet<PdfObjectId> visited,
+        PdfObject? inheritedResources)
     {
         if (!visited.Add(nodeId))
         {
@@ -77,10 +80,14 @@ internal static class PdfDocumentModelBuilder
 
         PdfDictionaryObject dictionary = RequireDictionary(objectMap, nodeId, "page-tree");
         string typeName = GetRequiredTypeName(dictionary);
+        PdfObject? effectiveResources = TryGetDictionaryEntry(dictionary, "Resources", out PdfObject? localResources)
+            ? localResources
+            : inheritedResources;
 
         if (string.Equals(typeName, "Page", StringComparison.Ordinal))
         {
-            pages.Add(new PdfPageModel(nodeId, ParseMediaBox(dictionary)));
+            PdfObject? contents = TryGetDictionaryEntry(dictionary, "Contents", out PdfObject? value) ? value : null;
+            pages.Add(new PdfPageModel(nodeId, ParseMediaBox(dictionary), effectiveResources, contents));
             visited.Remove(nodeId);
             return;
         }
@@ -103,10 +110,21 @@ internal static class PdfDocumentModelBuilder
                 throw new PdfFormatException("Page-tree '/Kids' entries must be references.");
             }
 
-            CollectPages(objectMap, kidReference.ObjectId, pages, visited);
+            CollectPages(objectMap, kidReference.ObjectId, pages, visited, effectiveResources);
         }
 
         visited.Remove(nodeId);
+    }
+
+    private static PdfReferenceObject? TryGetOptionalReference(PdfDictionaryObject dictionary, string key)
+    {
+        if (!TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
+        {
+            return null;
+        }
+
+        return value as PdfReferenceObject
+            ?? throw new PdfFormatException($"Dictionary entry '/{key}' must be a reference when present.");
     }
 
     private static string GetRequiredTypeName(PdfDictionaryObject dictionary)
