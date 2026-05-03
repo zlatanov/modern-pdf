@@ -126,6 +126,144 @@ public sealed class PdfStandardSecurityProcessorTests
         Assert.Equal("Hello", text.Value);
     }
 
+    [Fact]
+    public void EncryptAndDecryptHandlePrimitiveAndCompositeObjects()
+    {
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), new PdfDictionaryObject([new PdfDictionaryEntry("Type", new PdfNameObject("Catalog"))])),
+                new PdfIndirectObject(new PdfObjectId(3, 0), PdfNullObject.Instance),
+                new PdfIndirectObject(new PdfObjectId(4, 0), new PdfBooleanObject(true)),
+                new PdfIndirectObject(new PdfObjectId(5, 0), new PdfNumberObject(7, isInteger: true)),
+                new PdfIndirectObject(new PdfObjectId(6, 0), new PdfNameObject("N")),
+                new PdfIndirectObject(new PdfObjectId(7, 0), new PdfReferenceObject(new PdfObjectId(1, 0))),
+                new PdfIndirectObject(new PdfObjectId(8, 0), new PdfByteStringObject(Encoding.ASCII.GetBytes("ABC"))),
+                new PdfIndirectObject(new PdfObjectId(9, 0), new PdfArrayObject([new PdfNumberObject(1, isInteger: true), new PdfStringObject("X")])),
+                new PdfIndirectObject(new PdfObjectId(10, 0), new PdfDictionaryObject([new PdfDictionaryEntry("K", new PdfStringObject("V"))])),
+                new PdfIndirectObject(new PdfObjectId(11, 0), new PdfStreamObject(new PdfDictionaryObject([]), Encoding.ASCII.GetBytes("DATA"))),
+            ],
+            new PdfDictionaryObject([new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0)))]));
+
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(file, new PdfSecurityOptions { UserPassword = "pw" });
+        PdfFile decrypted = PdfStandardSecurityProcessor.Decrypt(encrypted, "pw");
+
+        Assert.IsType<PdfNullObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 3).Value);
+        Assert.True(Assert.IsType<PdfBooleanObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 4).Value).Value);
+        Assert.Equal(7, Assert.IsType<PdfNumberObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 5).Value).Value);
+        Assert.Equal("N", Assert.IsType<PdfNameObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 6).Value).Value);
+        Assert.Equal(1, Assert.IsType<PdfReferenceObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 7).Value).ObjectId.ObjectNumber);
+        Assert.Equal("ABC", Assert.IsType<PdfStringObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 8).Value).Value);
+        Assert.Equal("DATA", Encoding.ASCII.GetString(Assert.IsType<PdfStreamObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 11).Value).Data.Span));
+    }
+
+    [Fact]
+    public void EncryptThrowsForUnsupportedObjectType()
+    {
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), new PdfDictionaryObject([new PdfDictionaryEntry("Type", new PdfNameObject("Catalog"))])),
+                new PdfIndirectObject(new PdfObjectId(3, 0), new UnsupportedPdfObject()),
+            ],
+            new PdfDictionaryObject([new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0)))]));
+
+        Assert.Throws<PdfFormatException>(() => PdfStandardSecurityProcessor.Encrypt(file, new PdfSecurityOptions { UserPassword = "pw" }));
+    }
+
+    [Fact]
+    public void DecryptThrowsForUnsupportedObjectType()
+    {
+        PdfFile plain = CreatePlainFileWithStringObject("Hello");
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(plain, new PdfSecurityOptions { UserPassword = "pw" });
+        List<PdfIndirectObject> tamperedObjects = encrypted.Objects
+            .Select(item => item.ObjectId.ObjectNumber == 3
+                ? new PdfIndirectObject(item.ObjectId, new UnsupportedPdfObject())
+                : item)
+            .ToList();
+        PdfFile tampered = new(encrypted.Version, tamperedObjects, encrypted.Trailer);
+
+        Assert.Throws<PdfFormatException>(() => PdfStandardSecurityProcessor.Decrypt(tampered, "pw"));
+    }
+
+    [Fact]
+    public void DecryptHandlesLiteralStringObjectsInEncryptedBody()
+    {
+        PdfFile plain = CreatePlainFileWithStringObject("Hello");
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(plain, new PdfSecurityOptions { UserPassword = "pw" });
+        List<PdfIndirectObject> tamperedObjects = encrypted.Objects
+            .Select(item => item.ObjectId.ObjectNumber == 3
+                ? new PdfIndirectObject(item.ObjectId, new PdfStringObject("ABC"))
+                : item)
+            .ToList();
+        PdfFile tampered = new(encrypted.Version, tamperedObjects, encrypted.Trailer);
+
+        PdfFile decrypted = PdfStandardSecurityProcessor.Decrypt(tampered, "pw");
+
+        PdfStringObject value = Assert.IsType<PdfStringObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 3).Value);
+        Assert.NotNull(value.Value);
+    }
+
+    [Fact]
+    public void DecryptThrowsWhenTrailerIdArrayIsEmpty()
+    {
+        PdfDictionaryObject encrypt = CreateEncryptDictionary(filter: "Standard", v: 1, r: 2, length: 40);
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+            new PdfDictionaryEntry("Encrypt", encrypt),
+            new PdfDictionaryEntry("ID", new PdfArrayObject([])),
+        ]);
+        PdfFile file = new(
+            "2.0",
+            [new PdfIndirectObject(new PdfObjectId(1, 0), new PdfDictionaryObject([new PdfDictionaryEntry("Type", new PdfNameObject("Catalog"))]))],
+            trailer);
+
+        Assert.Throws<PdfFormatException>(() => PdfStandardSecurityProcessor.Decrypt(file, "pw"));
+    }
+
+    [Fact]
+    public void DecryptThrowsWhenOwnerEntryIsNotString()
+    {
+        PdfDictionaryObject encrypt = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("V", new PdfNumberObject(1, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(40, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfNumberObject(1, isInteger: true)),
+            new PdfDictionaryEntry("U", new PdfByteStringObject(new byte[32])),
+        ]);
+        PdfFile file = CreateFileWithEncrypt(encrypt, []);
+
+        Assert.Throws<PdfFormatException>(() => PdfStandardSecurityProcessor.Decrypt(file, "pw"));
+    }
+
+    [Fact]
+    public void TryReadEncryptionInfoDefaultsLengthWhenOptionalEntriesAreInvalid()
+    {
+        PdfDictionaryObject encrypt = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("SubFilter", new PdfNumberObject(7, isInteger: true)),
+            new PdfDictionaryEntry("V", new PdfNumberObject(1, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject((double)int.MaxValue + 1, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfByteStringObject(new byte[32])),
+            new PdfDictionaryEntry("U", new PdfByteStringObject(new byte[32])),
+        ]);
+        PdfFile file = CreateFileWithEncrypt(encrypt, []);
+
+        bool found = PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out PdfEncryptionInfo? info);
+
+        Assert.True(found);
+        Assert.NotNull(info);
+        Assert.Equal(40, info.KeyLengthBits);
+        Assert.True(PdfStandardSecurityProcessor.IsSupportedStandardHandler(file));
+    }
+
     private static PdfFile CreatePlainFile()
     {
         PdfDictionaryObject catalog = new(
@@ -209,5 +347,9 @@ public sealed class PdfStandardSecurityProcessorTests
         ]);
 
         return new PdfFile("2.0", objects, trailer);
+    }
+
+    private sealed class UnsupportedPdfObject : PdfObject
+    {
     }
 }

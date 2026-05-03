@@ -128,6 +128,37 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void OpenPathOverloadValidatesArgumentsAndAcceptsPassword()
+    {
+        Assert.Throws<ArgumentException>(() => PdfDocument.Open(" "));
+        Assert.Throws<ArgumentException>(() => PdfDocument.Open(" ", "password"));
+
+        PdfDocument source = PdfDocument.Create();
+        source.AddTextPage("path-open");
+        byte[] encryptedBytes = source.Save(new PdfSaveOptions
+        {
+            Security = new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+            },
+        });
+
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, encryptedBytes);
+            Assert.Throws<ArgumentNullException>(() => PdfDocument.Open(path, null!));
+
+            PdfDocument reopened = PdfDocument.Open(path, "pw");
+            Assert.Equal("path-open", reopened.ExtractText());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void OpenThrowsForUnsupportedEncryptedProfile()
     {
         byte[] encryptedPdfBytes = CreateEncryptedPdf();
@@ -165,6 +196,34 @@ public sealed class PdfDocumentTests
         Assert.Equal("Standard", info.Filter);
         Assert.Equal(4, info.AlgorithmVersion);
         Assert.Equal(128, info.KeyLengthBits);
+    }
+
+    [Fact]
+    public void InspectEncryptionFromPathReturnsEncryptionInfo()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("encrypted");
+
+        string path = Path.GetTempFileName();
+        try
+        {
+            byte[] bytes = document.Save(new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                },
+            });
+            File.WriteAllBytes(path, bytes);
+
+            PdfEncryptionInfo? info = PdfDocument.InspectEncryption(path);
+            Assert.NotNull(info);
+            Assert.Equal("Standard", info.Filter);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
@@ -352,6 +411,27 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void SetInfoProducerUpdatesExistingInfoDictionary()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.SetInfoProducer("First producer");
+
+        document.SetInfoProducer("Second producer");
+
+        Assert.Equal("Second producer", document.GetInfoProducer());
+    }
+
+    [Fact]
+    public void GetInfoProducerReturnsNullWhenMissingOrNotAString()
+    {
+        PdfDocument empty = PdfDocument.Create();
+        Assert.Null(empty.GetInfoProducer());
+
+        PdfDocument withoutProducer = PdfDocument.Open(CreatePdfWithInfoWithoutProducer());
+        Assert.Null(withoutProducer.GetInfoProducer());
+    }
+
+    [Fact]
     public void RedactTextRemovesOccurrencesFromExtractedText()
     {
         PdfDocument document = PdfDocument.Create();
@@ -386,6 +466,19 @@ public sealed class PdfDocumentTests
 
         Assert.Equal(0, count);
         Assert.Equal("alpha", document.ExtractText());
+    }
+
+    [Fact]
+    public void ExtractTextSupportsContentsArrayOfReferences()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(
+            new PdfArrayObject(
+            [
+                new PdfReferenceObject(new PdfObjectId(4, 0)),
+            ]));
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        Assert.Equal("X", document.ExtractText());
     }
 
     [Fact]
@@ -430,6 +523,22 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void RedactTextSupportsContentsArrayOfReferences()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(
+            new PdfArrayObject(
+            [
+                new PdfReferenceObject(new PdfObjectId(4, 0)),
+            ]));
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        int count = document.RedactText("X", "Y");
+
+        Assert.Equal(1, count);
+        Assert.Equal("Y", document.ExtractText());
+    }
+
+    [Fact]
     public void ReplacePageContentsThrowsWhenContentsIsNotReference()
     {
         byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(
@@ -440,6 +549,43 @@ public sealed class PdfDocumentTests
         PdfDocument document = PdfDocument.Open(pdfBytes);
 
         Assert.Throws<NotSupportedException>(() => document.ReplacePageContents(0, "BT (X) Tj ET"));
+    }
+
+    [Fact]
+    public void ReplacePageTextRejectsInvalidTextOptions()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("initial");
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { FontSize = 0 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { X = double.NaN }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { Y = double.PositiveInfinity }));
+    }
+
+    [Fact]
+    public void SaveWithSecurityOptionsRejectsEmptyOwnerPasswordAndUnknownPermissionBits()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        Assert.Throws<ArgumentException>(
+            () => document.Save(new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    OwnerPassword = "",
+                },
+            }));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => document.Save(new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    Permissions = (PdfPermissions)256,
+                },
+            }));
     }
 
     private static byte[] CreateSinglePageTextPdf(string contentStream)
@@ -702,6 +848,44 @@ public sealed class PdfDocumentTests
                 new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
                 new PdfIndirectObject(new PdfObjectId(2, 0), pages),
                 new PdfIndirectObject(new PdfObjectId(3, 0), encryptDictionary),
+            ],
+            trailer);
+
+        return PdfFileWriter.Write(file);
+    }
+
+    private static byte[] CreatePdfWithInfoWithoutProducer()
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(0, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject info = new(
+        [
+            new PdfDictionaryEntry("Title", new PdfStringObject("No producer here")),
+        ]);
+
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+            new PdfDictionaryEntry("Info", new PdfReferenceObject(new PdfObjectId(3, 0))),
+        ]);
+
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+                new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+                new PdfIndirectObject(new PdfObjectId(3, 0), info),
             ],
             trailer);
 

@@ -21,6 +21,14 @@ public sealed class PdfFileReaderTests
     }
 
     [Fact]
+    public void ReadRejectsHeaderWithoutLineEnding()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("%PDF-2.0");
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
+    }
+
+    [Fact]
     public void ReadRejectsMissingStartXrefMarker()
     {
         byte[] bytes = System.Text.Encoding.ASCII.GetBytes("%PDF-2.0\n1 0 obj\n<<>>\nendobj\n");
@@ -56,6 +64,26 @@ public sealed class PdfFileReaderTests
     public void ReadRejectsMalformedXrefSubsectionHeader()
     {
         const string text = "%PDF-2.0\nxref\nX\ntrailer\n<< /Size 1 >>\nstartxref\n9\n%%EOF";
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(text);
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
+    }
+
+    [Fact]
+    public void ReadRejectsUnexpectedEndOfXrefEntry()
+    {
+        const string tail = "xref\n0 1\n0000000000 65535";
+        string text = BuildPdfWithTailOnlyAfterStartXref(tail);
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(text);
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
+    }
+
+    [Fact]
+    public void ReadRejectsTruncatedFixedWidthIntegerInXref()
+    {
+        const string tail = "xref\n0 1\n12345";
+        string text = BuildPdfWithTailOnlyAfterStartXref(tail);
         byte[] bytes = System.Text.Encoding.ASCII.GetBytes(text);
 
         Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
@@ -195,6 +223,17 @@ public sealed class PdfFileReaderTests
         Assert.Equal(5, length.Value);
     }
 
+    [Fact]
+    public void ReadParsesStreamObjectWithCarriageReturnLineFeedDelimiter()
+    {
+        byte[] bytes = CreateStreamPdfWithCrLfDelimiter();
+
+        PdfFile parsed = PdfFileReader.Read(bytes);
+
+        PdfStreamObject stream = Assert.IsType<PdfStreamObject>(parsed.Objects[0].Value);
+        Assert.Equal("DATA", System.Text.Encoding.ASCII.GetString(stream.Data.Span));
+    }
+
     private static PdfFile CreateMinimalFile()
     {
         PdfDictionaryObject catalog = new(
@@ -254,5 +293,38 @@ public sealed class PdfFileReaderTests
 
         string replaced = text.Remove(match.Index, 10).Insert(match.Index, replacementOffset);
         return System.Text.Encoding.ASCII.GetBytes(replaced);
+    }
+
+    private static byte[] CreateStreamPdfWithCrLfDelimiter()
+    {
+        const string prefix = "%PDF-2.0\n";
+        const string objectSection = "1 0 obj\n<< /Length 4 >>\nstream\r\nDATA\nendstream\nendobj\n";
+        int objectOffset = prefix.Length;
+        int xrefOffset = prefix.Length + objectSection.Length;
+        string xrefSection =
+            "xref\n0 2\n0000000000 65535 f \n"
+            + $"{objectOffset:D10} 00000 n \n"
+            + "trailer\n<< /Root 1 0 R /Size 2 >>\n"
+            + "startxref\n"
+            + $"{xrefOffset}\n"
+            + "%%EOF\n";
+
+        return System.Text.Encoding.ASCII.GetBytes(prefix + objectSection + xrefSection);
+    }
+
+    private static string BuildPdfWithTailOnlyAfterStartXref(string tail)
+    {
+        int offset = 0;
+        while (true)
+        {
+            string prefix = $"%PDF-2.0\nstartxref\n{offset}\n%%EOF\n";
+            int recalculatedOffset = System.Text.Encoding.ASCII.GetByteCount(prefix);
+            if (recalculatedOffset == offset)
+            {
+                return prefix + tail;
+            }
+
+            offset = recalculatedOffset;
+        }
     }
 }
