@@ -47,7 +47,7 @@ public sealed class PdfDocument
     public static PdfDocument Open(ReadOnlySpan<byte> data, string? password)
     {
         PdfFile file = PdfFileReader.Read(data);
-        if (TryGetDictionaryEntry(file.Trailer, "Encrypt", out _))
+        if (TryReadEncryptionInfo(file, out _))
         {
             if (string.IsNullOrEmpty(password))
             {
@@ -72,6 +72,24 @@ public sealed class PdfDocument
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(password);
         return Open(File.ReadAllBytes(path), password);
+    }
+
+    public static PdfEncryptionInfo? InspectEncryption(byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        return InspectEncryption(data.AsSpan());
+    }
+
+    public static PdfEncryptionInfo? InspectEncryption(ReadOnlySpan<byte> data)
+    {
+        PdfFile file = PdfFileReader.Read(data);
+        return TryReadEncryptionInfo(file, out PdfEncryptionInfo? info) ? info : null;
+    }
+
+    public static PdfEncryptionInfo? InspectEncryption(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return InspectEncryption(File.ReadAllBytes(path));
     }
 
     public string Version => _file.Version;
@@ -449,6 +467,79 @@ public sealed class PdfDocument
 
         value = null;
         return false;
+    }
+
+    private static bool TryReadEncryptionInfo(PdfFile file, out PdfEncryptionInfo? info)
+    {
+        info = null;
+
+        if (!TryGetDictionaryEntry(file.Trailer, "Encrypt", out PdfObject? encryptObject) || encryptObject is null)
+        {
+            return false;
+        }
+
+        PdfDictionaryObject encryptionDictionary = ResolveEncryptionDictionary(file, encryptObject);
+        string? filter = TryReadName(encryptionDictionary, "Filter");
+        string? subFilter = TryReadName(encryptionDictionary, "SubFilter");
+        int? algorithmVersion = TryReadInteger(encryptionDictionary, "V");
+        int? keyLengthBits = TryReadInteger(encryptionDictionary, "Length");
+
+        info = new PdfEncryptionInfo(filter, subFilter, algorithmVersion, keyLengthBits);
+        return true;
+    }
+
+    private static PdfDictionaryObject ResolveEncryptionDictionary(PdfFile file, PdfObject encryptObject)
+    {
+        if (encryptObject is PdfDictionaryObject dictionary)
+        {
+            return dictionary;
+        }
+
+        if (encryptObject is PdfReferenceObject reference)
+        {
+            foreach (PdfIndirectObject objectItem in file.Objects)
+            {
+                if (objectItem.ObjectId == reference.ObjectId)
+                {
+                    return objectItem.Value as PdfDictionaryObject
+                        ?? throw new PdfFormatException($"Encryption object {reference.ObjectId} is not a dictionary.");
+                }
+            }
+
+            throw new PdfFormatException($"Encryption object {reference.ObjectId} was not found.");
+        }
+
+        throw new PdfFormatException("Trailer /Encrypt entry must be a dictionary or reference.");
+    }
+
+    private static string? TryReadName(PdfDictionaryObject dictionary, string key)
+    {
+        if (!TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
+        {
+            return null;
+        }
+
+        return value is PdfNameObject nameObject ? nameObject.Value : null;
+    }
+
+    private static int? TryReadInteger(PdfDictionaryObject dictionary, string key)
+    {
+        if (!TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
+        {
+            return null;
+        }
+
+        if (value is not PdfNumberObject numberObject || !numberObject.IsInteger)
+        {
+            return null;
+        }
+
+        if (numberObject.Value < int.MinValue || numberObject.Value > int.MaxValue)
+        {
+            return null;
+        }
+
+        return Convert.ToInt32(numberObject.Value, CultureInfo.InvariantCulture);
     }
 
     private static IEnumerable<PdfObjectId> EnumerateContentStreamReferences(PdfObject? contents)

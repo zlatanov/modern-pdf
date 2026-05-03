@@ -117,6 +117,30 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void InspectEncryptionReturnsNullForUnencryptedPdf()
+    {
+        PdfDocument document = PdfDocument.Create();
+        byte[] bytes = document.Save();
+
+        PdfEncryptionInfo? info = PdfDocument.InspectEncryption(bytes);
+
+        Assert.Null(info);
+    }
+
+    [Fact]
+    public void InspectEncryptionReturnsBasicDictionaryDetails()
+    {
+        byte[] encryptedPdfBytes = CreateEncryptedPdf();
+
+        PdfEncryptionInfo? info = PdfDocument.InspectEncryption(encryptedPdfBytes);
+
+        Assert.NotNull(info);
+        Assert.Equal("Standard", info.Filter);
+        Assert.Equal(4, info.AlgorithmVersion);
+        Assert.Equal(128, info.KeyLengthBits);
+    }
+
+    [Fact]
     public void AddPageIncreasesPageCountAndRoundTrips()
     {
         PdfDocument document = PdfDocument.Create();
@@ -359,6 +383,7 @@ public sealed class PdfDocumentTests
         [
             new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
             new PdfDictionaryEntry("V", new PdfNumberObject(4, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(128, isInteger: true)),
         ]);
 
         PdfDictionaryObject trailer = new(
