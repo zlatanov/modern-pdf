@@ -1,2 +1,8 @@
 <Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ModernPDF/ModernPDF.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ModernPDF.Tests/ModernPDF.Tests.csproj" />
+  </Folder>
 </Solution>
