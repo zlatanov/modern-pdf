@@ -177,6 +177,51 @@ public sealed class PdfDocumentTests
         Assert.Equal("ModernPDF Unit Test", reopened.GetInfoProducer());
     }
 
+    [Fact]
+    public void RedactTextRemovesOccurrencesFromExtractedText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("secret token secret");
+
+        int count = document.RedactText("secret");
+
+        Assert.Equal(2, count);
+        Assert.Equal(" token ", document.ExtractText());
+    }
+
+    [Fact]
+    public void RedactTextPersistsThroughSaveAndOpen()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("hello world");
+        document.RedactText("world", "[REDACTED]");
+
+        byte[] bytes = document.Save();
+        PdfDocument reopened = PdfDocument.Open(bytes);
+
+        Assert.Equal("hello [REDACTED]", reopened.ExtractText());
+    }
+
+    [Fact]
+    public void RedactTextReturnsZeroWhenTargetIsMissing()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("alpha");
+
+        int count = document.RedactText("beta");
+
+        Assert.Equal(0, count);
+        Assert.Equal("alpha", document.ExtractText());
+    }
+
+    [Fact]
+    public void RedactTextRejectsEmptyTarget()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        Assert.Throws<ArgumentException>(() => document.RedactText(""));
+    }
+
     private static byte[] CreateSinglePageTextPdf(string contentStream)
     {
         PdfDictionaryObject catalog = new(

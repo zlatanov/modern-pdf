@@ -181,6 +181,62 @@ public sealed class PdfDocument
         return producerObject is PdfStringObject producer ? producer.Value : null;
     }
 
+    public int RedactText(string target, string replacement = "")
+    {
+        if (string.IsNullOrEmpty(target))
+        {
+            throw new ArgumentException("Redaction target cannot be null or empty.", nameof(target));
+        }
+
+        ArgumentNullException.ThrowIfNull(replacement);
+
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        HashSet<PdfObjectId> processedStreamIds = [];
+        HashSet<PdfObjectId> changedStreamIds = [];
+        int totalRedactions = 0;
+
+        foreach (PdfPageModel page in _model.Pages)
+        {
+            foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
+            {
+                if (!processedStreamIds.Add(streamId))
+                {
+                    continue;
+                }
+
+                PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
+                string content = System.Text.Encoding.ASCII.GetString(stream.Data.Span);
+                int replacements = CountOccurrences(content, target);
+                if (replacements == 0)
+                {
+                    continue;
+                }
+
+                string redactedContent = content.Replace(target, replacement, StringComparison.Ordinal);
+                PdfStreamObject updated = new(stream.Dictionary, System.Text.Encoding.ASCII.GetBytes(redactedContent));
+                ReplaceObject(objects, streamId, updated);
+                changedStreamIds.Add(streamId);
+
+                totalRedactions += replacements;
+            }
+        }
+
+        if (totalRedactions == 0)
+        {
+            return 0;
+        }
+
+        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _model = PdfDocumentModelBuilder.Build(_file);
+
+        foreach (PdfObjectId streamId in changedStreamIds)
+        {
+            _model.Mutations.MarkDirty(streamId);
+        }
+
+        return totalRedactions;
+    }
+
     private int AddPageCore(PdfPageOptions pageOptions, string? text, PdfTextOptions? textOptions)
     {
         ValidatePageOptions(pageOptions);
@@ -358,6 +414,57 @@ public sealed class PdfDocument
 
         value = null;
         return false;
+    }
+
+    private static IEnumerable<PdfObjectId> EnumerateContentStreamReferences(PdfObject? contents)
+    {
+        if (contents is null)
+        {
+            yield break;
+        }
+
+        if (contents is PdfReferenceObject reference)
+        {
+            yield return reference.ObjectId;
+            yield break;
+        }
+
+        if (contents is PdfArrayObject array)
+        {
+            foreach (PdfObject item in array.Items)
+            {
+                if (item is not PdfReferenceObject itemReference)
+                {
+                    throw new NotSupportedException("Page /Contents arrays must contain references.");
+                }
+
+                yield return itemReference.ObjectId;
+            }
+
+            yield break;
+        }
+
+        throw new NotSupportedException("Page /Contents must be a reference or reference array.");
+    }
+
+    private static int CountOccurrences(string input, string target)
+    {
+        int count = 0;
+        int index = 0;
+
+        while (index < input.Length)
+        {
+            int found = input.IndexOf(target, index, StringComparison.Ordinal);
+            if (found < 0)
+            {
+                break;
+            }
+
+            count++;
+            index = found + target.Length;
+        }
+
+        return count;
     }
 
     private static int GetNextObjectNumber(IReadOnlyList<PdfIndirectObject> objects)
