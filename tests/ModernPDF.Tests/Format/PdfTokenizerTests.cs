@@ -1,4 +1,3 @@
-using System.Text;
 using ModernPDF.Format;
 
 namespace ModernPDF.Tests.Format;
@@ -6,79 +5,111 @@ namespace ModernPDF.Tests.Format;
 public sealed class PdfTokenizerTests
 {
     [Fact]
-    public void TokenizeHandlesCommentsAndDictionaryTokens()
+    public void TokenizeReturnsEmptyForWhitespaceAndComments()
     {
-        byte[] data = Encoding.ASCII.GetBytes("% Comment\n<< /Type /Example /Count 2 >>");
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(" \r\n\t%comment\n%more\n ");
 
-        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(data);
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(bytes);
 
-        Assert.Collection(
-            tokens,
-            token => Assert.Equal(PdfTokenKind.StartDictionary, token.Kind),
-            token =>
-            {
-                Assert.Equal(PdfTokenKind.Name, token.Kind);
-                Assert.Equal("Type", token.Lexeme);
-            },
-            token =>
-            {
-                Assert.Equal(PdfTokenKind.Name, token.Kind);
-                Assert.Equal("Example", token.Lexeme);
-            },
-            token =>
-            {
-                Assert.Equal(PdfTokenKind.Name, token.Kind);
-                Assert.Equal("Count", token.Lexeme);
-            },
-            token =>
-            {
-                Assert.Equal(PdfTokenKind.Integer, token.Kind);
-                Assert.Equal("2", token.Lexeme);
-            },
-            token => Assert.Equal(PdfTokenKind.EndDictionary, token.Kind));
+        Assert.Empty(tokens);
     }
 
     [Fact]
-    public void TokenizeParsesEscapedLiteralString()
+    public void TokenizeReadsCoreLiteralTokens()
     {
-        byte[] data = Encoding.ASCII.GetBytes("(Hello \\(PDF\\))");
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("[ true false null 12 -4.5 /Name ]");
 
-        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(data);
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(bytes);
 
-        Assert.Single(tokens);
-        Assert.Equal(PdfTokenKind.String, tokens[0].Kind);
-        Assert.Equal("Hello (PDF)", tokens[0].Lexeme);
+        Assert.Equal(PdfTokenKind.StartArray, tokens[0].Kind);
+        Assert.Equal(PdfTokenKind.BooleanTrue, tokens[1].Kind);
+        Assert.Equal(PdfTokenKind.BooleanFalse, tokens[2].Kind);
+        Assert.Equal(PdfTokenKind.Null, tokens[3].Kind);
+        Assert.Equal(PdfTokenKind.Integer, tokens[4].Kind);
+        Assert.Equal("12", tokens[4].Lexeme);
+        Assert.Equal(PdfTokenKind.Real, tokens[5].Kind);
+        Assert.Equal("-4.5", tokens[5].Lexeme);
+        Assert.Equal(PdfTokenKind.Name, tokens[6].Kind);
+        Assert.Equal("Name", tokens[6].Lexeme);
+        Assert.Equal(PdfTokenKind.EndArray, tokens[7].Kind);
     }
 
     [Fact]
-    public void TokenizeParsesHexString()
+    public void TokenizeReadsLiteralStringEscapesAndNestedParens()
     {
-        byte[] data = Encoding.ASCII.GetBytes("<48656C6C6F>");
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("(A\\n\\r\\t\\b\\f\\(\\)\\\\(B))");
 
-        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(data);
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(bytes);
 
-        Assert.Single(tokens);
-        Assert.Equal(PdfTokenKind.HexString, tokens[0].Kind);
-        Assert.Equal("48656C6C6F", tokens[0].Lexeme);
+        PdfToken token = Assert.Single(tokens);
+        Assert.Equal(PdfTokenKind.String, token.Kind);
+        Assert.Equal("A\n\r\t\b\f()\\(B)", token.Lexeme);
     }
 
     [Fact]
-    public void TokenizePadsOddLengthHexString()
+    public void TokenizeReadsHexStringAndPadsOddNibble()
     {
-        byte[] data = Encoding.ASCII.GetBytes("<ABC>");
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("<4F A>");
 
-        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(data);
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(bytes);
 
-        Assert.Single(tokens);
-        Assert.Equal(PdfTokenKind.HexString, tokens[0].Kind);
-        Assert.Equal("ABC0", tokens[0].Lexeme);
+        PdfToken token = Assert.Single(tokens);
+        Assert.Equal(PdfTokenKind.HexString, token.Kind);
+        Assert.Equal("4FA0", token.Lexeme);
     }
 
     [Fact]
-    public void TokenizeThrowsForInvalidHexStringCharacter()
+    public void TokenizeReadsDictionaryTokens()
     {
-        byte[] data = Encoding.ASCII.GetBytes("<A?C>");
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("<< /Type /Page >>");
 
-        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(data));
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(bytes);
+
+        Assert.Equal(PdfTokenKind.StartDictionary, tokens[0].Kind);
+        Assert.Equal(PdfTokenKind.Name, tokens[1].Kind);
+        Assert.Equal("Type", tokens[1].Lexeme);
+        Assert.Equal(PdfTokenKind.Name, tokens[2].Kind);
+        Assert.Equal("Page", tokens[2].Lexeme);
+        Assert.Equal(PdfTokenKind.EndDictionary, tokens[3].Kind);
+    }
+
+    [Fact]
+    public void TokenizeThrowsForInvalidNumericToken()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("-");
+
+        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(bytes));
+    }
+
+    [Fact]
+    public void TokenizeThrowsForUnterminatedLiteralStringEscape()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("(A\\");
+
+        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(bytes));
+    }
+
+    [Fact]
+    public void TokenizeThrowsForUnterminatedHexString()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("<AB");
+
+        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(bytes));
+    }
+
+    [Fact]
+    public void TokenizeThrowsForInvalidHexCharacter()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("<AG>");
+
+        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(bytes));
+    }
+
+    [Fact]
+    public void TokenizeThrowsForUnexpectedGreaterThanToken()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(">");
+
+        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(bytes));
     }
 }

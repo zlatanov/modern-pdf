@@ -62,4 +62,22 @@ public sealed class PdfDiagnosticBagTests
         Assert.Throws<ArgumentException>(() => _ = new PdfDiagnostic(PdfDiagnosticSeverity.Warning, "PDF-W0002", ""));
         Assert.Throws<ArgumentOutOfRangeException>(() => _ = new PdfDiagnostic(PdfDiagnosticSeverity.Error, "PDF-E0002", "Message", -1));
     }
+
+    [Fact]
+    public void DiagnosticEqualsObjectReturnsFalseForDifferentRuntimeType()
+    {
+        PdfDiagnostic diagnostic = new(PdfDiagnosticSeverity.Info, "PDF-I0100", "Info");
+
+        Assert.False(diagnostic.Equals((object?)null));
+        Assert.False(diagnostic.Equals("not-a-diagnostic"));
+    }
+
+    [Fact]
+    public void EqualDiagnosticsProduceSameHashCode()
+    {
+        PdfDiagnostic left = new(PdfDiagnosticSeverity.Warning, "PDF-W0100", "Warn", 7);
+        PdfDiagnostic right = new(PdfDiagnosticSeverity.Warning, "PDF-W0100", "Warn", 7);
+
+        Assert.Equal(left.GetHashCode(), right.GetHashCode());
+    }
 }

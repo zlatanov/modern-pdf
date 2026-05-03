@@ -6,6 +6,18 @@ namespace ModernPDF.Tests.Format;
 public sealed class PdfObjectParserTests
 {
     [Fact]
+    public void ParseAsciiRejectsNullText()
+    {
+        Assert.Throws<ArgumentNullException>(() => PdfObjectParser.ParseAscii(null!));
+    }
+
+    [Fact]
+    public void ParseRejectsEmptyInput()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.Parse(ReadOnlySpan<byte>.Empty));
+    }
+
+    [Fact]
     public void ParseHandlesNestedDictionaryArrayAndReference()
     {
         const string input = "<< /Type /Example /Flags [ true false null ] /Ref 12 0 R /Message (Hello) >>";
@@ -59,5 +71,67 @@ public sealed class PdfObjectParserTests
     public void ParseThrowsForInvalidHexStringCharacter()
     {
         Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("<4G>"));
+    }
+
+    [Fact]
+    public void ParseThrowsForUnterminatedArray()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("[1 2 3"));
+    }
+
+    [Fact]
+    public void ParseThrowsForDictionaryKeyThatIsNotName()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("<< 1 /Type >>"));
+    }
+
+    [Fact]
+    public void ParseThrowsForUnterminatedDictionary()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("<< /Type /Page"));
+    }
+
+    [Fact]
+    public void ParseThrowsForUnsupportedKeywordToken()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("obj"));
+    }
+
+    [Fact]
+    public void ParseThrowsForUnexpectedToken()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("]"));
+    }
+
+    [Fact]
+    public void ParseThrowsForInvalidObjectNumberInReference()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("9999999999999999999999 0 R"));
+    }
+
+    [Fact]
+    public void ParseThrowsForInvalidGenerationNumberInReference()
+    {
+        Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("1 9999999999999999999999 R"));
+    }
+
+    [Fact]
+    public void ParseParsesRealNumberAndNullObject()
+    {
+        PdfObject real = PdfObjectParser.ParseAscii("3.14");
+        PdfObject nullObject = PdfObjectParser.ParseAscii("null");
+
+        PdfNumberObject number = Assert.IsType<PdfNumberObject>(real);
+        Assert.False(number.IsInteger);
+        Assert.Equal(3.14, number.Value);
+        Assert.Same(PdfNullObject.Instance, nullObject);
+    }
+
+    [Fact]
+    public void ParseParsesEmptyHexStringToEmptyByteString()
+    {
+        PdfByteStringObject bytes = Assert.IsType<PdfByteStringObject>(PdfObjectParser.ParseAscii("<>"));
+
+        Assert.True(bytes.Bytes.IsEmpty);
     }
 }

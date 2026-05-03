@@ -8,6 +8,12 @@ namespace ModernPDF.Tests.Format.Files;
 public sealed class PdfFileWriterTests
 {
     [Fact]
+    public void WriteRejectsNullFile()
+    {
+        Assert.Throws<ArgumentNullException>(() => PdfFileWriter.Write(null!));
+    }
+
+    [Fact]
     public void WriteEmitsClassicXrefAndTrailer()
     {
         PdfFile file = CreateMinimalFile();
@@ -31,6 +37,61 @@ public sealed class PdfFileWriterTests
         Assert.Contains("stream", text, StringComparison.Ordinal);
         Assert.Contains("endstream", text, StringComparison.Ordinal);
         Assert.Contains("/Length 5", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WriteReplacesExistingStreamLengthEntry()
+    {
+        PdfDictionaryObject streamDictionary = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("DemoStream")),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(999, isInteger: true)),
+        ]);
+        PdfStreamObject stream = new(streamDictionary, Encoding.ASCII.GetBytes("Hi"));
+        PdfFile file = new(
+            "2.0",
+            [new PdfIndirectObject(new PdfObjectId(1, 0), stream)],
+            new PdfDictionaryObject([new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0)))]));
+
+        string text = Encoding.ASCII.GetString(PdfFileWriter.Write(file));
+
+        Assert.Contains("/Length 2", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("/Length 999", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WriteEmitsFreeXrefEntriesForMissingObjectNumbers()
+    {
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), new PdfDictionaryObject([new PdfDictionaryEntry("Type", new PdfNameObject("Catalog"))])),
+                new PdfIndirectObject(new PdfObjectId(3, 0), new PdfDictionaryObject([new PdfDictionaryEntry("Type", new PdfNameObject("Page"))])),
+            ],
+            new PdfDictionaryObject([new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0)))]));
+
+        string text = Encoding.ASCII.GetString(PdfFileWriter.Write(file));
+
+        Assert.Contains("0 4", text, StringComparison.Ordinal);
+        Assert.Contains("0000000000 00000 f", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WriteAddsOrReplacesTrailerSizeEntry()
+    {
+        PdfFile file = new(
+            "2.0",
+            [new PdfIndirectObject(new PdfObjectId(1, 0), new PdfDictionaryObject([new PdfDictionaryEntry("Type", new PdfNameObject("Catalog"))]))],
+            new PdfDictionaryObject(
+            [
+                new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+                new PdfDictionaryEntry("Size", new PdfNumberObject(999, isInteger: true)),
+            ]));
+
+        string text = Encoding.ASCII.GetString(PdfFileWriter.Write(file));
+
+        Assert.Contains("/Size 2", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("/Size 999", text, StringComparison.Ordinal);
     }
 
     private static PdfFile CreateMinimalFile()

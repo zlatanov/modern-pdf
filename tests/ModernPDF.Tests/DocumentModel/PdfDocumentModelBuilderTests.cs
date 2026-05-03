@@ -48,6 +48,169 @@ public sealed class PdfDocumentModelBuilderTests
         Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
     }
 
+    [Fact]
+    public void BuildFailsWhenRootEntryIsNotReference()
+    {
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfStringObject("not-a-reference")),
+        ]);
+        PdfFile file = new("2.0", [], trailer);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenCatalogPagesEntryIsNotReference()
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfStringObject("invalid")),
+        ]);
+        PdfFile file = CreateMinimalTreeFile(catalog, CreatePagesNodeWithSinglePage(), CreatePageNode(), trailerInfo: null);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenPagesKidsIsNotArray()
+    {
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfStringObject("invalid")),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(1, isInteger: true)),
+        ]);
+        PdfFile file = CreateMinimalTreeFile(CreateCatalogNode(), pages, CreatePageNode(), trailerInfo: null);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenPageTreeContainsCycle()
+    {
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([new PdfReferenceObject(new PdfObjectId(2, 0))])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(1, isInteger: true)),
+        ]);
+        PdfFile file = CreateMinimalTreeFile(CreateCatalogNode(), pages, CreatePageNode(), trailerInfo: null);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenOptionalInfoIsNotReference()
+    {
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+            new PdfDictionaryEntry("Info", new PdfStringObject("invalid")),
+        ]);
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), CreateCatalogNode()),
+                new PdfIndirectObject(new PdfObjectId(2, 0), CreatePagesNodeWithSinglePage()),
+                new PdfIndirectObject(new PdfObjectId(3, 0), CreatePageNode()),
+            ],
+            trailer);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenPageMediaBoxContainsNonNumericEntry()
+    {
+        PdfDictionaryObject page = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Page")),
+            new PdfDictionaryEntry("Parent", new PdfReferenceObject(new PdfObjectId(2, 0))),
+            new PdfDictionaryEntry(
+                "MediaBox",
+                new PdfArrayObject(
+                [
+                    new PdfNumberObject(0, isInteger: true),
+                    new PdfNumberObject(0, isInteger: true),
+                    new PdfStringObject("bad"),
+                    new PdfNumberObject(100, isInteger: true),
+                ])),
+        ]);
+        PdfFile file = CreateMinimalTreeFile(CreateCatalogNode(), CreatePagesNodeWithSinglePage(), page, trailerInfo: null);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenPageTreeNodeTypeIsUnsupported()
+    {
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("UnknownNode")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([new PdfReferenceObject(new PdfObjectId(3, 0))])),
+        ]);
+        PdfFile file = CreateMinimalTreeFile(CreateCatalogNode(), pages, CreatePageNode(), trailerInfo: null);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenPageTreeKidsContainsNonReference()
+    {
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([new PdfStringObject("invalid")])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(1, isInteger: true)),
+        ]);
+        PdfFile file = CreateMinimalTreeFile(CreateCatalogNode(), pages, CreatePageNode(), trailerInfo: null);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenPageMediaBoxIsNotFourNumbers()
+    {
+        PdfDictionaryObject page = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Page")),
+            new PdfDictionaryEntry("Parent", new PdfReferenceObject(new PdfObjectId(2, 0))),
+            new PdfDictionaryEntry(
+                "MediaBox",
+                new PdfArrayObject(
+                [
+                    new PdfNumberObject(0, isInteger: true),
+                    new PdfNumberObject(0, isInteger: true),
+                    new PdfNumberObject(100, isInteger: true),
+                ])),
+        ]);
+        PdfFile file = CreateMinimalTreeFile(CreateCatalogNode(), CreatePagesNodeWithSinglePage(), page, trailerInfo: null);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildFailsWhenTypeEntryIsMissingOrNotName()
+    {
+        PdfDictionaryObject missingTypePage = new(
+        [
+            new PdfDictionaryEntry("Parent", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+        PdfFile missingTypeFile = CreateMinimalTreeFile(CreateCatalogNode(), CreatePagesNodeWithSinglePage(), missingTypePage, trailerInfo: null);
+
+        PdfDictionaryObject nonNameTypePage = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfStringObject("Page")),
+            new PdfDictionaryEntry("Parent", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+        PdfFile nonNameTypeFile = CreateMinimalTreeFile(CreateCatalogNode(), CreatePagesNodeWithSinglePage(), nonNameTypePage, trailerInfo: null);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(missingTypeFile));
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(nonNameTypeFile));
+    }
+
     private static PdfFile CreateSimplePageTreeFile()
     {
         PdfDictionaryObject catalog = new(
@@ -141,5 +304,68 @@ public sealed class PdfDocumentModelBuilderTests
                 new PdfIndirectObject(new PdfObjectId(8, 0), contents),
             ],
             trailer);
+    }
+
+    private static PdfFile CreateMinimalTreeFile(
+        PdfDictionaryObject catalog,
+        PdfDictionaryObject pages,
+        PdfDictionaryObject page,
+        PdfObject? trailerInfo)
+    {
+        List<PdfDictionaryEntry> trailerEntries =
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+        ];
+        if (trailerInfo is not null)
+        {
+            trailerEntries.Add(new PdfDictionaryEntry("Info", trailerInfo));
+        }
+
+        PdfDictionaryObject trailer = new(trailerEntries);
+        return new PdfFile(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+                new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+                new PdfIndirectObject(new PdfObjectId(3, 0), page),
+            ],
+            trailer);
+    }
+
+    private static PdfDictionaryObject CreateCatalogNode()
+    {
+        return new PdfDictionaryObject(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+    }
+
+    private static PdfDictionaryObject CreatePagesNodeWithSinglePage()
+    {
+        return new PdfDictionaryObject(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([new PdfReferenceObject(new PdfObjectId(3, 0))])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(1, isInteger: true)),
+        ]);
+    }
+
+    private static PdfDictionaryObject CreatePageNode()
+    {
+        return new PdfDictionaryObject(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Page")),
+            new PdfDictionaryEntry("Parent", new PdfReferenceObject(new PdfObjectId(2, 0))),
+            new PdfDictionaryEntry(
+                "MediaBox",
+                new PdfArrayObject(
+                [
+                    new PdfNumberObject(0, isInteger: true),
+                    new PdfNumberObject(0, isInteger: true),
+                    new PdfNumberObject(100, isInteger: true),
+                    new PdfNumberObject(100, isInteger: true),
+                ])),
+        ]);
     }
 }
