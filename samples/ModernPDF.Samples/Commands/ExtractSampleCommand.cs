@@ -25,6 +25,7 @@ internal static class ExtractSampleCommand
         string extractedPath = Path.Combine(outputRoot, "extract-output.txt");
 
         PdfDocument source = PdfDocument.Create();
+        SampleCommandHelpers.ConfigureDefaultTextOptions(source);
         source.AddTextPage("Page one text.");
         source.AddTextPage("Page two text.");
         source.Save(inputPath);

@@ -25,6 +25,7 @@ internal static class RedactSampleCommand
         string redactedPath = Path.Combine(outputRoot, "redact-redacted.pdf");
 
         PdfDocument source = PdfDocument.Create();
+        SampleCommandHelpers.ConfigureDefaultTextOptions(source);
         source.AddTextPage("Customer SSN: 111-22-3333");
         source.Save(originalPath);
 

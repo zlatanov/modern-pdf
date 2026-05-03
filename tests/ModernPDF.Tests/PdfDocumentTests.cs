@@ -322,6 +322,102 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void AddTextPageWithEmbeddedTrueTypeFontEmbedsFontAndExtractsText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+
+        document.AddTextPage(
+            "Embedded font text",
+            textOptions: new PdfTextOptions
+            {
+                TrueTypeFontPath = fontPath,
+                SubsetFont = true,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal("Embedded font text", document.ExtractText());
+        Assert.Contains("/FontFile2", ascii, StringComparison.Ordinal);
+        Assert.Contains("/CIDFontType2", ascii, StringComparison.Ordinal);
+        Assert.Contains("/CIDToGIDMap", ascii, StringComparison.Ordinal);
+        Assert.Contains("/Type0", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddTextPageUsesDocumentDefaultTextOptionsWhenOptionsAreNotProvided()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        document.DefaultTextOptions = new PdfTextOptions
+        {
+            TrueTypeFontPath = fontPath,
+            SubsetFont = true,
+        };
+
+        document.AddTextPage("Default embedded font");
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal("Default embedded font", document.ExtractText());
+        Assert.Contains("/FontFile2", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddTextPagePrefersExplicitTextOptionsOverDocumentDefaultTextOptions()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        document.DefaultTextOptions = new PdfTextOptions
+        {
+            TrueTypeFontPath = fontPath,
+            SubsetFont = true,
+        };
+
+        document.AddTextPage(
+            "Built-in font text",
+            textOptions: new PdfTextOptions());
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal("Built-in font text", document.ExtractText());
+        Assert.DoesNotContain("/FontFile2", ascii, StringComparison.Ordinal);
+        Assert.Contains("/BaseFont /Helvetica", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddTextPageSubsettingProducesSmallerOutputThanFullEmbedding()
+    {
+        string fontPath = GetFixtureFontPath();
+
+        PdfDocument subset = PdfDocument.Create();
+        subset.AddTextPage(
+            "Subset me",
+            textOptions: new PdfTextOptions
+            {
+                TrueTypeFontPath = fontPath,
+                SubsetFont = true,
+            });
+
+        PdfDocument full = PdfDocument.Create();
+        full.AddTextPage(
+            "Subset me",
+            textOptions: new PdfTextOptions
+            {
+                TrueTypeFontPath = fontPath,
+                SubsetFont = false,
+            });
+
+        byte[] subsetBytes = subset.Save();
+        byte[] fullBytes = full.Save();
+
+        Assert.True(subsetBytes.Length < fullBytes.Length);
+    }
+
+    [Fact]
     public void AddPageUsesProvidedDimensions()
     {
         PdfDocument document = PdfDocument.Create();
@@ -413,6 +509,50 @@ public sealed class PdfDocumentTests
         document.ReplacePageText(0, "New text");
 
         Assert.Equal("New text", document.ExtractText());
+    }
+
+    [Fact]
+    public void ReplacePageTextWithEmbeddedTrueTypeFontUpdatesResourcesAndText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        document.AddTextPage("Old text");
+
+        document.ReplacePageText(
+            0,
+            "New embedded text",
+            new PdfTextOptions
+            {
+                TrueTypeFontPath = fontPath,
+                SubsetFont = true,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal("New embedded text", document.ExtractText());
+        Assert.Contains("/CIDToGIDMap", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReplacePageTextUsesDocumentDefaultTextOptionsWhenOptionsAreNotProvided()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        document.AddTextPage("Old text");
+        document.DefaultTextOptions = new PdfTextOptions
+        {
+            TrueTypeFontPath = fontPath,
+            SubsetFont = true,
+        };
+
+        document.ReplacePageText(0, "New embedded text");
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal("New embedded text", document.ExtractText());
+        Assert.Contains("/CIDToGIDMap", ascii, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -621,6 +761,19 @@ public sealed class PdfDocumentTests
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { FontSize = 0 }));
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { X = double.NaN }));
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { Y = double.PositiveInfinity }));
+        Assert.Throws<ArgumentException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { TrueTypeFontPath = " " }));
+    }
+
+    [Fact]
+    public void DefaultTextOptionsRejectsInvalidValues()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        Assert.Throws<ArgumentNullException>(() => document.DefaultTextOptions = null!);
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { FontSize = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { X = double.NaN });
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { Y = double.PositiveInfinity });
+        Assert.Throws<ArgumentException>(() => document.DefaultTextOptions = new PdfTextOptions { TrueTypeFontPath = " " });
     }
 
     [Fact]
@@ -647,6 +800,13 @@ public sealed class PdfDocumentTests
                     Permissions = (PdfPermissions)256,
                 },
             }));
+    }
+
+    private static string GetFixtureFontPath()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Fonts", "LiberationSans-Regular.ttf");
+        Assert.True(File.Exists(path), $"Expected test font fixture at '{path}'.");
+        return path;
     }
 
     private static byte[] CreateSinglePageTextPdf(string contentStream)

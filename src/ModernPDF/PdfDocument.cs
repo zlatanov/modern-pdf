@@ -1,4 +1,5 @@
 using ModernPDF.DocumentModel;
+using ModernPDF.Fonts;
 using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
@@ -13,6 +14,7 @@ public sealed class PdfDocument
 {
     private PdfFile _file;
     private PdfDocumentModel _model;
+    private PdfTextOptions _defaultTextOptions = new();
 
     private PdfDocument(PdfFile file, PdfDocumentModel model)
     {
@@ -102,6 +104,17 @@ public sealed class PdfDocument
 
     public int PageCount => _model.Pages.Count;
 
+    public PdfTextOptions DefaultTextOptions
+    {
+        get => _defaultTextOptions;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            ValidateTextOptions(value);
+            _defaultTextOptions = value;
+        }
+    }
+
     public int AddPage(PdfPageOptions? options = null)
     {
         PdfPageOptions pageOptions = options ?? new PdfPageOptions();
@@ -113,7 +126,7 @@ public sealed class PdfDocument
         ArgumentNullException.ThrowIfNull(text);
 
         PdfPageOptions effectivePageOptions = pageOptions ?? new PdfPageOptions();
-        PdfTextOptions effectiveTextOptions = textOptions ?? new PdfTextOptions();
+        PdfTextOptions effectiveTextOptions = ResolveTextOptions(textOptions);
         return AddPageCore(effectivePageOptions, text, effectiveTextOptions);
     }
 
@@ -178,9 +191,52 @@ public sealed class PdfDocument
     public void ReplacePageText(int pageIndex, string text, PdfTextOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(text);
-        PdfTextOptions effectiveOptions = options ?? new PdfTextOptions();
-        ValidateTextOptions(effectiveOptions);
-        ReplacePageContents(pageIndex, BuildTextContentStream(text, effectiveOptions));
+        PdfTextOptions effectiveOptions = ResolveTextOptions(options);
+
+        if (effectiveOptions.TrueTypeFontPath is null)
+        {
+            ReplacePageContents(pageIndex, BuildTextContentStream(text, effectiveOptions));
+            return;
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+
+        PdfPageModel page = _model.Pages[pageIndex];
+        if (page.Contents is not PdfReferenceObject contentsReference)
+        {
+            throw new NotSupportedException("Only page /Contents references are supported for replacement.");
+        }
+
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        int nextObjectNumber = GetNextObjectNumber(objects);
+
+        PdfEmbeddedFontPlan embeddedPlan = BuildEmbeddedFontPlan(
+            text,
+            effectiveOptions,
+            nextObjectNumber);
+
+        objects.AddRange(embeddedPlan.ObjectsToAdd);
+
+        PdfStreamObject existingStream = RequireStreamObject(contentsReference.ObjectId, "Page contents");
+        PdfStreamObject updatedStream = new(existingStream.Dictionary, embeddedPlan.ContentStreamBytes);
+        ReplaceObject(objects, contentsReference.ObjectId, updatedStream);
+
+        PdfDictionaryObject pageDictionary = RequireDictionaryObject(page.ObjectId, "Page");
+        PdfDictionaryObject updatedPage = ReplaceDictionaryEntries(
+            pageDictionary,
+            new PdfDictionaryEntry("Resources", new PdfReferenceObject(embeddedPlan.ResourcesObjectId)));
+        ReplaceObject(objects, page.ObjectId, updatedPage);
+
+        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _model = PdfDocumentModelBuilder.Build(_file);
+
+        _model.Mutations.MarkDirty(page.ObjectId);
+        _model.Mutations.MarkDirty(contentsReference.ObjectId);
+        foreach (PdfObjectId objectId in embeddedPlan.DirtyObjectIds)
+        {
+            _model.Mutations.MarkDirty(objectId);
+        }
     }
 
     public void SetInfoProducer(string producer)
@@ -309,42 +365,55 @@ public sealed class PdfDocument
         PdfObjectId pageId = new(nextObjectNumber++, 0);
         PdfObjectId contentsId = new(nextObjectNumber++, 0);
         PdfObjectId? resourcesId = null;
-        PdfObjectId? fontId = null;
+        List<PdfObjectId> dirtyObjectIds = [pageId, contentsId];
 
         PdfObject? resourcesEntryValue = null;
         ReadOnlyMemory<byte> contentBytes = ReadOnlyMemory<byte>.Empty;
 
         if (text is not null)
         {
-            PdfTextOptions effectiveTextOptions = textOptions ?? new PdfTextOptions();
+            PdfTextOptions effectiveTextOptions = textOptions ?? _defaultTextOptions;
             ValidateTextOptions(effectiveTextOptions);
 
-            fontId = new PdfObjectId(nextObjectNumber++, 0);
-            resourcesId = new PdfObjectId(nextObjectNumber++, 0);
+            if (effectiveTextOptions.TrueTypeFontPath is null)
+            {
+                PdfObjectId fontId = new(nextObjectNumber++, 0);
+                resourcesId = new PdfObjectId(nextObjectNumber++, 0);
 
-            PdfDictionaryObject fontDictionary = new(
-            [
-                new PdfDictionaryEntry("Type", new PdfNameObject("Font")),
-                new PdfDictionaryEntry("Subtype", new PdfNameObject("Type1")),
-                new PdfDictionaryEntry("BaseFont", new PdfNameObject("Helvetica")),
-            ]);
+                PdfDictionaryObject fontDictionary = new(
+                [
+                    new PdfDictionaryEntry("Type", new PdfNameObject("Font")),
+                    new PdfDictionaryEntry("Subtype", new PdfNameObject("Type1")),
+                    new PdfDictionaryEntry("BaseFont", new PdfNameObject("Helvetica")),
+                ]);
 
-            PdfDictionaryObject resourcesDictionary = new(
-            [
-                new PdfDictionaryEntry(
-                    "Font",
-                    new PdfDictionaryObject(
-                    [
-                        new PdfDictionaryEntry("F1", new PdfReferenceObject(fontId.Value)),
-                    ])),
-            ]);
+                PdfDictionaryObject resourcesDictionary = new(
+                [
+                    new PdfDictionaryEntry(
+                        "Font",
+                        new PdfDictionaryObject(
+                        [
+                            new PdfDictionaryEntry("F1", new PdfReferenceObject(fontId)),
+                        ])),
+                ]);
 
-            objects.Add(new PdfIndirectObject(fontId.Value, fontDictionary));
-            objects.Add(new PdfIndirectObject(resourcesId.Value, resourcesDictionary));
-            resourcesEntryValue = new PdfReferenceObject(resourcesId.Value);
+                objects.Add(new PdfIndirectObject(fontId, fontDictionary));
+                objects.Add(new PdfIndirectObject(resourcesId.Value, resourcesDictionary));
+                resourcesEntryValue = new PdfReferenceObject(resourcesId.Value);
+                contentBytes = System.Text.Encoding.ASCII.GetBytes(BuildTextContentStream(text, effectiveTextOptions));
 
-            string contentStream = BuildTextContentStream(text, effectiveTextOptions);
-            contentBytes = System.Text.Encoding.ASCII.GetBytes(contentStream);
+                dirtyObjectIds.Add(fontId);
+                dirtyObjectIds.Add(resourcesId.Value);
+            }
+            else
+            {
+                PdfEmbeddedFontPlan embeddedPlan = BuildEmbeddedFontPlan(text, effectiveTextOptions, nextObjectNumber);
+                objects.AddRange(embeddedPlan.ObjectsToAdd);
+                resourcesId = embeddedPlan.ResourcesObjectId;
+                resourcesEntryValue = new PdfReferenceObject(resourcesId.Value);
+                contentBytes = embeddedPlan.ContentStreamBytes;
+                dirtyObjectIds.AddRange(embeddedPlan.DirtyObjectIds);
+            }
         }
 
         PdfDictionaryObject pageDictionary = CreatePageDictionary(
@@ -368,19 +437,19 @@ public sealed class PdfDocument
         _model = PdfDocumentModelBuilder.Build(_file);
 
         _model.Mutations.MarkDirty(_model.PagesRootObjectId);
-        _model.Mutations.MarkDirty(pageId);
-        _model.Mutations.MarkDirty(contentsId);
-        if (fontId is not null)
+        foreach (PdfObjectId objectId in dirtyObjectIds)
         {
-            _model.Mutations.MarkDirty(fontId.Value);
-        }
-
-        if (resourcesId is not null)
-        {
-            _model.Mutations.MarkDirty(resourcesId.Value);
+            _model.Mutations.MarkDirty(objectId);
         }
 
         return _model.Pages.Count - 1;
+    }
+
+    private PdfTextOptions ResolveTextOptions(PdfTextOptions? options)
+    {
+        PdfTextOptions effectiveOptions = options ?? _defaultTextOptions;
+        ValidateTextOptions(effectiveOptions);
+        return effectiveOptions;
     }
 
     private static PdfFile CreateEmptyFile()
@@ -603,6 +672,230 @@ public sealed class PdfDocument
         throw new PdfFormatException($"Object {objectId} was not found for replacement.");
     }
 
+    private static PdfEmbeddedFontPlan BuildEmbeddedFontPlan(string text, PdfTextOptions options, int nextObjectNumber)
+    {
+        if (string.IsNullOrWhiteSpace(options.TrueTypeFontPath))
+        {
+            throw new ArgumentException("Embedded font path is required.", nameof(options));
+        }
+
+        PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(
+            options.TrueTypeFontPath,
+            text,
+            options.SubsetFont);
+
+        PdfObjectId fontFileId = new(nextObjectNumber++, 0);
+        PdfObjectId descriptorId = new(nextObjectNumber++, 0);
+        PdfObjectId cidToGidId = new(nextObjectNumber++, 0);
+        PdfObjectId toUnicodeId = new(nextObjectNumber++, 0);
+        PdfObjectId descendantFontId = new(nextObjectNumber++, 0);
+        PdfObjectId type0FontId = new(nextObjectNumber++, 0);
+        PdfObjectId resourcesId = new(nextObjectNumber++, 0);
+
+        PdfStreamObject fontFileStream = new(
+            new PdfDictionaryObject(
+            [
+                new PdfDictionaryEntry("Length1", new PdfNumberObject(embedded.FontProgram.Length, isInteger: true)),
+            ]),
+            embedded.FontProgram);
+
+        PdfDictionaryObject descriptor = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("FontDescriptor")),
+            new PdfDictionaryEntry("FontName", new PdfNameObject(embedded.BaseFontName)),
+            new PdfDictionaryEntry(
+                "FontBBox",
+                new PdfArrayObject(
+                [
+                    new PdfNumberObject(embedded.XMin, isInteger: true),
+                    new PdfNumberObject(embedded.YMin, isInteger: true),
+                    new PdfNumberObject(embedded.XMax, isInteger: true),
+                    new PdfNumberObject(embedded.YMax, isInteger: true),
+                ])),
+            new PdfDictionaryEntry("Ascent", new PdfNumberObject(embedded.Ascent, isInteger: true)),
+            new PdfDictionaryEntry("Descent", new PdfNumberObject(embedded.Descent, isInteger: true)),
+            new PdfDictionaryEntry("CapHeight", new PdfNumberObject(embedded.Ascent, isInteger: true)),
+            new PdfDictionaryEntry("StemV", new PdfNumberObject(80, isInteger: true)),
+            new PdfDictionaryEntry("Flags", new PdfNumberObject(32, isInteger: true)),
+            new PdfDictionaryEntry("ItalicAngle", new PdfNumberObject(0, isInteger: true)),
+            new PdfDictionaryEntry("FontFile2", new PdfReferenceObject(fontFileId)),
+        ]);
+
+        byte[] cidToGidBytes = BuildCidToGidMapBytes(embedded.UnicodeToGlyphId);
+        PdfStreamObject cidToGidMap = new(new PdfDictionaryObject([]), cidToGidBytes);
+
+        byte[] toUnicodeBytes = BuildToUnicodeCMapBytes(embedded.UnicodeToGlyphId.Keys);
+        PdfStreamObject toUnicode = new(new PdfDictionaryObject([]), toUnicodeBytes);
+
+        PdfDictionaryObject descendantFont = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Font")),
+            new PdfDictionaryEntry("Subtype", new PdfNameObject("CIDFontType2")),
+            new PdfDictionaryEntry("BaseFont", new PdfNameObject(embedded.BaseFontName)),
+            new PdfDictionaryEntry(
+                "CIDSystemInfo",
+                new PdfDictionaryObject(
+                [
+                    new PdfDictionaryEntry("Registry", new PdfStringObject("Adobe")),
+                    new PdfDictionaryEntry("Ordering", new PdfStringObject("Identity")),
+                    new PdfDictionaryEntry("Supplement", new PdfNumberObject(0, isInteger: true)),
+                ])),
+            new PdfDictionaryEntry("FontDescriptor", new PdfReferenceObject(descriptorId)),
+            new PdfDictionaryEntry("CIDToGIDMap", new PdfReferenceObject(cidToGidId)),
+            new PdfDictionaryEntry("DW", new PdfNumberObject(1000, isInteger: true)),
+            new PdfDictionaryEntry("W", BuildWidthArray(embedded.UnicodeToWidth)),
+        ]);
+
+        PdfDictionaryObject type0Font = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Font")),
+            new PdfDictionaryEntry("Subtype", new PdfNameObject("Type0")),
+            new PdfDictionaryEntry("BaseFont", new PdfNameObject(embedded.BaseFontName)),
+            new PdfDictionaryEntry("Encoding", new PdfNameObject("Identity-H")),
+            new PdfDictionaryEntry(
+                "DescendantFonts",
+                new PdfArrayObject(
+                [
+                    new PdfReferenceObject(descendantFontId),
+                ])),
+            new PdfDictionaryEntry("ToUnicode", new PdfReferenceObject(toUnicodeId)),
+        ]);
+
+        PdfDictionaryObject resources = new(
+        [
+            new PdfDictionaryEntry(
+                "Font",
+                new PdfDictionaryObject(
+                [
+                    new PdfDictionaryEntry("F1", new PdfReferenceObject(type0FontId)),
+                ])),
+        ]);
+
+        ReadOnlyMemory<byte> contentBytes = BuildEmbeddedTextContentStream(text, options);
+
+        List<PdfIndirectObject> objects =
+        [
+            new PdfIndirectObject(fontFileId, fontFileStream),
+            new PdfIndirectObject(descriptorId, descriptor),
+            new PdfIndirectObject(cidToGidId, cidToGidMap),
+            new PdfIndirectObject(toUnicodeId, toUnicode),
+            new PdfIndirectObject(descendantFontId, descendantFont),
+            new PdfIndirectObject(type0FontId, type0Font),
+            new PdfIndirectObject(resourcesId, resources),
+        ];
+
+        List<PdfObjectId> dirtyIds =
+        [
+            fontFileId,
+            descriptorId,
+            cidToGidId,
+            toUnicodeId,
+            descendantFontId,
+            type0FontId,
+            resourcesId,
+        ];
+
+        return new PdfEmbeddedFontPlan(
+            resourcesId,
+            contentBytes,
+            objects,
+            dirtyIds);
+    }
+
+    private static PdfArrayObject BuildWidthArray(IReadOnlyDictionary<int, int> unicodeToWidth)
+    {
+        List<int> codes = [.. unicodeToWidth.Keys.OrderBy(static value => value)];
+        List<PdfObject> entries = [];
+        int index = 0;
+        while (index < codes.Count)
+        {
+            int startCode = codes[index];
+            List<PdfObject> runWidths = [];
+            int current = startCode;
+            while (index < codes.Count && codes[index] == current)
+            {
+                int width = unicodeToWidth[current];
+                runWidths.Add(new PdfNumberObject(width, isInteger: true));
+                current++;
+                index++;
+            }
+
+            entries.Add(new PdfNumberObject(startCode, isInteger: true));
+            entries.Add(new PdfArrayObject(runWidths));
+        }
+
+        return new PdfArrayObject(entries);
+    }
+
+    private static byte[] BuildCidToGidMapBytes(IReadOnlyDictionary<int, ushort> unicodeToGlyphId)
+    {
+        int maxCode = unicodeToGlyphId.Count == 0 ? 0 : unicodeToGlyphId.Keys.Max();
+        byte[] bytes = new byte[(maxCode + 1) * 2];
+
+        foreach ((int unicode, ushort glyphId) in unicodeToGlyphId)
+        {
+            int offset = unicode * 2;
+            bytes[offset] = (byte)(glyphId >> 8);
+            bytes[offset + 1] = (byte)glyphId;
+        }
+
+        return bytes;
+    }
+
+    private static byte[] BuildToUnicodeCMapBytes(IEnumerable<int> unicodeCodes)
+    {
+        List<int> codes = [.. unicodeCodes.OrderBy(static value => value)];
+        System.Text.StringBuilder builder = new();
+
+        builder.AppendLine("/CIDInit /ProcSet findresource begin");
+        builder.AppendLine("12 dict begin");
+        builder.AppendLine("begincmap");
+        builder.AppendLine("/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def");
+        builder.AppendLine("/CMapName /Adobe-Identity-UCS def");
+        builder.AppendLine("/CMapType 2 def");
+        builder.AppendLine("1 begincodespacerange");
+        builder.AppendLine("<0000> <FFFF>");
+        builder.AppendLine("endcodespacerange");
+
+        int cursor = 0;
+        while (cursor < codes.Count)
+        {
+            int batchSize = Math.Min(100, codes.Count - cursor);
+            builder.Append(batchSize.ToString(CultureInfo.InvariantCulture));
+            builder.AppendLine(" beginbfchar");
+            for (int index = 0; index < batchSize; index++)
+            {
+                int code = codes[cursor + index];
+                builder.Append('<');
+                builder.Append(code.ToString("X4", CultureInfo.InvariantCulture));
+                builder.Append("> <");
+                builder.Append(code.ToString("X4", CultureInfo.InvariantCulture));
+                builder.AppendLine(">");
+            }
+
+            builder.AppendLine("endbfchar");
+            cursor += batchSize;
+        }
+
+        builder.AppendLine("endcmap");
+        builder.AppendLine("CMapName currentdict /CMap defineresource pop");
+        builder.AppendLine("end");
+        builder.AppendLine("end");
+
+        return System.Text.Encoding.ASCII.GetBytes(builder.ToString());
+    }
+
+    private static ReadOnlyMemory<byte> BuildEmbeddedTextContentStream(string text, PdfTextOptions options)
+    {
+        string x = options.X.ToString("0.###", CultureInfo.InvariantCulture);
+        string y = options.Y.ToString("0.###", CultureInfo.InvariantCulture);
+        string fontSize = options.FontSize.ToString("0.###", CultureInfo.InvariantCulture);
+        byte[] utf16 = System.Text.Encoding.BigEndianUnicode.GetBytes(text);
+        string hex = Convert.ToHexString(utf16);
+        string content = $"BT /F1 {fontSize} Tf {x} {y} Td <{hex}> Tj ET";
+        return System.Text.Encoding.ASCII.GetBytes(content);
+    }
+
     private static string BuildTextContentStream(string text, PdfTextOptions options)
     {
         string escaped = EscapeLiteralString(text);
@@ -652,6 +945,11 @@ public sealed class PdfDocument
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Text Y position must be finite.");
         }
+
+        if (options.TrueTypeFontPath is not null && string.IsNullOrWhiteSpace(options.TrueTypeFontPath))
+        {
+            throw new ArgumentException("TrueTypeFontPath cannot be blank when provided.", nameof(options));
+        }
     }
 
     private static void ValidateSecurityOptions(PdfSecurityOptions security)
@@ -672,4 +970,10 @@ public sealed class PdfDocument
             throw new ArgumentOutOfRangeException(nameof(security), "Security permissions contain unsupported flags.");
         }
     }
+
+    private readonly record struct PdfEmbeddedFontPlan(
+        PdfObjectId ResourcesObjectId,
+        ReadOnlyMemory<byte> ContentStreamBytes,
+        IReadOnlyList<PdfIndirectObject> ObjectsToAdd,
+        IReadOnlyList<PdfObjectId> DirtyObjectIds);
 }

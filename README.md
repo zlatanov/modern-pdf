@@ -9,6 +9,7 @@ Current implemented scope includes:
 - page/content editing
 - destructive text redaction
 - password security for Standard handler `V=1 / R=2 / 40-bit` (with permission flags)
+- TrueType font embedding for generated/replaced text with automatic subsetting
 - corpus-based interoperability/hardening test harness
 
 ## Repository layout
@@ -33,6 +34,7 @@ dotnet test ModernPDF.slnx
 ## Samples
 
 The repository includes a runnable sample console app at `samples\ModernPDF.Samples` built with `System.CommandLine`.
+On Windows, sample commands configure `PdfDocument.DefaultTextOptions` automatically to use a system TrueType font when available.
 
 ```powershell
 # list commands and options
@@ -43,6 +45,29 @@ dotnet run --project samples\ModernPDF.Samples -- create
 dotnet run --project samples\ModernPDF.Samples -- extract --output .\artifacts\samples
 dotnet run --project samples\ModernPDF.Samples -- redact --output .\artifacts\samples
 dotnet run --project samples\ModernPDF.Samples -- secure --output .\artifacts\samples
+```
+
+## Embedded TrueType fonts
+
+`PdfTextOptions` supports embedding a TrueType font file and subsetting glyphs by default.
+You can configure this once per document via `DefaultTextOptions` and still override per call:
+
+```csharp
+PdfDocument document = PdfDocument.Create();
+document.DefaultTextOptions = new PdfTextOptions
+{
+    TrueTypeFontPath = @"C:\fonts\MyFont.ttf",
+    SubsetFont = true, // default
+};
+document.AddTextPage("Uses the document default font");
+
+document.AddTextPage(
+    "Per-call override still works",
+    textOptions: new PdfTextOptions
+    {
+        TrueTypeFontPath = @"C:\fonts\AnotherFont.ttf",
+        SubsetFont = false,
+    });
 ```
 
 ## Corpus tests
@@ -72,3 +97,4 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 - incremental save is not implemented
 - digital signatures are not implemented
 - security support is intentionally limited to Standard handler `V=1 / R=2`
+- embedded TrueType text currently supports BMP Unicode code points only (no surrogate-pair shaping)

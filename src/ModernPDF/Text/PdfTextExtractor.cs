@@ -127,12 +127,12 @@ internal static class PdfTextExtractor
         {
             PdfToken token = tokens[index];
 
-            if (token.Kind == PdfTokenKind.String
+            if (IsTextStringToken(token)
                 && index + 1 < tokens.Count
                 && tokens[index + 1].Kind == PdfTokenKind.Keyword
                 && IsSingleStringTextOperator(tokens[index + 1].Lexeme))
             {
-                builder.Append(token.Lexeme);
+                builder.Append(DecodeTextToken(token));
                 index += 2;
                 continue;
             }
@@ -155,9 +155,9 @@ internal static class PdfTextExtractor
                     {
                         depth--;
                     }
-                    else if (depth == 1 && itemToken.Kind == PdfTokenKind.String)
+                    else if (depth == 1 && IsTextStringToken(itemToken))
                     {
-                        strings.Add(itemToken.Lexeme);
+                        strings.Add(DecodeTextToken(itemToken));
                     }
 
                     index++;
@@ -194,5 +194,40 @@ internal static class PdfTextExtractor
         return string.Equals(lexeme, "Tj", StringComparison.Ordinal)
             || string.Equals(lexeme, "'", StringComparison.Ordinal)
             || string.Equals(lexeme, "\"", StringComparison.Ordinal);
+    }
+
+    private static bool IsTextStringToken(PdfToken token)
+    {
+        return token.Kind is PdfTokenKind.String or PdfTokenKind.HexString;
+    }
+
+    private static string DecodeTextToken(PdfToken token)
+    {
+        if (token.Kind == PdfTokenKind.String)
+        {
+            return token.Lexeme;
+        }
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromHexString(token.Lexeme);
+        }
+        catch (FormatException)
+        {
+            return string.Empty;
+        }
+
+        if (bytes.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if ((bytes.Length & 1) == 0)
+        {
+            return Encoding.BigEndianUnicode.GetString(bytes);
+        }
+
+        return Encoding.ASCII.GetString(bytes);
     }
 }

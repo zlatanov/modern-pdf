@@ -20,4 +20,10 @@
     <ProjectReference Include="..\..\src\ModernPDF\ModernPDF.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Fixtures\Fonts\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

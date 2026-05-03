@@ -30,6 +30,7 @@ internal static class SecureSampleCommand
         string encryptedPath = Path.Combine(outputRoot, "secure.pdf");
 
         PdfDocument source = PdfDocument.Create();
+        SampleCommandHelpers.ConfigureDefaultTextOptions(source);
         source.AddTextPage("Confidential: internal-only text.");
         source.Save(
             encryptedPath,

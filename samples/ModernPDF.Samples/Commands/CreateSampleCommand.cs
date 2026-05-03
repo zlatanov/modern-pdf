@@ -24,10 +24,10 @@ internal static class CreateSampleCommand
         string outputPath = Path.Combine(outputRoot, "create.pdf");
 
         PdfDocument document = PdfDocument.Create();
+        SampleCommandHelpers.ConfigureDefaultTextOptions(document, fontSize: 24, x: 72, y: 720);
         document.AddTextPage(
             "Hello from ModernPDF!",
-            new PdfPageOptions { Width = 612, Height = 792 },
-            new PdfTextOptions { FontSize = 24, X = 72, Y = 720 });
+            new PdfPageOptions { Width = 612, Height = 792 });
         document.SetInfoProducer("ModernPDF Samples");
         document.Save(outputPath);
 
