@@ -3,6 +3,7 @@ using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
 using ModernPDF.Primitives;
+using ModernPDF.Text;
 
 namespace ModernPDF;
 
@@ -46,6 +47,16 @@ public sealed class PdfDocument
     public string Version => _file.Version;
 
     public int PageCount => _model.Pages.Count;
+
+    public string ExtractText()
+    {
+        return PdfTextExtractor.ExtractAll(_file, _model);
+    }
+
+    public string ExtractText(int pageIndex)
+    {
+        return PdfTextExtractor.ExtractPage(_file, _model, pageIndex);
+    }
 
     public byte[] Save(PdfSaveOptions? options = null)
     {
