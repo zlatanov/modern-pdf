@@ -99,6 +99,15 @@ public sealed class PdfFileReaderTests
     }
 
     [Fact]
+    public void ReadRejectsMissingTrailerSectionWhenXrefHasNoEntries()
+    {
+        string text = BuildPdfWithTailOnlyAfterStartXref("xref\n0 0\n");
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(text);
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
+    }
+
+    [Fact]
     public void ReadRejectsMissingTrailerDictionaryStart()
     {
         const string text = "%PDF-2.0\nxref\n0 1\n0000000000 65535 f\ntrailer\nstartxref\n9\n%%EOF";
@@ -157,6 +166,14 @@ public sealed class PdfFileReaderTests
     }
 
     [Fact]
+    public void ReadRejectsStreamWithoutLengthUsingManualPdf()
+    {
+        byte[] bytes = CreateSingleObjectPdf("<< /Type /Demo >>\nstream\nDATA\nendstream");
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
+    }
+
+    [Fact]
     public void ReadRejectsStreamLengthThatIsNotInteger()
     {
         PdfFile source = CreateStreamFile();
@@ -164,6 +181,14 @@ public sealed class PdfFileReaderTests
         byte[] tampered = ReplaceAscii(bytes, "/Length 5", "/Length (5)");
 
         Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(tampered));
+    }
+
+    [Fact]
+    public void ReadRejectsStreamLengthThatIsNotIntegerUsingManualPdf()
+    {
+        byte[] bytes = CreateSingleObjectPdf("<< /Length (5) >>\nstream\nDATA\nendstream");
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
     }
 
     [Fact]
@@ -177,6 +202,14 @@ public sealed class PdfFileReaderTests
     }
 
     [Fact]
+    public void ReadRejectsNegativeStreamLengthUsingManualPdf()
+    {
+        byte[] bytes = CreateSingleObjectPdf("<< /Length -1 >>\nstream\nDATA\nendstream");
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
+    }
+
+    [Fact]
     public void ReadRejectsStreamLengthPastEndOfFile()
     {
         PdfFile source = CreateStreamFile();
@@ -184,6 +217,14 @@ public sealed class PdfFileReaderTests
         byte[] tampered = ReplaceAscii(bytes, "/Length 5", "/Length 9999");
 
         Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(tampered));
+    }
+
+    [Fact]
+    public void ReadRejectsStreamLengthPastEndOfFileUsingManualPdf()
+    {
+        byte[] bytes = CreateSingleObjectPdf("<< /Length 100000 >>\nstream\nDATA\nendstream");
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
     }
 
     [Fact]
@@ -221,6 +262,18 @@ public sealed class PdfFileReaderTests
         PdfDictionaryEntry lengthEntry = Assert.Single(stream.Dictionary.Entries, entry => entry.Key == "Length");
         PdfNumberObject length = Assert.IsType<PdfNumberObject>(lengthEntry.Value);
         Assert.Equal(5, length.Value);
+    }
+
+    [Fact]
+    public void ReadTreatsNonDelimitedStreamKeywordAsRegularObjectContent()
+    {
+        byte[] bytes = CreateSingleObjectPdf("<< /Type /streaming >>");
+
+        PdfFile parsed = PdfFileReader.Read(bytes);
+
+        PdfDictionaryObject dictionary = Assert.IsType<PdfDictionaryObject>(parsed.Objects[0].Value);
+        PdfNameObject type = Assert.IsType<PdfNameObject>(Assert.Single(dictionary.Entries, x => x.Key == "Type").Value);
+        Assert.Equal("streaming", type.Value);
     }
 
     [Fact]
@@ -301,6 +354,23 @@ public sealed class PdfFileReaderTests
         const string objectSection = "1 0 obj\n<< /Length 4 >>\nstream\r\nDATA\nendstream\nendobj\n";
         int objectOffset = prefix.Length;
         int xrefOffset = prefix.Length + objectSection.Length;
+        string xrefSection =
+            "xref\n0 2\n0000000000 65535 f \n"
+            + $"{objectOffset:D10} 00000 n \n"
+            + "trailer\n<< /Root 1 0 R /Size 2 >>\n"
+            + "startxref\n"
+            + $"{xrefOffset}\n"
+            + "%%EOF\n";
+
+        return System.Text.Encoding.ASCII.GetBytes(prefix + objectSection + xrefSection);
+    }
+
+    private static byte[] CreateSingleObjectPdf(string objectBody)
+    {
+        const string prefix = "%PDF-2.0\n";
+        int objectOffset = System.Text.Encoding.ASCII.GetByteCount(prefix);
+        string objectSection = $"1 0 obj\n{objectBody}\nendobj\n";
+        int xrefOffset = objectOffset + System.Text.Encoding.ASCII.GetByteCount(objectSection);
         string xrefSection =
             "xref\n0 2\n0000000000 65535 f \n"
             + $"{objectOffset:D10} 00000 n \n"

@@ -144,6 +144,34 @@ public sealed class PdfDocumentModelBuilderTests
     }
 
     [Fact]
+    public void BuildFailsWhenRootReferencePointsToMissingObject()
+    {
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(99, 0))),
+        ]);
+        PdfFile file = new("2.0", [], trailer);
+
+        Assert.Throws<PdfFormatException>(() => PdfDocumentModelBuilder.Build(file));
+    }
+
+    [Fact]
+    public void BuildAllowsPageWithoutMediaBox()
+    {
+        PdfDictionaryObject page = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Page")),
+            new PdfDictionaryEntry("Parent", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+        PdfFile file = CreateMinimalTreeFile(CreateCatalogNode(), CreatePagesNodeWithSinglePage(), page, trailerInfo: null);
+
+        PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
+
+        Assert.Single(model.Pages);
+        Assert.Null(model.Pages[0].MediaBox);
+    }
+
+    [Fact]
     public void BuildFailsWhenPageTreeNodeTypeIsUnsupported()
     {
         PdfDictionaryObject pages = new(

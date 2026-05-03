@@ -264,6 +264,49 @@ public sealed class PdfStandardSecurityProcessorTests
         Assert.True(PdfStandardSecurityProcessor.IsSupportedStandardHandler(file));
     }
 
+    [Fact]
+    public void TryReadEncryptionInfoDefaultsLengthWhenLengthEntryIsMissing()
+    {
+        PdfDictionaryObject encrypt = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("V", new PdfNumberObject(1, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfByteStringObject(new byte[32])),
+            new PdfDictionaryEntry("U", new PdfByteStringObject(new byte[32])),
+        ]);
+        PdfFile file = CreateFileWithEncrypt(encrypt, []);
+
+        bool found = PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out PdfEncryptionInfo? info);
+
+        Assert.True(found);
+        Assert.NotNull(info);
+        Assert.Equal(40, info.KeyLengthBits);
+    }
+
+    [Fact]
+    public void TryReadEncryptionInfoDefaultsLengthWhenLengthEntryIsNonInteger()
+    {
+        PdfDictionaryObject encrypt = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("V", new PdfNumberObject(1, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfStringObject("forty")),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfByteStringObject(new byte[32])),
+            new PdfDictionaryEntry("U", new PdfByteStringObject(new byte[32])),
+        ]);
+        PdfFile file = CreateFileWithEncrypt(encrypt, []);
+
+        bool found = PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out PdfEncryptionInfo? info);
+
+        Assert.True(found);
+        Assert.NotNull(info);
+        Assert.Equal(40, info.KeyLengthBits);
+    }
+
     private static PdfFile CreatePlainFile()
     {
         PdfDictionaryObject catalog = new(

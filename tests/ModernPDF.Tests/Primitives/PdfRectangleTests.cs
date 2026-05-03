@@ -56,5 +56,6 @@ public sealed class PdfRectangleTests
         Assert.False(first != second);
         Assert.True(first != third);
         Assert.Equal(first.GetHashCode(), second.GetHashCode());
+        Assert.False(first.Equals("not-a-rectangle"));
     }
 }

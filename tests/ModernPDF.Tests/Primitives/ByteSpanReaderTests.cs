@@ -12,6 +12,7 @@ public sealed class ByteSpanReaderTests
         Assert.True(reader.TryPeek(out byte firstPeek));
         Assert.Equal((byte)10, firstPeek);
         Assert.Equal(0, reader.Position);
+        Assert.Equal(3, reader.Length);
 
         Assert.True(reader.TryRead(out byte firstRead));
         Assert.Equal((byte)10, firstRead);

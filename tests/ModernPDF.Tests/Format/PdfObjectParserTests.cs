@@ -1,5 +1,6 @@
 using ModernPDF.Format;
 using ModernPDF.Format.Objects;
+using System.Reflection;
 
 namespace ModernPDF.Tests.Format;
 
@@ -92,6 +93,14 @@ public sealed class PdfObjectParserTests
     }
 
     [Fact]
+    public void ParseThrowsWhenDictionaryValueIsMissing()
+    {
+        PdfFormatException ex = Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("<< /Type"));
+
+        Assert.Contains("Unexpected end of tokens", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ParseThrowsForUnsupportedKeywordToken()
     {
         Assert.Throws<PdfFormatException>(() => PdfObjectParser.ParseAscii("obj"));
@@ -133,5 +142,32 @@ public sealed class PdfObjectParserTests
         PdfByteStringObject bytes = Assert.IsType<PdfByteStringObject>(PdfObjectParser.ParseAscii("<>"));
 
         Assert.True(bytes.Bytes.IsEmpty);
+    }
+
+    [Fact]
+    public void ParsePrivateNumberParsersRejectInvalidTokenLexemes()
+    {
+        MethodInfo parseInteger = typeof(PdfObjectParser).GetMethod("ParseInteger", BindingFlags.NonPublic | BindingFlags.Static)!;
+        MethodInfo parseReal = typeof(PdfObjectParser).GetMethod("ParseReal", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        TargetInvocationException integerEx = Assert.Throws<TargetInvocationException>(
+            () => parseInteger.Invoke(null, [new PdfToken(PdfTokenKind.Integer, "12A")]));
+        TargetInvocationException realEx = Assert.Throws<TargetInvocationException>(
+            () => parseReal.Invoke(null, [new PdfToken(PdfTokenKind.Real, "1.2.3")]));
+
+        Assert.IsType<PdfFormatException>(integerEx.InnerException);
+        Assert.IsType<PdfFormatException>(realEx.InnerException);
+    }
+
+    [Fact]
+    public void ParsePrivateHexParserRejectsOddAndInvalidPairs()
+    {
+        MethodInfo parseHexBytes = typeof(PdfObjectParser).GetMethod("ParseHexBytes", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        TargetInvocationException oddEx = Assert.Throws<TargetInvocationException>(() => parseHexBytes.Invoke(null, ["ABC"]));
+        TargetInvocationException invalidPairEx = Assert.Throws<TargetInvocationException>(() => parseHexBytes.Invoke(null, ["FG"]));
+
+        Assert.IsType<PdfFormatException>(oddEx.InnerException);
+        Assert.IsType<PdfFormatException>(invalidPairEx.InnerException);
     }
 }

@@ -90,6 +90,25 @@ public sealed class PdfTokenizerTests
     }
 
     [Fact]
+    public void TokenizeThrowsForUnterminatedLiteralString()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("(ABC");
+
+        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(bytes));
+    }
+
+    [Fact]
+    public void TokenizeKeepsUnknownEscapedCharactersAsIs()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("(A\\zB)");
+
+        PdfToken token = Assert.Single(PdfTokenizer.Tokenize(bytes));
+
+        Assert.Equal(PdfTokenKind.String, token.Kind);
+        Assert.Equal("AzB", token.Lexeme);
+    }
+
+    [Fact]
     public void TokenizeThrowsForUnterminatedHexString()
     {
         byte[] bytes = System.Text.Encoding.ASCII.GetBytes("<AB");
@@ -109,6 +128,14 @@ public sealed class PdfTokenizerTests
     public void TokenizeThrowsForUnexpectedGreaterThanToken()
     {
         byte[] bytes = System.Text.Encoding.ASCII.GetBytes(">");
+
+        Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(bytes));
+    }
+
+    [Fact]
+    public void TokenizeThrowsWhenKeywordTokenCannotBeRead()
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(")");
 
         Assert.Throws<PdfFormatException>(() => PdfTokenizer.Tokenize(bytes));
     }

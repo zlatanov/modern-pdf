@@ -1,4 +1,5 @@
 using System.Text;
+using System.Reflection;
 using ModernPDF.DocumentModel;
 using ModernPDF.Format;
 using ModernPDF.Format.Files;
@@ -40,6 +41,31 @@ public sealed class PdfDocumentTests
         PdfDocument opened = PdfDocument.Open(bytes, "unused-password");
 
         Assert.Equal(0, opened.PageCount);
+    }
+
+    [Fact]
+    public void OpenReadOnlySpanOverloadWorksForUnencryptedAndEncryptedPdf()
+    {
+        PdfDocument unencrypted = PdfDocument.Create();
+        unencrypted.AddTextPage("span-open");
+
+        PdfDocument openedUnencrypted = PdfDocument.Open(unencrypted.Save().AsSpan());
+        Assert.Equal("span-open", openedUnencrypted.ExtractText());
+
+        PdfDocument encrypted = PdfDocument.Create();
+        encrypted.AddTextPage("secret");
+        byte[] encryptedBytes = encrypted.Save(new PdfSaveOptions
+        {
+            Security = new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+            },
+        });
+
+        Assert.Throws<UnauthorizedAccessException>(() => PdfDocument.Open(encryptedBytes.AsSpan()));
+
+        PdfDocument openedEncrypted = PdfDocument.Open(encryptedBytes.AsSpan(), "pw");
+        Assert.Equal("secret", openedEncrypted.ExtractText());
     }
 
     [Fact]
@@ -411,6 +437,14 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void GetInfoProducerThrowsWhenInfoReferenceObjectIsMissing()
+    {
+        PdfDocument document = PdfDocument.Open(CreatePdfWithMissingInfoObject());
+
+        Assert.Throws<PdfFormatException>(() => document.GetInfoProducer());
+    }
+
+    [Fact]
     public void SetInfoProducerUpdatesExistingInfoDictionary()
     {
         PdfDocument document = PdfDocument.Create();
@@ -549,6 +583,33 @@ public sealed class PdfDocumentTests
         PdfDocument document = PdfDocument.Open(pdfBytes);
 
         Assert.Throws<NotSupportedException>(() => document.ReplacePageContents(0, "BT (X) Tj ET"));
+    }
+
+    [Fact]
+    public void ReplacePageContentsThrowsWhenReferencedContentsObjectIsMissing()
+    {
+        byte[] pdfBytes = CreateSinglePagePdfWithCustomContents(new PdfReferenceObject(new PdfObjectId(9, 0)));
+        PdfDocument document = PdfDocument.Open(pdfBytes);
+
+        Assert.Throws<PdfFormatException>(() => document.ReplacePageContents(0, "BT (X) Tj ET"));
+    }
+
+    [Fact]
+    public void InternalHelpersThrowForMissingDictionaryEntryAndReplacementObject()
+    {
+        MethodInfo requireDictionaryEntry = typeof(PdfDocument).GetMethod("RequireDictionaryEntry", BindingFlags.NonPublic | BindingFlags.Static)!;
+        MethodInfo replaceObject = typeof(PdfDocument).GetMethod("ReplaceObject", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        PdfDictionaryObject dictionary = new([]);
+        List<PdfIndirectObject> objects = [];
+
+        TargetInvocationException missingEntry = Assert.Throws<TargetInvocationException>(
+            () => requireDictionaryEntry.Invoke(null, [dictionary, "Missing"]));
+        TargetInvocationException missingObject = Assert.Throws<TargetInvocationException>(
+            () => replaceObject.Invoke(null, [objects, new PdfObjectId(10, 0), new PdfStringObject("value")]));
+
+        Assert.IsType<PdfFormatException>(missingEntry.InnerException);
+        Assert.IsType<PdfFormatException>(missingObject.InnerException);
     }
 
     [Fact]
@@ -706,6 +767,38 @@ public sealed class PdfDocumentTests
         ]);
 
         return PdfFileWriter.Write(new PdfFile("2.0", objects, trailer));
+    }
+
+    private static byte[] CreatePdfWithMissingInfoObject()
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(0, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+            new PdfDictionaryEntry("Info", new PdfReferenceObject(new PdfObjectId(9, 0))),
+        ]);
+
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+                new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+            ],
+            trailer);
+
+        return PdfFileWriter.Write(file);
     }
 
     private static byte[] CreateEncryptedPdf()
