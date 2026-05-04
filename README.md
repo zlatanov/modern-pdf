@@ -115,6 +115,14 @@ byte[] signedBytes = document.SaveSignedDetached(
     });
 ```
 
+Validate detached signatures (CMS/PKCS#7):
+
+```csharp
+PdfDocument signed = PdfDocument.Open(signedBytes);
+IReadOnlyList<PdfDetachedSignatureValidationResult> results =
+    signed.ValidateDetachedSignatures(verifyCertificateChain: false);
+```
+
 ## Corpus tests
 
 Corpus tests are opt-in and use fixtures downloaded from pinned external source commits with SHA-256 verification.
@@ -140,5 +148,5 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 ## Current limitations
 
 - xref/object stream writing is not implemented (reader support is currently focused on common FlateDecode-backed inputs)
-- signature validation is not implemented (current API focuses on detached signature embedding)
+- signature validation currently supports detached CMS (`/SubFilter /adbe.pkcs7.detached`) only
 - security support is intentionally limited to Standard handler `V=1 / R=2`

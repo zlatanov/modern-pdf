@@ -1,6 +1,8 @@
 using System.Text;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Security.Cryptography.Pkcs;
+using System.Security.Cryptography.X509Certificates;
 using System.Globalization;
 using ModernPDF.DocumentModel;
 using ModernPDF.Fonts;
@@ -224,6 +226,64 @@ public sealed class PdfDocumentTests
 
         PdfDocument opened = PdfDocument.Open(encrypted, "pw");
         Assert.Throws<NotSupportedException>(() => opened.SaveSignedDetached(_ => [1, 2, 3]));
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesReturnsValidResultForSignedDocument()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("signature-valid");
+
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+            });
+
+        PdfDocument opened = PdfDocument.Open(signedBytes);
+        PdfDetachedSignatureValidationResult result = Assert.Single(opened.ValidateDetachedSignatures());
+
+        Assert.True(result.IsValid);
+        Assert.Equal(1, result.SignerCount);
+        Assert.Null(result.FailureReason);
+        Assert.Equal("adbe.pkcs7.detached", result.SubFilter);
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesReturnsInvalidResultForTamperedSignedBytes()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("signature-tamper");
+
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+            });
+
+        string text = Encoding.ASCII.GetString(signedBytes);
+        int markerIndex = text.IndexOf("signature-tamper", StringComparison.Ordinal);
+        Assert.True(markerIndex >= 0, "Expected original text marker in signed bytes.");
+        byte[] tampered = signedBytes.ToArray();
+        tampered[markerIndex] = (byte)'X';
+
+        PdfDocument opened = PdfDocument.Open(tampered);
+        PdfDetachedSignatureValidationResult result = Assert.Single(opened.ValidateDetachedSignatures());
+
+        Assert.False(result.IsValid);
+        Assert.Equal(0, result.SignerCount);
+        Assert.NotNull(result.FailureReason);
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesReturnsEmptyWhenNoSignatureExists()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("plain");
+
+        Assert.Empty(document.ValidateDetachedSignatures());
     }
 
     [Fact]
@@ -1338,6 +1398,28 @@ public sealed class PdfDocumentTests
             .Select(static part => long.Parse(part, CultureInfo.InvariantCulture))
             .ToArray();
         return (values, contentsHexLength);
+    }
+
+    private static byte[] CreateDetachedCmsSignature(ReadOnlySpan<byte> payload)
+    {
+        using RSA rsa = RSA.Create(2048);
+        CertificateRequest request = new(
+            "CN=ModernPDF Test Signer",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        using X509Certificate2 certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1));
+
+        SignedCms cms = new(new ContentInfo(payload.ToArray()), detached: true);
+        CmsSigner signer = new(SubjectIdentifierType.IssuerAndSerialNumber, certificate)
+        {
+            IncludeOption = X509IncludeOption.EndCertOnly,
+            DigestAlgorithm = new Oid("2.16.840.1.101.3.4.2.1"),
+        };
+        cms.ComputeSignature(signer);
+        return cms.Encode();
     }
 
     private static string GetFixtureFontPath()

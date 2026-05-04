@@ -9,6 +9,7 @@
     <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" />
     <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" />
     <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
   </ItemGroup>
 
 </Project>

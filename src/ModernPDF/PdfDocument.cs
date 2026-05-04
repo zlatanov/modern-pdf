@@ -7,6 +7,8 @@ using ModernPDF.Primitives;
 using ModernPDF.Security;
 using ModernPDF.Text;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Security.Cryptography.Pkcs;
 using System.Text;
 
 namespace ModernPDF;
@@ -212,6 +214,22 @@ public sealed class PdfDocument
         byte[] signedBytes = ApplyDetachedSignature(unsignedBytes, signer);
         RebaseFromSavedBytes(signedBytes);
         return signedBytes;
+    }
+
+    public IReadOnlyList<PdfDetachedSignatureValidationResult> ValidateDetachedSignatures(bool verifyCertificateChain = false)
+    {
+        List<PdfDetachedSignatureValidationResult> results = [];
+        foreach (PdfIndirectObject indirectObject in _file.Objects.OrderBy(static objectItem => objectItem.ObjectId.ObjectNumber))
+        {
+            if (indirectObject.Value is not PdfDictionaryObject dictionary || !IsSignatureDictionary(dictionary))
+            {
+                continue;
+            }
+
+            results.Add(ValidateDetachedSignature(indirectObject.ObjectId.ObjectNumber, dictionary, verifyCertificateChain));
+        }
+
+        return results;
     }
 
     private PdfFile BuildDetachedSignatureFile(PdfSignatureOptions options, out HashSet<PdfObjectId> dirtyObjectIds)
@@ -550,6 +568,199 @@ public sealed class PdfDocument
         string paddedHex = signatureHex.PadRight(contentsHexLength, '0');
         Encoding.ASCII.GetBytes(paddedHex, 0, paddedHex.Length, unsignedBytes, contentsHexStart);
         return unsignedBytes;
+    }
+
+    private PdfDetachedSignatureValidationResult ValidateDetachedSignature(
+        int signatureObjectNumber,
+        PdfDictionaryObject dictionary,
+        bool verifyCertificateChain)
+    {
+        string? filter = TryReadNameEntry(dictionary, "Filter");
+        string? subFilter = TryReadNameEntry(dictionary, "SubFilter");
+        if (!string.Equals(subFilter, "adbe.pkcs7.detached", StringComparison.Ordinal))
+        {
+            return CreateInvalidSignatureResult(
+                signatureObjectNumber,
+                filter,
+                subFilter,
+                "Only detached signatures with /SubFilter /adbe.pkcs7.detached are currently supported.");
+        }
+
+        if (_file.SourceBytes is null)
+        {
+            return CreateInvalidSignatureResult(
+                signatureObjectNumber,
+                filter,
+                subFilter,
+                "Signature validation requires source bytes from an opened or saved document.");
+        }
+
+        if (!TryReadByteRange(dictionary, _file.SourceBytes.Length, out (int Start, int Length) firstRange, out (int Start, int Length) secondRange, out string? byteRangeError))
+        {
+            return CreateInvalidSignatureResult(signatureObjectNumber, filter, subFilter, byteRangeError);
+        }
+
+        if (!TryReadDetachedCmsBytes(dictionary, out byte[]? cmsBytes, out string? cmsError))
+        {
+            return CreateInvalidSignatureResult(signatureObjectNumber, filter, subFilter, cmsError);
+        }
+        byte[] detachedCmsBytes = cmsBytes!;
+
+        byte[] signedPayload = new byte[firstRange.Length + secondRange.Length];
+        Buffer.BlockCopy(_file.SourceBytes, firstRange.Start, signedPayload, 0, firstRange.Length);
+        Buffer.BlockCopy(_file.SourceBytes, secondRange.Start, signedPayload, firstRange.Length, secondRange.Length);
+
+        try
+        {
+            SignedCms signedCms = new(new ContentInfo(signedPayload), detached: true);
+            signedCms.Decode(detachedCmsBytes);
+            signedCms.CheckSignature(verifySignatureOnly: !verifyCertificateChain);
+            return new PdfDetachedSignatureValidationResult(
+                signatureObjectNumber,
+                filter,
+                subFilter,
+                isValid: true,
+                signerCount: signedCms.SignerInfos.Count,
+                failureReason: null);
+        }
+        catch (CryptographicException exception)
+        {
+            return CreateInvalidSignatureResult(
+                signatureObjectNumber,
+                filter,
+                subFilter,
+                $"Cryptographic signature validation failed: {exception.Message}");
+        }
+    }
+
+    private static PdfDetachedSignatureValidationResult CreateInvalidSignatureResult(
+        int signatureObjectNumber,
+        string? filter,
+        string? subFilter,
+        string? reason)
+    {
+        return new PdfDetachedSignatureValidationResult(
+            signatureObjectNumber,
+            filter,
+            subFilter,
+            isValid: false,
+            signerCount: 0,
+            failureReason: reason ?? "Signature validation failed.");
+    }
+
+    private static bool IsSignatureDictionary(PdfDictionaryObject dictionary)
+    {
+        if (TryGetDictionaryEntry(dictionary, "Type", out PdfObject? typeObject)
+            && typeObject is PdfNameObject typeName
+            && string.Equals(typeName.Value, "Sig", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return TryGetDictionaryEntry(dictionary, "ByteRange", out _)
+            && TryGetDictionaryEntry(dictionary, "Contents", out _)
+            && TryGetDictionaryEntry(dictionary, "Filter", out _);
+    }
+
+    private static string? TryReadNameEntry(PdfDictionaryObject dictionary, string key)
+    {
+        if (!TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
+        {
+            return null;
+        }
+
+        return value is PdfNameObject name ? name.Value : null;
+    }
+
+    private static bool TryReadByteRange(
+        PdfDictionaryObject dictionary,
+        int sourceLength,
+        out (int Start, int Length) firstRange,
+        out (int Start, int Length) secondRange,
+        out string? error)
+    {
+        firstRange = default;
+        secondRange = default;
+
+        if (!TryGetDictionaryEntry(dictionary, "ByteRange", out PdfObject? byteRangeObject) || byteRangeObject is not PdfArrayObject byteRangeArray)
+        {
+            error = "Signature dictionary is missing /ByteRange array.";
+            return false;
+        }
+
+        if (byteRangeArray.Items.Count != 4)
+        {
+            error = "Signature /ByteRange must contain exactly four entries.";
+            return false;
+        }
+
+        int[] values = new int[4];
+        for (int index = 0; index < byteRangeArray.Items.Count; index++)
+        {
+            if (byteRangeArray.Items[index] is not PdfNumberObject numberObject
+                || !numberObject.IsInteger
+                || !double.IsFinite(numberObject.Value)
+                || numberObject.Value < 0
+                || numberObject.Value > int.MaxValue)
+            {
+                error = "Signature /ByteRange entries must be non-negative integers.";
+                return false;
+            }
+
+            values[index] = Convert.ToInt32(numberObject.Value, CultureInfo.InvariantCulture);
+        }
+
+        long firstEnd = values[0] + (long)values[1];
+        long secondEnd = values[2] + (long)values[3];
+        if (firstEnd > sourceLength || secondEnd > sourceLength)
+        {
+            error = "Signature /ByteRange exceeds the available source byte length.";
+            return false;
+        }
+
+        if (values[2] < firstEnd)
+        {
+            error = "Signature /ByteRange spans overlap.";
+            return false;
+        }
+
+        if (values[0] != 0 || secondEnd != sourceLength)
+        {
+            error = "Signature /ByteRange must span the full document except the /Contents segment.";
+            return false;
+        }
+
+        firstRange = (values[0], values[1]);
+        secondRange = (values[2], values[3]);
+        error = null;
+        return true;
+    }
+
+    private static bool TryReadDetachedCmsBytes(PdfDictionaryObject dictionary, out byte[]? cmsBytes, out string? error)
+    {
+        cmsBytes = null;
+        if (!TryGetDictionaryEntry(dictionary, "Contents", out PdfObject? contentsObject) || contentsObject is not PdfByteStringObject byteString)
+        {
+            error = "Signature dictionary is missing byte-string /Contents.";
+            return false;
+        }
+
+        ReadOnlySpan<byte> bytes = byteString.Bytes.Span;
+        int length = bytes.Length;
+        while (length > 0 && bytes[length - 1] == 0)
+        {
+            length--;
+        }
+
+        if (length == 0)
+        {
+            error = "Signature /Contents does not contain CMS signature bytes.";
+            return false;
+        }
+
+        cmsBytes = bytes[..length].ToArray();
+        error = null;
+        return true;
     }
 
     private static List<(int Start, int Length)> ParseByteRangeTokenSlots(string text, int byteRangeArrayStart)
