@@ -49,6 +49,21 @@ internal sealed class PdfEmbeddedTrueTypeFont
 
 internal static class PdfTrueTypeFontEmbedder
 {
+    public static bool CanRenderText(string fontPath, string text, PdfTextDirection direction)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fontPath);
+        ArgumentNullException.ThrowIfNull(text);
+
+        if (!File.Exists(fontPath))
+        {
+            return false;
+        }
+
+        byte[] bytes = File.ReadAllBytes(fontPath);
+        TrueTypeFont font = TrueTypeFont.Parse(bytes, fontPath);
+        return font.CanRenderText(text, direction);
+    }
+
     public static PdfEmbeddedTrueTypeFont Build(string fontPath, string text, bool subsetFont, PdfTextDirection direction)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fontPath);
@@ -339,6 +354,42 @@ internal static class PdfTrueTypeFontEmbedder
                 XMax = ScaleToPdfUnits(XMax, UnitsPerEm),
                 YMax = ScaleToPdfUnits(YMax, UnitsPerEm),
             };
+        }
+
+        public bool CanRenderText(string text, PdfTextDirection direction)
+        {
+            List<ShapedGlyphEntry> shapedGlyphs = ShapeGlyphs(text, _bytes, UnitsPerEm, direction);
+            if (shapedGlyphs.Count == 0)
+            {
+                return true;
+            }
+
+            Dictionary<int, (int Start, int End)> ranges = BuildClusterRanges(text, shapedGlyphs);
+            foreach (ShapedGlyphEntry glyph in shapedGlyphs)
+            {
+                if (glyph.GlyphId != 0)
+                {
+                    continue;
+                }
+
+                if (!ranges.TryGetValue(ClampCluster(glyph.Cluster, text.Length), out (int Start, int End) range))
+                {
+                    return false;
+                }
+
+                if (range.End <= range.Start)
+                {
+                    continue;
+                }
+
+                string clusterText = text.Substring(range.Start, range.End - range.Start);
+                if (!clusterText.All(char.IsWhiteSpace))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private SubsetResult BuildSubset(

@@ -49,7 +49,7 @@ dotnet run --project samples\ModernPDF.Samples -- secure --output .\artifacts\sa
 
 ## Embedded TrueType fonts
 
-`PdfTextOptions` supports embedding a TrueType font file, OpenType shaping (including surrogate pairs), and subsetting glyphs by default.
+`PdfTextOptions` supports embedding a TrueType font file, fallback font chains, OpenType shaping (including surrogate pairs), paragraph wrapping, justification, and subsetting glyphs by default.
 You can configure this once per document via `DefaultTextOptions` and still override per call:
 
 ```csharp
@@ -66,12 +66,26 @@ document.AddTextPage(
     textOptions: new PdfTextOptions
     {
         TrueTypeFontPath = @"C:\fonts\AnotherFont.ttf",
+        FallbackTrueTypeFontPaths = [@"C:\fonts\Fallback.ttf"],
         SubsetFont = false,
         MaxWidth = 420,
         LineHeightMultiplier = 1.4,
-        Alignment = PdfTextAlignment.Left,
+        Alignment = PdfTextAlignment.Justify,
         Direction = PdfTextDirection.Auto,
+        WritingMode = PdfWritingMode.Horizontal,
+        EnableHyphenation = true,
     });
+```
+
+Rich spans in a single paragraph:
+
+```csharp
+document.AddRichTextPage(
+[
+    new PdfTextSpan { Text = "Normal " },
+    new PdfTextSpan { Text = "Big", FontSize = 24 },
+    new PdfTextSpan { Text = " text", FontSize = 12 },
+]);
 ```
 
 ## Corpus tests

@@ -7,6 +7,7 @@ using ModernPDF.Primitives;
 using ModernPDF.Security;
 using ModernPDF.Text;
 using System.Globalization;
+using System.Text;
 
 namespace ModernPDF;
 
@@ -130,6 +131,18 @@ public sealed class PdfDocument
         return AddPageCore(effectivePageOptions, text, effectiveTextOptions);
     }
 
+    public int AddRichTextPage(
+        IReadOnlyList<PdfTextSpan> spans,
+        PdfPageOptions? pageOptions = null,
+        PdfTextOptions? textOptions = null)
+    {
+        ValidateTextSpans(spans);
+
+        int pageIndex = AddPage(pageOptions);
+        ReplacePageRichText(pageIndex, spans, textOptions);
+        return pageIndex;
+    }
+
     public string ExtractText()
     {
         return PdfTextExtractor.ExtractAll(_file, _model);
@@ -237,6 +250,68 @@ public sealed class PdfDocument
         {
             _model.Mutations.MarkDirty(objectId);
         }
+    }
+
+    public void ReplacePageRichText(int pageIndex, IReadOnlyList<PdfTextSpan> spans, PdfTextOptions? options = null)
+    {
+        ValidateTextSpans(spans);
+        PdfTextOptions effectiveOptions = ResolveTextOptions(options);
+
+        if (effectiveOptions.TrueTypeFontPath is not null || spans.Any(static span => span.TrueTypeFontPath is not null))
+        {
+            throw new NotSupportedException("Rich text spans currently support built-in Type1 rendering only.");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+
+        PdfPageModel page = _model.Pages[pageIndex];
+        if (page.Contents is not PdfReferenceObject contentsReference)
+        {
+            throw new NotSupportedException("Only page /Contents references are supported for replacement.");
+        }
+
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        int nextObjectNumber = GetNextObjectNumber(objects);
+        PdfObjectId fontId = new(nextObjectNumber++, 0);
+        PdfObjectId resourcesId = new(nextObjectNumber++, 0);
+
+        PdfDictionaryObject fontDictionary = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Font")),
+            new PdfDictionaryEntry("Subtype", new PdfNameObject("Type1")),
+            new PdfDictionaryEntry("BaseFont", new PdfNameObject("Helvetica")),
+        ]);
+        PdfDictionaryObject resourcesDictionary = new(
+        [
+            new PdfDictionaryEntry(
+                "Font",
+                new PdfDictionaryObject(
+                [
+                    new PdfDictionaryEntry("F1", new PdfReferenceObject(fontId)),
+                ])),
+        ]);
+
+        objects.Add(new PdfIndirectObject(fontId, fontDictionary));
+        objects.Add(new PdfIndirectObject(resourcesId, resourcesDictionary));
+
+        string content = BuildRichTextContentStream(spans, effectiveOptions);
+        PdfStreamObject existingStream = RequireStreamObject(contentsReference.ObjectId, "Page contents");
+        PdfStreamObject updatedStream = new(existingStream.Dictionary, System.Text.Encoding.ASCII.GetBytes(content));
+        ReplaceObject(objects, contentsReference.ObjectId, updatedStream);
+
+        PdfDictionaryObject pageDictionary = RequireDictionaryObject(page.ObjectId, "Page");
+        PdfDictionaryObject updatedPage = ReplaceDictionaryEntries(
+            pageDictionary,
+            new PdfDictionaryEntry("Resources", new PdfReferenceObject(resourcesId)));
+        ReplaceObject(objects, page.ObjectId, updatedPage);
+
+        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _model = PdfDocumentModelBuilder.Build(_file);
+        _model.Mutations.MarkDirty(page.ObjectId);
+        _model.Mutations.MarkDirty(contentsReference.ObjectId);
+        _model.Mutations.MarkDirty(fontId);
+        _model.Mutations.MarkDirty(resourcesId);
     }
 
     public void SetInfoProducer(string producer)
@@ -450,6 +525,74 @@ public sealed class PdfDocument
         PdfTextOptions effectiveOptions = options ?? _defaultTextOptions;
         ValidateTextOptions(effectiveOptions);
         return effectiveOptions;
+    }
+
+    private static string ResolveEmbeddedFontPath(string text, PdfTextOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(options.TrueTypeFontPath))
+        {
+            throw new ArgumentException("Embedded font path is required.", nameof(options));
+        }
+
+        List<string> candidates = [options.TrueTypeFontPath];
+        if (options.FallbackTrueTypeFontPaths is not null)
+        {
+            candidates.AddRange(options.FallbackTrueTypeFontPaths.Where(static path => !string.IsNullOrWhiteSpace(path)));
+        }
+
+        foreach (string candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (PdfTrueTypeFontEmbedder.CanRenderText(candidate, text, options.Direction))
+                {
+                    return candidate;
+                }
+            }
+            catch (PdfFormatException) when (candidate != options.TrueTypeFontPath)
+            {
+                // Ignore malformed fallback fonts and continue probing.
+            }
+            catch (NotSupportedException) when (candidate != options.TrueTypeFontPath)
+            {
+                // Ignore malformed fallback fonts and continue probing.
+            }
+            catch (IOException) when (candidate != options.TrueTypeFontPath)
+            {
+                // Ignore malformed fallback fonts and continue probing.
+            }
+        }
+
+        foreach (string candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return options.TrueTypeFontPath;
+    }
+
+    private static void ValidateTextSpans(IReadOnlyList<PdfTextSpan> spans)
+    {
+        ArgumentNullException.ThrowIfNull(spans);
+
+        for (int index = 0; index < spans.Count; index++)
+        {
+            PdfTextSpan span = spans[index] ?? throw new ArgumentException($"Text span at index {index} cannot be null.", nameof(spans));
+            ArgumentNullException.ThrowIfNull(span.Text);
+
+            if (span.FontSize is double fontSize && (!double.IsFinite(fontSize) || fontSize <= 0))
+            {
+                throw new ArgumentOutOfRangeException(nameof(spans), $"Text span at index {index} has an invalid FontSize.");
+            }
+
+            if (span.TrueTypeFontPath is not null && string.IsNullOrWhiteSpace(span.TrueTypeFontPath))
+            {
+                throw new ArgumentException($"Text span at index {index} has a blank TrueTypeFontPath.", nameof(spans));
+            }
+        }
     }
 
     private static PdfFile CreateEmptyFile()
@@ -679,8 +822,9 @@ public sealed class PdfDocument
             throw new ArgumentException("Embedded font path is required.", nameof(options));
         }
 
+        string selectedFontPath = ResolveEmbeddedFontPath(text, options);
         PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(
-            options.TrueTypeFontPath,
+            selectedFontPath,
             text,
             options.SubsetFont,
             options.Direction);
@@ -898,6 +1042,11 @@ public sealed class PdfDocument
         ushort unitsPerEm,
         PdfTextOptions options)
     {
+        if (options.WritingMode == PdfWritingMode.Vertical)
+        {
+            return BuildEmbeddedVerticalTextContentStream(glyphRun, unitsPerEm, options);
+        }
+
         string fontSize = options.FontSize.ToString("0.###", CultureInfo.InvariantCulture);
         double lineHeight = options.FontSize * options.LineHeightMultiplier;
         List<List<PdfShapedGlyph>> lines = BuildEmbeddedLines(glyphRun, cidToUnicode, unitsPerEm, options);
@@ -916,11 +1065,20 @@ public sealed class PdfDocument
 
             EmbeddedLineMetrics metrics = MeasureEmbeddedLine(line, unitsPerEm, options.FontSize);
             double containerWidth = options.MaxWidth ?? metrics.Width;
-            double alignmentOffset = GetAlignmentOffset(options.Alignment, containerWidth, metrics.Width);
+            double alignmentOffset = GetAlignmentOffset(
+                options.Alignment == PdfTextAlignment.Justify ? PdfTextAlignment.Left : options.Alignment,
+                containerWidth,
+                metrics.Width);
             double penX = options.X + alignmentOffset - metrics.MinX;
             double penY = options.Y - (lineIndex * lineHeight);
             List<EmbeddedGlyphPlacement> placements = new(line.Count);
             int sequence = 0;
+            int whitespaceCount = options.Alignment == PdfTextAlignment.Justify && lineIndex < lines.Count - 1
+                ? line.Count(glyph => IsWhitespaceGlyph(glyph, cidToUnicode))
+                : 0;
+            double extraWordSpacing = whitespaceCount > 0
+                ? Math.Max(0, containerWidth - metrics.Width) / whitespaceCount
+                : 0;
 
             foreach (PdfShapedGlyph glyph in line)
             {
@@ -932,6 +1090,11 @@ public sealed class PdfDocument
                 placements.Add(new EmbeddedGlyphPlacement(glyph, glyphX, glyphY, sequence++));
 
                 penX += ScaleGlyphUnitToUserSpace(glyph.XAdvance, unitsPerEm, options.FontSize);
+                if (extraWordSpacing > 0 && IsWhitespaceGlyph(glyph, cidToUnicode))
+                {
+                    penX += extraWordSpacing;
+                }
+
                 penY += ScaleGlyphUnitToUserSpace(glyph.YAdvance, unitsPerEm, options.FontSize);
             }
 
@@ -953,6 +1116,48 @@ public sealed class PdfDocument
         return System.Text.Encoding.ASCII.GetBytes(builder.ToString());
     }
 
+    private static ReadOnlyMemory<byte> BuildEmbeddedVerticalTextContentStream(
+        IReadOnlyList<PdfShapedGlyph> glyphRun,
+        ushort unitsPerEm,
+        PdfTextOptions options)
+    {
+        string fontSize = options.FontSize.ToString("0.###", CultureInfo.InvariantCulture);
+        double step = options.FontSize * options.LineHeightMultiplier;
+        double maxColumnHeight = options.MaxWidth ?? double.PositiveInfinity;
+        double x = options.X;
+        double y = options.Y;
+        double columnHeight = 0;
+
+        System.Text.StringBuilder builder = new();
+        builder.Append("BT /F1 ");
+        builder.Append(fontSize);
+        builder.Append(" Tf ");
+
+        foreach (PdfShapedGlyph glyph in glyphRun.OrderBy(static value => value.Cluster))
+        {
+            if (double.IsFinite(maxColumnHeight) && maxColumnHeight > 0 && columnHeight + step > maxColumnHeight && columnHeight > 0)
+            {
+                x += step;
+                y = options.Y;
+                columnHeight = 0;
+            }
+
+            builder.Append("1 0 0 1 ");
+            builder.Append(x.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(' ');
+            builder.Append(y.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(" Tm <");
+            builder.Append(glyph.Cid.ToString("X4", CultureInfo.InvariantCulture));
+            builder.Append("> Tj ");
+
+            y -= Math.Abs(ScaleGlyphUnitToUserSpace(glyph.XAdvance, unitsPerEm, options.FontSize));
+            columnHeight += step;
+        }
+
+        builder.Append("ET");
+        return System.Text.Encoding.ASCII.GetBytes(builder.ToString());
+    }
+
     private static double ScaleGlyphUnitToUserSpace(int value, ushort unitsPerEm, double fontSize)
     {
         return value * fontSize / unitsPerEm;
@@ -960,8 +1165,13 @@ public sealed class PdfDocument
 
     private static string BuildTextContentStream(string text, PdfTextOptions options)
     {
+        if (options.WritingMode == PdfWritingMode.Vertical)
+        {
+            return BuildVerticalTextContentStream(text, options);
+        }
+
         if (options.MaxWidth is null
-            && options.Alignment == PdfTextAlignment.Left
+            && options.Alignment is PdfTextAlignment.Left or PdfTextAlignment.Justify
             && options.LineHeightMultiplier == 1.2
             && text.IndexOfAny(['\r', '\n']) < 0)
         {
@@ -991,9 +1201,22 @@ public sealed class PdfDocument
 
             double lineWidth = EstimateSimpleTextWidth(line, options.FontSize);
             double containerWidth = options.MaxWidth ?? lineWidth;
-            double alignmentOffset = GetAlignmentOffset(options.Alignment, containerWidth, lineWidth);
+            bool justifyLine = options.Alignment == PdfTextAlignment.Justify && index < lines.Count - 1;
+            double alignmentOffset = GetAlignmentOffset(
+                justifyLine ? PdfTextAlignment.Left : options.Alignment,
+                containerWidth,
+                lineWidth);
             double x = options.X + alignmentOffset;
             double y = options.Y - (index * lineHeight);
+            double extra = Math.Max(0, containerWidth - lineWidth);
+            int spaceCount = justifyLine ? line.Count(static value => value == ' ') : 0;
+            double wordSpacing = spaceCount > 0 ? extra / spaceCount : 0;
+
+            if (wordSpacing > 0)
+            {
+                builder.Append(wordSpacing.ToString("0.###", CultureInfo.InvariantCulture));
+                builder.Append(" Tw ");
+            }
 
             builder.Append("1 0 0 1 ");
             builder.Append(x.ToString("0.###", CultureInfo.InvariantCulture));
@@ -1002,10 +1225,268 @@ public sealed class PdfDocument
             builder.Append(" Tm (");
             builder.Append(EscapeLiteralString(line));
             builder.Append(") Tj ");
+
+            if (wordSpacing > 0)
+            {
+                builder.Append("0 Tw ");
+            }
         }
 
         builder.Append("ET");
         return builder.ToString();
+    }
+
+    private static string BuildRichTextContentStream(IReadOnlyList<PdfTextSpan> spans, PdfTextOptions options)
+    {
+        if (options.WritingMode == PdfWritingMode.Vertical)
+        {
+            return BuildVerticalRichTextContentStream(spans, options);
+        }
+
+        List<RichTextAtom> atoms = BuildRichTextAtoms(spans, options);
+        List<List<RichTextAtom>> lines = options.MaxWidth is null
+            ? SplitRichAtomsByExplicitBreaks(atoms)
+            : BuildWrappedRichTextLines(atoms, options);
+
+        System.Text.StringBuilder builder = new();
+        builder.Append("BT ");
+        double y = options.Y;
+
+        for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+        {
+            List<RichTextAtom> line = lines[lineIndex];
+            if (line.Count == 0)
+            {
+                y -= options.FontSize * options.LineHeightMultiplier;
+                continue;
+            }
+
+            double lineHeight = line.Max(static atom => atom.FontSize) * options.LineHeightMultiplier;
+            double lineWidth = MeasureRichLineWidth(line);
+            double containerWidth = options.MaxWidth ?? lineWidth;
+            bool justifyLine = options.Alignment == PdfTextAlignment.Justify && lineIndex < lines.Count - 1;
+            double alignmentOffset = GetAlignmentOffset(
+                justifyLine ? PdfTextAlignment.Left : options.Alignment,
+                containerWidth,
+                lineWidth);
+            double x = options.X + alignmentOffset;
+
+            double extra = Math.Max(0, containerWidth - lineWidth);
+            int spaceCount = justifyLine ? CountRichSpaces(line) : 0;
+            double wordSpacing = spaceCount > 0 ? extra / spaceCount : 0;
+            if (wordSpacing > 0)
+            {
+                builder.Append(wordSpacing.ToString("0.###", CultureInfo.InvariantCulture));
+                builder.Append(" Tw ");
+            }
+
+            int atomIndex = 0;
+            while (atomIndex < line.Count)
+            {
+                double fontSize = line[atomIndex].FontSize;
+                System.Text.StringBuilder segment = new();
+                int segmentSpaceCount = 0;
+
+                while (atomIndex < line.Count && Math.Abs(line[atomIndex].FontSize - fontSize) < 0.001)
+                {
+                    segment.Append(line[atomIndex].Text);
+                    segmentSpaceCount += line[atomIndex].Text.Count(static value => value == ' ');
+                    atomIndex++;
+                }
+
+                string segmentText = segment.ToString();
+                builder.Append("/F1 ");
+                builder.Append(fontSize.ToString("0.###", CultureInfo.InvariantCulture));
+                builder.Append(" Tf 1 0 0 1 ");
+                builder.Append(x.ToString("0.###", CultureInfo.InvariantCulture));
+                builder.Append(' ');
+                builder.Append(y.ToString("0.###", CultureInfo.InvariantCulture));
+                builder.Append(" Tm (");
+                builder.Append(EscapeLiteralString(segmentText));
+                builder.Append(") Tj ");
+
+                x += EstimateSimpleTextWidth(segmentText, fontSize);
+                if (wordSpacing > 0)
+                {
+                    x += segmentSpaceCount * wordSpacing;
+                }
+            }
+
+            if (wordSpacing > 0)
+            {
+                builder.Append("0 Tw ");
+            }
+
+            y -= lineHeight;
+        }
+
+        builder.Append("ET");
+        return builder.ToString();
+    }
+
+    private static string BuildVerticalRichTextContentStream(IReadOnlyList<PdfTextSpan> spans, PdfTextOptions options)
+    {
+        List<RichTextAtom> atoms = BuildRichTextAtoms(spans, options);
+
+        System.Text.StringBuilder builder = new();
+        builder.Append("BT ");
+
+        double x = options.X;
+        double y = options.Y;
+        double columnHeight = 0;
+        double maxColumnHeight = options.MaxWidth ?? double.PositiveInfinity;
+
+        foreach (RichTextAtom atom in atoms)
+        {
+            if (atom.Text == "\n")
+            {
+                x += atom.FontSize * options.LineHeightMultiplier;
+                y = options.Y;
+                columnHeight = 0;
+                continue;
+            }
+
+            double step = atom.FontSize * options.LineHeightMultiplier;
+            if (double.IsFinite(maxColumnHeight) && maxColumnHeight > 0 && columnHeight + step > maxColumnHeight && columnHeight > 0)
+            {
+                x += step;
+                y = options.Y;
+                columnHeight = 0;
+            }
+
+            builder.Append("/F1 ");
+            builder.Append(atom.FontSize.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(" Tf 1 0 0 1 ");
+            builder.Append(x.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(' ');
+            builder.Append(y.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(" Tm (");
+            builder.Append(EscapeLiteralString(atom.Text));
+            builder.Append(") Tj ");
+
+            y -= step;
+            columnHeight += step;
+        }
+
+        builder.Append("ET");
+        return builder.ToString();
+    }
+
+    private static List<RichTextAtom> BuildRichTextAtoms(IReadOnlyList<PdfTextSpan> spans, PdfTextOptions options)
+    {
+        List<RichTextAtom> atoms = [];
+        foreach (PdfTextSpan span in spans)
+        {
+            double fontSize = span.FontSize ?? options.FontSize;
+            string normalized = span.Text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+            foreach (string element in EnumerateTextElements(normalized))
+            {
+                atoms.Add(new RichTextAtom(element, fontSize));
+            }
+        }
+
+        return atoms;
+    }
+
+    private static List<List<RichTextAtom>> SplitRichAtomsByExplicitBreaks(IReadOnlyList<RichTextAtom> atoms)
+    {
+        List<List<RichTextAtom>> lines = [[]];
+        foreach (RichTextAtom atom in atoms)
+        {
+            if (atom.Text == "\n")
+            {
+                lines.Add([]);
+                continue;
+            }
+
+            lines[^1].Add(atom);
+        }
+
+        return lines;
+    }
+
+    private static List<List<RichTextAtom>> BuildWrappedRichTextLines(IReadOnlyList<RichTextAtom> atoms, PdfTextOptions options)
+    {
+        List<List<RichTextAtom>> lines = [[]];
+        double maxWidth = options.MaxWidth ?? double.PositiveInfinity;
+        int currentLineIndex = 0;
+        int lastBreakIndex = -1;
+        double currentWidth = 0;
+
+        foreach (RichTextAtom atom in atoms)
+        {
+            if (atom.Text == "\n")
+            {
+                currentLineIndex++;
+                lines.Add([]);
+                lastBreakIndex = -1;
+                currentWidth = 0;
+                continue;
+            }
+
+            List<RichTextAtom> currentLine = lines[currentLineIndex];
+            currentLine.Add(atom);
+            currentWidth += EstimateSimpleTextWidth(atom.Text, atom.FontSize);
+
+            if (IsSimpleBreakOpportunity(atom.Text))
+            {
+                lastBreakIndex = currentLine.Count - 1;
+            }
+
+            if (double.IsFinite(maxWidth) && maxWidth > 0 && currentWidth > maxWidth && currentLine.Count > 1)
+            {
+                List<RichTextAtom> overflow;
+                if (lastBreakIndex >= 0)
+                {
+                    int breakAfter = lastBreakIndex + 1;
+                    overflow = currentLine.GetRange(breakAfter, currentLine.Count - breakAfter);
+                    currentLine.RemoveRange(breakAfter, currentLine.Count - breakAfter);
+                }
+                else if (options.EnableHyphenation && currentLine.Count >= 3)
+                {
+                    RichTextAtom pushed = currentLine[^1];
+                    currentLine.RemoveAt(currentLine.Count - 1);
+                    currentLine.Add(new RichTextAtom("-", pushed.FontSize));
+                    overflow = [pushed];
+                }
+                else
+                {
+                    RichTextAtom pushed = currentLine[^1];
+                    currentLine.RemoveAt(currentLine.Count - 1);
+                    overflow = [pushed];
+                }
+
+                currentLineIndex++;
+                lines.Add(overflow);
+                currentWidth = MeasureRichLineWidth(lines[currentLineIndex]);
+                lastBreakIndex = FindLastRichBreak(lines[currentLineIndex]);
+            }
+        }
+
+        return lines;
+    }
+
+    private static int FindLastRichBreak(List<RichTextAtom> atoms)
+    {
+        for (int index = atoms.Count - 1; index >= 0; index--)
+        {
+            if (IsSimpleBreakOpportunity(atoms[index].Text))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static double MeasureRichLineWidth(IEnumerable<RichTextAtom> line)
+    {
+        return line.Sum(static atom => EstimateSimpleTextWidth(atom.Text, atom.FontSize));
+    }
+
+    private static int CountRichSpaces(IEnumerable<RichTextAtom> line)
+    {
+        return line.Sum(static atom => atom.Text.Count(static value => value == ' '));
     }
 
     private static List<List<PdfShapedGlyph>> BuildEmbeddedLines(
@@ -1155,23 +1636,7 @@ public sealed class PdfDocument
                 lines.Add(string.Empty);
                 continue;
             }
-
-            string[] words = paragraph.Split(' ', StringSplitOptions.None);
-            string current = string.Empty;
-            foreach (string word in words)
-            {
-                string candidate = current.Length == 0 ? word : $"{current} {word}";
-                if (current.Length == 0 || EstimateSimpleTextWidth(candidate, options.FontSize) <= options.MaxWidth.Value)
-                {
-                    current = candidate;
-                    continue;
-                }
-
-                lines.Add($"{current} ");
-                current = word;
-            }
-
-            lines.Add(current);
+            AppendWrappedSimpleParagraph(paragraph, options, lines);
         }
 
         return lines;
@@ -1179,8 +1644,13 @@ public sealed class PdfDocument
 
     private static double EstimateSimpleTextWidth(string text, double fontSize)
     {
-        int glyphCount = text.EnumerateRunes().Count();
-        return glyphCount * fontSize * 0.5;
+        double widthUnits = 0;
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            widthUnits += GetApproximateHelveticaWidth(rune);
+        }
+
+        return widthUnits * fontSize / 1000.0;
     }
 
     private static double GetAlignmentOffset(PdfTextAlignment alignment, double containerWidth, double lineWidth)
@@ -1190,7 +1660,174 @@ public sealed class PdfDocument
             PdfTextAlignment.Left => 0,
             PdfTextAlignment.Center => (containerWidth - lineWidth) / 2,
             PdfTextAlignment.Right => containerWidth - lineWidth,
+            PdfTextAlignment.Justify => 0,
             _ => 0,
+        };
+    }
+
+    private static string BuildVerticalTextContentStream(string text, PdfTextOptions options)
+    {
+        System.Text.StringBuilder builder = new();
+        builder.Append("BT /F1 ");
+        builder.Append(options.FontSize.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.Append(" Tf ");
+
+        IReadOnlyList<string> elements = EnumerateTextElements(text);
+        double step = options.FontSize * options.LineHeightMultiplier;
+        double maxColumnHeight = options.MaxWidth ?? double.PositiveInfinity;
+        double x = options.X;
+        double y = options.Y;
+        double columnHeight = 0;
+
+        foreach (string element in elements)
+        {
+            if (element is "\r" or "\n")
+            {
+                x += step;
+                y = options.Y;
+                columnHeight = 0;
+                continue;
+            }
+
+            if (double.IsFinite(maxColumnHeight) && maxColumnHeight > 0 && columnHeight + step > maxColumnHeight && columnHeight > 0)
+            {
+                x += step;
+                y = options.Y;
+                columnHeight = 0;
+            }
+
+            builder.Append("1 0 0 1 ");
+            builder.Append(x.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(' ');
+            builder.Append(y.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(" Tm (");
+            builder.Append(EscapeLiteralString(element));
+            builder.Append(") Tj ");
+
+            y -= step;
+            columnHeight += step;
+        }
+
+        builder.Append("ET");
+        return builder.ToString();
+    }
+
+    private static void AppendWrappedSimpleParagraph(string paragraph, PdfTextOptions options, List<string> lines)
+    {
+        List<string> elements = EnumerateTextElements(paragraph);
+        int lineStart = 0;
+        int lastBreak = -1;
+        double lineWidth = 0;
+        int index = 0;
+
+        while (index < elements.Count)
+        {
+            string element = elements[index];
+            lineWidth += EstimateSimpleTextWidth(element, options.FontSize);
+            if (IsSimpleBreakOpportunity(element))
+            {
+                lastBreak = index;
+            }
+
+            if (lineWidth > options.MaxWidth!.Value && index > lineStart)
+            {
+                if (lastBreak >= lineStart)
+                {
+                    int breakAfter = lastBreak + 1;
+                    lines.Add(string.Concat(elements.Skip(lineStart).Take(breakAfter - lineStart)));
+                    lineStart = breakAfter;
+                    index = lineStart;
+                    lineWidth = 0;
+                    lastBreak = -1;
+                    continue;
+                }
+
+                if (options.EnableHyphenation && index - lineStart >= 3)
+                {
+                    string hyphenated = string.Concat(elements.Skip(lineStart).Take(index - lineStart)) + "-";
+                    lines.Add(hyphenated);
+                    lineStart = index;
+                    lineWidth = EstimateSimpleTextWidth(elements[index], options.FontSize);
+                    lastBreak = -1;
+                    index++;
+                    continue;
+                }
+
+                lines.Add(string.Concat(elements.Skip(lineStart).Take(index - lineStart)));
+                lineStart = index;
+                lineWidth = EstimateSimpleTextWidth(elements[index], options.FontSize);
+                lastBreak = -1;
+                index++;
+                continue;
+            }
+
+            index++;
+        }
+
+        if (lineStart < elements.Count)
+        {
+            lines.Add(string.Concat(elements.Skip(lineStart)));
+        }
+    }
+
+    private static bool IsSimpleBreakOpportunity(string element)
+    {
+        if (element.Length == 0)
+        {
+            return false;
+        }
+
+        return char.IsWhiteSpace(element, 0) || element is "-" or "‐" or "‑" or "‒" or "–" or "—";
+    }
+
+    private static List<string> EnumerateTextElements(string text)
+    {
+        List<string> elements = [];
+        TextElementEnumerator enumerator = StringInfo.GetTextElementEnumerator(text);
+        while (enumerator.MoveNext())
+        {
+            if (enumerator.GetTextElement() is string element)
+            {
+                elements.Add(element);
+            }
+        }
+
+        return elements;
+    }
+
+    private static int GetApproximateHelveticaWidth(Rune rune)
+    {
+        if (rune.Value <= 0x20)
+        {
+            return rune.Value == 0x20 ? 278 : 0;
+        }
+
+        if (rune.IsAscii)
+        {
+            char character = (char)rune.Value;
+            return character switch
+            {
+                >= 'A' and <= 'Z' => 667,
+                >= 'a' and <= 'z' => 556,
+                >= '0' and <= '9' => 556,
+                '.' or ',' or ':' or ';' => 278,
+                '!' or '?' => 333,
+                '-' => 333,
+                '"' or '\'' => 222,
+                '(' or ')' or '[' or ']' or '{' or '}' => 333,
+                '/' or '\\' => 278,
+                '+' or '=' or '<' or '>' => 584,
+                '@' => 1015,
+                _ => 500,
+            };
+        }
+
+        UnicodeCategory category = Rune.GetUnicodeCategory(rune);
+        return category switch
+        {
+            UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark => 0,
+            UnicodeCategory.SpaceSeparator => 500,
+            _ => 1000,
         };
     }
 
@@ -1258,6 +1895,23 @@ public sealed class PdfDocument
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Text Direction contains an unsupported value.");
         }
+
+        if (!Enum.IsDefined(options.WritingMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Text WritingMode contains an unsupported value.");
+        }
+
+        if (options.FallbackTrueTypeFontPaths is not null)
+        {
+            for (int index = 0; index < options.FallbackTrueTypeFontPaths.Count; index++)
+            {
+                string? fallback = options.FallbackTrueTypeFontPaths[index];
+                if (string.IsNullOrWhiteSpace(fallback))
+                {
+                    throw new ArgumentException($"FallbackTrueTypeFontPaths[{index}] cannot be blank.", nameof(options));
+                }
+            }
+        }
     }
 
     private static void ValidateSecurityOptions(PdfSecurityOptions security)
@@ -1292,4 +1946,6 @@ public sealed class PdfDocument
         double X,
         double Y,
         int Sequence);
+
+    private readonly record struct RichTextAtom(string Text, double FontSize);
 }

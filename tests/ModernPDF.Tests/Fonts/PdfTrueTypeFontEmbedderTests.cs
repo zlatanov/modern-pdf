@@ -233,6 +233,13 @@ public sealed class PdfTrueTypeFontEmbedderTests
     }
 
     [Fact]
+    public void CanRenderTextReturnsFalseForMissingFile()
+    {
+        string missingPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.ttf");
+        Assert.False(PdfTrueTypeFontEmbedder.CanRenderText(missingPath, "abc", PdfTextDirection.Auto));
+    }
+
+    [Fact]
     public void BuildUsesSanitizedFileNameWhenNameTableIsMissing()
     {
         byte[] bytes = LoadFixtureFontBytes();

@@ -19,4 +19,10 @@ public sealed class PdfTextOptions
     public PdfTextAlignment Alignment { get; init; } = PdfTextAlignment.Left;
 
     public PdfTextDirection Direction { get; init; } = PdfTextDirection.Auto;
+
+    public PdfWritingMode WritingMode { get; init; } = PdfWritingMode.Horizontal;
+
+    public bool EnableHyphenation { get; init; }
+
+    public IReadOnlyList<string>? FallbackTrueTypeFontPaths { get; init; }
 }

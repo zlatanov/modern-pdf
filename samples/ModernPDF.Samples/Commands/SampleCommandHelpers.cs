@@ -30,40 +30,49 @@ internal static class SampleCommandHelpers
     public static void ConfigureDefaultTextOptions(PdfDocument document, double fontSize = 12, double x = 72, double y = 720)
     {
         ArgumentNullException.ThrowIfNull(document);
-        string? trueTypeFontPath = GetDefaultTrueTypeFontPath();
+        List<string> availableFonts = GetAvailableWindowsTrueTypeFonts();
+        string? trueTypeFontPath = availableFonts.Count > 0 ? availableFonts[0] : null;
         document.DefaultTextOptions = trueTypeFontPath is null
             ? new PdfTextOptions { FontSize = fontSize, X = x, Y = y }
-            : new PdfTextOptions { FontSize = fontSize, X = x, Y = y, TrueTypeFontPath = trueTypeFontPath };
+            : new PdfTextOptions
+            {
+                FontSize = fontSize,
+                X = x,
+                Y = y,
+                TrueTypeFontPath = trueTypeFontPath,
+                FallbackTrueTypeFontPaths = availableFonts.Skip(1).ToArray(),
+            };
     }
 
-    private static string? GetDefaultTrueTypeFontPath()
+    private static List<string> GetAvailableWindowsTrueTypeFonts()
     {
         if (!OperatingSystem.IsWindows())
         {
-            return null;
+            return [];
         }
 
         string windowsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         if (string.IsNullOrWhiteSpace(windowsDirectory))
         {
-            return null;
+            return [];
         }
 
         string fontsDirectory = Path.Combine(windowsDirectory, "Fonts");
         if (!Directory.Exists(fontsDirectory))
         {
-            return null;
+            return [];
         }
 
+        List<string> available = [];
         foreach (string candidate in WindowsTrueTypeCandidates)
         {
             string candidatePath = Path.Combine(fontsDirectory, candidate);
             if (File.Exists(candidatePath))
             {
-                return candidatePath;
+                available.Add(candidatePath);
             }
         }
 
-        return null;
+        return available;
     }
 }

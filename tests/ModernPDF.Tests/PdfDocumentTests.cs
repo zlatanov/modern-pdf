@@ -433,6 +433,118 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void AddTextPageWithEmbeddedTrueTypeFontUsesFallbackChain()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string missingPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.ttf");
+        string fallbackPath = GetFixtureFontPath();
+        const string text = "Fallback chain \U0001F600";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                TrueTypeFontPath = missingPath,
+                FallbackTrueTypeFontPaths = [fallbackPath],
+                SubsetFont = true,
+            });
+
+        Assert.Equal(text, document.ExtractText());
+    }
+
+    [Fact]
+    public void AddTextPageWithBuiltInFontSupportsJustifyAlignment()
+    {
+        PdfDocument document = PdfDocument.Create();
+        const string text = "This line should use justify spacing across multiple wrapped lines.";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 12,
+                X = 72,
+                Y = 720,
+                MaxWidth = 140,
+                Alignment = PdfTextAlignment.Justify,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal(text, document.ExtractText());
+        Assert.Contains(" Tw ", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddTextPageWithVerticalWritingModePlacesGlyphsTopToBottom()
+    {
+        PdfDocument document = PdfDocument.Create();
+        const string text = "ABC";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 12,
+                X = 100,
+                Y = 700,
+                WritingMode = PdfWritingMode.Vertical,
+                LineHeightMultiplier = 1,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal(text, document.ExtractText());
+        Assert.Contains("1 0 0 1 100 700 Tm (A) Tj", ascii, StringComparison.Ordinal);
+        Assert.Contains("1 0 0 1 100 688 Tm (B) Tj", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddRichTextPageSupportsMixedSpanSizes()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        document.AddRichTextPage(
+            [
+                new PdfTextSpan { Text = "Hello " },
+                new PdfTextSpan { Text = "BIG", FontSize = 24 },
+                new PdfTextSpan { Text = " world", FontSize = 12 },
+            ],
+            textOptions: new PdfTextOptions
+            {
+                X = 72,
+                Y = 720,
+                MaxWidth = 400,
+                Alignment = PdfTextAlignment.Justify,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal("Hello BIG world", document.ExtractText());
+        Assert.Contains("/F1 24 Tf", ascii, StringComparison.Ordinal);
+        Assert.Contains("/F1 12 Tf", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReplacePageRichTextUpdatesPageText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("old");
+
+        document.ReplacePageRichText(
+            0,
+            [
+                new PdfTextSpan { Text = "new " },
+                new PdfTextSpan { Text = "value", FontSize = 18 },
+            ]);
+
+        Assert.Equal("new value", document.ExtractText());
+    }
+
+    [Fact]
     public void AddTextPageUsesDocumentDefaultTextOptionsWhenOptionsAreNotProvided()
     {
         PdfDocument document = PdfDocument.Create();
@@ -871,6 +983,8 @@ public sealed class PdfDocumentTests
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { LineHeightMultiplier = 0 }));
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { Alignment = (PdfTextAlignment)999 }));
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { Direction = (PdfTextDirection)999 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { WritingMode = (PdfWritingMode)999 }));
+        Assert.Throws<ArgumentException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { FallbackTrueTypeFontPaths = [""] }));
         Assert.Throws<ArgumentException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { TrueTypeFontPath = " " }));
     }
 
@@ -887,6 +1001,8 @@ public sealed class PdfDocumentTests
         Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { LineHeightMultiplier = 0 });
         Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { Alignment = (PdfTextAlignment)999 });
         Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { Direction = (PdfTextDirection)999 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { WritingMode = (PdfWritingMode)999 });
+        Assert.Throws<ArgumentException>(() => document.DefaultTextOptions = new PdfTextOptions { FallbackTrueTypeFontPaths = [" "] });
         Assert.Throws<ArgumentException>(() => document.DefaultTextOptions = new PdfTextOptions { TrueTypeFontPath = " " });
     }
 

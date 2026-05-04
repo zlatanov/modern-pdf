@@ -28,20 +28,52 @@ internal static class CreateSampleCommand
         document.AddTextPage(
             "Hello from ModernPDF!",
             new PdfPageOptions { Width = 612, Height = 792 });
+
         PdfTextOptions defaultText = document.DefaultTextOptions;
-        document.DefaultTextOptions = new PdfTextOptions
-        {
-            FontSize = 14,
-            X = 72,
-            Y = 740,
-            TrueTypeFontPath = defaultText.TrueTypeFontPath,
-            SubsetFont = defaultText.SubsetFont,
-            MaxWidth = 468,
-            LineHeightMultiplier = 1.4,
-            Alignment = PdfTextAlignment.Left,
-            Direction = PdfTextDirection.Auto,
-        };
-        document.AddTextPage("Paragraph demo: office fi ffi, Arabic مرحبا بالعالم, and Emoji 👩‍💻 with automatic shaping, wrapping, and alignment.");
+        document.AddRichTextPage(
+        [
+            new PdfTextSpan { Text = "Rich paragraph: " },
+            new PdfTextSpan { Text = "office fi ffi ", FontSize = 18 },
+            new PdfTextSpan { Text = "Arabic مرحبا بالعالم ", FontSize = 14 },
+            new PdfTextSpan { Text = "Emoji 👩‍💻 fallback.", FontSize = 14 },
+        ],
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 14,
+                X = 72,
+                Y = 740,
+                MaxWidth = 468,
+                LineHeightMultiplier = 1.35,
+                Alignment = PdfTextAlignment.Justify,
+                Direction = PdfTextDirection.Auto,
+            });
+
+        document.AddTextPage(
+            "Fallback demo 👩‍💻 with shaping and fallback chain.",
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 14,
+                X = 72,
+                Y = 720,
+                TrueTypeFontPath = defaultText.TrueTypeFontPath,
+                FallbackTrueTypeFontPaths = defaultText.FallbackTrueTypeFontPaths,
+                SubsetFont = defaultText.SubsetFont,
+                MaxWidth = 468,
+                Alignment = PdfTextAlignment.Justify,
+                Direction = PdfTextDirection.Auto,
+            });
+
+        document.AddTextPage(
+            "Vertical sample",
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 16,
+                X = 72,
+                Y = 720,
+                WritingMode = PdfWritingMode.Vertical,
+                MaxWidth = 200,
+                LineHeightMultiplier = 1.1,
+            });
         document.SetInfoProducer("ModernPDF Samples");
         document.Save(outputPath);
 
