@@ -120,6 +120,153 @@ public sealed class PdfDocumentDssOcspRevocationValidationTests
         }
     }
 
+    [Fact]
+    public void ValidateDetachedSignaturesOfflineRevocationAcceptsDelegatedOcspResponderWithEku()
+    {
+        (X509Certificate2 root, X509Certificate2 intermediate, X509Certificate2 leaf) = CreateSigningChainWithRevocationPointers();
+        using (root)
+        using (intermediate)
+        using (leaf)
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            using X509Certificate2 delegatedResponder = CreateDelegatedOcspResponderCertificate(
+                issuerCertificate: intermediate,
+                subjectName: "CN=ModernPDF OCSP Delegated Responder",
+                now,
+                includeOcspSigningEku: true);
+
+            byte[] signedBytes = CreateSignedPdf(leaf, now);
+            byte[] leafOcsp = BuildOcspResponse(
+                certificateToCheck: leaf,
+                issuerCertificate: intermediate,
+                producedAt: now.AddMinutes(-30),
+                thisUpdate: now.AddHours(-1),
+                nextUpdate: now.AddDays(1),
+                status: OcspTestCertStatus.Good,
+                responseSignerCertificate: delegatedResponder,
+                responderIdentifierKind: OcspTestResponderIdentifierKind.ByKey,
+                embeddedResponderCertificates: [delegatedResponder]);
+            byte[] intermediateOcsp = BuildOcspResponse(
+                certificateToCheck: intermediate,
+                issuerCertificate: root,
+                producedAt: now.AddMinutes(-30),
+                thisUpdate: now.AddHours(-1),
+                nextUpdate: now.AddDays(1),
+                status: OcspTestCertStatus.Good);
+            byte[] withEvidence = AddDssEvidence(
+                signedBytes,
+                certificates: [intermediate],
+                ocspResponses: [leafOcsp, intermediateOcsp],
+                crls: []);
+
+            PdfDetachedSignatureValidationResult result = Assert.Single(
+                PdfDocument.Open(withEvidence).ValidateDetachedSignatures(CreateOfflineRevocationOptions(root, now)));
+
+            Assert.True(result.IsValid);
+            Assert.True(result.CryptographicallyValid);
+            Assert.True(result.TrustChecksPassed);
+            Assert.True(result.RevocationValid);
+        }
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesOfflineRevocationRejectsDelegatedOcspResponderWithoutEku()
+    {
+        (X509Certificate2 root, X509Certificate2 intermediate, X509Certificate2 leaf) = CreateSigningChainWithRevocationPointers();
+        using (root)
+        using (intermediate)
+        using (leaf)
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            using X509Certificate2 delegatedResponder = CreateDelegatedOcspResponderCertificate(
+                issuerCertificate: intermediate,
+                subjectName: "CN=ModernPDF OCSP Delegated Responder No EKU",
+                now,
+                includeOcspSigningEku: false);
+
+            byte[] signedBytes = CreateSignedPdf(leaf, now);
+            byte[] leafOcsp = BuildOcspResponse(
+                certificateToCheck: leaf,
+                issuerCertificate: intermediate,
+                producedAt: now.AddMinutes(-30),
+                thisUpdate: now.AddHours(-1),
+                nextUpdate: now.AddDays(1),
+                status: OcspTestCertStatus.Good,
+                responseSignerCertificate: delegatedResponder,
+                responderIdentifierKind: OcspTestResponderIdentifierKind.ByKey,
+                embeddedResponderCertificates: [delegatedResponder]);
+            byte[] intermediateOcsp = BuildOcspResponse(
+                certificateToCheck: intermediate,
+                issuerCertificate: root,
+                producedAt: now.AddMinutes(-30),
+                thisUpdate: now.AddHours(-1),
+                nextUpdate: now.AddDays(1),
+                status: OcspTestCertStatus.Good);
+            byte[] withEvidence = AddDssEvidence(
+                signedBytes,
+                certificates: [intermediate],
+                ocspResponses: [leafOcsp, intermediateOcsp],
+                crls: []);
+
+            PdfDetachedSignatureValidationResult result = Assert.Single(
+                PdfDocument.Open(withEvidence).ValidateDetachedSignatures(CreateOfflineRevocationOptions(root, now)));
+
+            Assert.False(result.IsValid);
+            Assert.True(result.CryptographicallyValid);
+            Assert.False(result.RevocationValid);
+            Assert.Contains(result.Diagnostics, static item => item.Contains("missing id-kp-OCSPSigning", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesOfflineRevocationRejectsDelegatedOcspResponderThatDoesNotChainToIssuer()
+    {
+        (X509Certificate2 root, X509Certificate2 intermediate, X509Certificate2 leaf) = CreateSigningChainWithRevocationPointers();
+        using (root)
+        using (intermediate)
+        using (leaf)
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            using X509Certificate2 delegatedResponder = CreateDelegatedOcspResponderCertificate(
+                issuerCertificate: root,
+                subjectName: "CN=ModernPDF OCSP Delegated Responder Wrong Issuer",
+                now,
+                includeOcspSigningEku: true);
+
+            byte[] signedBytes = CreateSignedPdf(leaf, now);
+            byte[] leafOcsp = BuildOcspResponse(
+                certificateToCheck: leaf,
+                issuerCertificate: intermediate,
+                producedAt: now.AddMinutes(-30),
+                thisUpdate: now.AddHours(-1),
+                nextUpdate: now.AddDays(1),
+                status: OcspTestCertStatus.Good,
+                responseSignerCertificate: delegatedResponder,
+                responderIdentifierKind: OcspTestResponderIdentifierKind.ByKey,
+                embeddedResponderCertificates: [delegatedResponder]);
+            byte[] intermediateOcsp = BuildOcspResponse(
+                certificateToCheck: intermediate,
+                issuerCertificate: root,
+                producedAt: now.AddMinutes(-30),
+                thisUpdate: now.AddHours(-1),
+                nextUpdate: now.AddDays(1),
+                status: OcspTestCertStatus.Good);
+            byte[] withEvidence = AddDssEvidence(
+                signedBytes,
+                certificates: [intermediate],
+                ocspResponses: [leafOcsp, intermediateOcsp],
+                crls: []);
+
+            PdfDetachedSignatureValidationResult result = Assert.Single(
+                PdfDocument.Open(withEvidence).ValidateDetachedSignatures(CreateOfflineRevocationOptions(root, now)));
+
+            Assert.False(result.IsValid);
+            Assert.True(result.CryptographicallyValid);
+            Assert.False(result.RevocationValid);
+            Assert.Contains(result.Diagnostics, static item => item.Contains("Delegated OCSP responder certificate", StringComparison.Ordinal));
+        }
+    }
+
     private static PdfDetachedSignatureValidationOptions CreateOfflineRevocationOptions(X509Certificate2 root, DateTimeOffset validationTime)
     {
         return new PdfDetachedSignatureValidationOptions
@@ -216,8 +363,12 @@ public sealed class PdfDocumentDssOcspRevocationValidationTests
         DateTimeOffset producedAt,
         DateTimeOffset thisUpdate,
         DateTimeOffset? nextUpdate,
-        OcspTestCertStatus status)
+        OcspTestCertStatus status,
+        X509Certificate2? responseSignerCertificate = null,
+        OcspTestResponderIdentifierKind responderIdentifierKind = OcspTestResponderIdentifierKind.ByName,
+        IReadOnlyList<X509Certificate2>? embeddedResponderCertificates = null)
     {
+        X509Certificate2 signerCertificate = responseSignerCertificate ?? issuerCertificate;
         byte[] certSerial = certificateToCheck.GetSerialNumber().Reverse().ToArray();
         byte[] issuerNameHash = SHA256.HashData(issuerCertificate.SubjectName.RawData);
         byte[] issuerKeyHash = SHA256.HashData(issuerCertificate.PublicKey.EncodedKeyValue.RawData);
@@ -262,10 +413,22 @@ public sealed class PdfDocumentDssOcspRevocationValidationTests
 
         AsnWriter tbsResponseDataWriter = new(AsnEncodingRules.DER);
         tbsResponseDataWriter.PushSequence();
-        Asn1Tag responderByNameTag = new(TagClass.ContextSpecific, 1);
-        tbsResponseDataWriter.PushSequence(responderByNameTag);
-        tbsResponseDataWriter.WriteEncodedValue(issuerCertificate.SubjectName.RawData);
-        tbsResponseDataWriter.PopSequence(responderByNameTag);
+        switch (responderIdentifierKind)
+        {
+            case OcspTestResponderIdentifierKind.ByName:
+                Asn1Tag responderByNameTag = new(TagClass.ContextSpecific, 1);
+                tbsResponseDataWriter.PushSequence(responderByNameTag);
+                tbsResponseDataWriter.WriteEncodedValue(signerCertificate.SubjectName.RawData);
+                tbsResponseDataWriter.PopSequence(responderByNameTag);
+                break;
+            case OcspTestResponderIdentifierKind.ByKey:
+                Asn1Tag responderByKeyTag = new(TagClass.ContextSpecific, 2);
+                tbsResponseDataWriter.WriteOctetString(ComputeOcspResponderKeyHash(signerCertificate), responderByKeyTag);
+                break;
+            default:
+                throw new InvalidOperationException($"Unsupported OCSP responder identifier kind '{responderIdentifierKind}'.");
+        }
+
         tbsResponseDataWriter.WriteGeneralizedTime(producedAt, omitFractionalSeconds: true);
         tbsResponseDataWriter.PushSequence();
         tbsResponseDataWriter.WriteEncodedValue(singleResponse);
@@ -275,11 +438,11 @@ public sealed class PdfDocumentDssOcspRevocationValidationTests
 
         byte[] signature;
         string signatureAlgorithmOid;
-        using (RSA? rsa = issuerCertificate.GetRSAPrivateKey())
+        using (RSA? rsa = signerCertificate.GetRSAPrivateKey())
         {
             if (rsa is null)
             {
-                throw new InvalidOperationException("Issuer certificate must provide an RSA private key for OCSP test response generation.");
+                throw new InvalidOperationException("OCSP responder certificate must provide an RSA private key for OCSP test response generation.");
             }
 
             signature = rsa.SignData(tbsResponseData, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -294,12 +457,21 @@ public sealed class PdfDocumentDssOcspRevocationValidationTests
         basicOcspResponseWriter.WriteNull();
         basicOcspResponseWriter.PopSequence();
         basicOcspResponseWriter.WriteBitString(signature, 0);
-        Asn1Tag certsTag = new(TagClass.ContextSpecific, 0);
-        basicOcspResponseWriter.PushSequence(certsTag);
-        basicOcspResponseWriter.PushSequence();
-        basicOcspResponseWriter.WriteEncodedValue(issuerCertificate.RawData);
-        basicOcspResponseWriter.PopSequence();
-        basicOcspResponseWriter.PopSequence(certsTag);
+        IReadOnlyList<X509Certificate2> embeddedCertificates = embeddedResponderCertificates ?? [signerCertificate];
+        if (embeddedCertificates.Count > 0)
+        {
+            Asn1Tag certsTag = new(TagClass.ContextSpecific, 0);
+            basicOcspResponseWriter.PushSequence(certsTag);
+            basicOcspResponseWriter.PushSequence();
+            foreach (X509Certificate2 embeddedCertificate in embeddedCertificates)
+            {
+                basicOcspResponseWriter.WriteEncodedValue(embeddedCertificate.RawData);
+            }
+
+            basicOcspResponseWriter.PopSequence();
+            basicOcspResponseWriter.PopSequence(certsTag);
+        }
+
         basicOcspResponseWriter.PopSequence();
         byte[] basicOcspResponse = basicOcspResponseWriter.Encode();
 
@@ -315,6 +487,44 @@ public sealed class PdfDocumentDssOcspRevocationValidationTests
         ocspResponseWriter.PopSequence(responseBytesTag);
         ocspResponseWriter.PopSequence();
         return ocspResponseWriter.Encode();
+    }
+
+    private static X509Certificate2 CreateDelegatedOcspResponderCertificate(
+        X509Certificate2 issuerCertificate,
+        string subjectName,
+        DateTimeOffset now,
+        bool includeOcspSigningEku)
+    {
+        using RSA delegatedKey = RSA.Create(2048);
+        CertificateRequest delegatedRequest = new(
+            subjectName,
+            delegatedKey,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        delegatedRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        delegatedRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+        delegatedRequest.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(delegatedRequest.PublicKey, false));
+
+        if (includeOcspSigningEku)
+        {
+            OidCollection usages = [new Oid("1.3.6.1.5.5.7.3.9")];
+            delegatedRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(usages, critical: true));
+        }
+
+        using X509Certificate2 delegatedWithoutKey = delegatedRequest.Create(
+            issuerCertificate,
+            now.AddDays(-7),
+            now.AddYears(1),
+            RandomNumberGenerator.GetBytes(16));
+        return delegatedWithoutKey.CopyWithPrivateKey(delegatedKey);
+    }
+
+    private static byte[] ComputeOcspResponderKeyHash(X509Certificate2 responderCertificate)
+    {
+        byte[] subjectPublicKey = responderCertificate.GetPublicKey();
+#pragma warning disable CA5350 // OCSP responder key hash is defined as SHA-1 by RFC 6960
+        return SHA1.HashData(subjectPublicKey);
+#pragma warning restore CA5350
     }
 
     private static byte[] BuildCrl(
@@ -475,6 +685,12 @@ public sealed class PdfDocumentDssOcspRevocationValidationTests
         Good = 0,
         Revoked = 1,
         Unknown = 2,
+    }
+
+    private enum OcspTestResponderIdentifierKind
+    {
+        ByName = 0,
+        ByKey = 1,
     }
 
     private enum OcspResponseStatus
