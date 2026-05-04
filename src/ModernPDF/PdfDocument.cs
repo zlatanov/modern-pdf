@@ -284,14 +284,25 @@ public sealed class PdfDocument
         PdfDetachedSignatureValidationOptions effectiveOptions = options ?? new PdfDetachedSignatureValidationOptions();
         ValidateSignatureValidationOptions(effectiveOptions);
         List<PdfDetachedSignatureValidationResult> results = [];
-        foreach (PdfIndirectObject indirectObject in _file.Objects.OrderBy(static objectItem => objectItem.ObjectId.ObjectNumber))
+        (List<X509Certificate2> dssCertificates, string? dssDiagnostic) = TryReadDssCertificates();
+        try
         {
-            if (indirectObject.Value is not PdfDictionaryObject dictionary || !IsSignatureDictionary(dictionary))
+            foreach (PdfIndirectObject indirectObject in _file.Objects.OrderBy(static objectItem => objectItem.ObjectId.ObjectNumber))
             {
-                continue;
-            }
+                if (indirectObject.Value is not PdfDictionaryObject dictionary || !IsSignatureDictionary(dictionary))
+                {
+                    continue;
+                }
 
-            results.Add(ValidateDetachedSignature(indirectObject.ObjectId.ObjectNumber, dictionary, effectiveOptions));
+                results.Add(ValidateDetachedSignature(indirectObject.ObjectId.ObjectNumber, dictionary, effectiveOptions, dssCertificates, dssDiagnostic));
+            }
+        }
+        finally
+        {
+            foreach (X509Certificate2 certificate in dssCertificates)
+            {
+                certificate.Dispose();
+            }
         }
 
         return results;
@@ -638,7 +649,9 @@ public sealed class PdfDocument
     private PdfDetachedSignatureValidationResult ValidateDetachedSignature(
         int signatureObjectNumber,
         PdfDictionaryObject dictionary,
-        PdfDetachedSignatureValidationOptions options)
+        PdfDetachedSignatureValidationOptions options,
+        IReadOnlyList<X509Certificate2> dssCertificates,
+        string? dssDiagnostic)
     {
         string? filter = TryReadNameEntry(dictionary, "Filter");
         string? subFilter = TryReadNameEntry(dictionary, "SubFilter");
@@ -689,6 +702,10 @@ public sealed class PdfDocument
             }
 
             List<string> diagnostics = [];
+            if (!string.IsNullOrWhiteSpace(dssDiagnostic))
+            {
+                diagnostics.Add(dssDiagnostic);
+            }
             DateTimeOffset? signingTime = timestampSigningTime ?? TryReadFirstSigningTime(signedCms);
             bool? signingTimeValid = null;
             bool? certificateChainValid = null;
@@ -718,7 +735,7 @@ public sealed class PdfDocument
             bool checkChain = options.VerifyCertificateChain || options.RequireRevocationStatus;
             if (checkChain)
             {
-                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(signedCms, options, signingTime);
+                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(signedCms, options, signingTime, dssCertificates);
                 diagnostics.AddRange(chainDiagnostics);
                 certificateChainValid = chainIsValid;
                 revocationValid = options.RequireRevocationStatus ? revocationIsValid : null;
@@ -977,7 +994,8 @@ public sealed class PdfDocument
     private static (bool ChainValid, bool RevocationValid, List<string> Diagnostics) EvaluateSignerChains(
         SignedCms signedCms,
         PdfDetachedSignatureValidationOptions options,
-        DateTimeOffset? signingTime)
+        DateTimeOffset? signingTime,
+        IReadOnlyList<X509Certificate2> dssCertificates)
     {
         bool chainValid = true;
         bool revocationValid = true;
@@ -1026,6 +1044,11 @@ public sealed class PdfDocument
                 chain.ChainPolicy.ExtraStore.Add(cmsCertificate);
             }
 
+            foreach (X509Certificate2 dssCertificate in dssCertificates)
+            {
+                chain.ChainPolicy.ExtraStore.Add(dssCertificate);
+            }
+
             bool signerChainValid = chain.Build(certificate);
             chainValid &= signerChainValid;
             if (!signerChainValid)
@@ -1058,6 +1081,145 @@ public sealed class PdfDocument
         }
 
         return (chainValid, revocationValid, diagnostics);
+    }
+
+    private (List<X509Certificate2> Certificates, string? Diagnostic) TryReadDssCertificates()
+    {
+        if (!TryGetDictionaryEntry(_file.Trailer, "Root", out PdfObject? rootObject))
+        {
+            return ([], "Document trailer is missing /Root entry; DSS certificates could not be loaded.");
+        }
+
+        if (!TryResolveDictionaryObject(rootObject!, out PdfDictionaryObject? catalog))
+        {
+            return ([], "Document catalog could not be resolved; DSS certificates could not be loaded.");
+        }
+
+        PdfDictionaryObject resolvedCatalog = catalog!;
+        if (!TryGetDictionaryEntry(resolvedCatalog, "DSS", out PdfObject? dssObject))
+        {
+            return ([], null);
+        }
+
+        if (!TryResolveDictionaryObject(dssObject!, out PdfDictionaryObject? dssDictionary))
+        {
+            return ([], "Document /DSS entry is not a dictionary; DSS certificates were ignored.");
+        }
+
+        PdfDictionaryObject resolvedDssDictionary = dssDictionary!;
+        if (!TryGetDictionaryEntry(resolvedDssDictionary, "Certs", out PdfObject? certsObject))
+        {
+            return ([], null);
+        }
+
+        if (!TryResolveArrayObject(certsObject!, out PdfArrayObject? certsArray))
+        {
+            return ([], "Document /DSS /Certs entry is not an array; DSS certificates were ignored.");
+        }
+
+        List<X509Certificate2> certificates = [];
+        List<string> errors = [];
+        PdfArrayObject resolvedCertsArray = certsArray!;
+        for (int index = 0; index < resolvedCertsArray.Items.Count; index++)
+        {
+            if (!TryResolveCertificateBytes(resolvedCertsArray.Items[index], out byte[]? rawCertificate, out string? error))
+            {
+                if (!string.IsNullOrWhiteSpace(error))
+                {
+                    errors.Add(error);
+                }
+
+                continue;
+            }
+
+            try
+            {
+                certificates.Add(X509CertificateLoader.LoadCertificate(rawCertificate!));
+            }
+            catch (CryptographicException exception)
+            {
+                errors.Add($"DSS certificate at index {index} is invalid: {exception.Message}");
+            }
+        }
+
+        string? diagnostic = errors.Count == 0
+            ? null
+            : $"Some DSS certificates could not be loaded: {string.Join(" | ", errors)}";
+        return (certificates, diagnostic);
+    }
+
+    private bool TryResolveCertificateBytes(PdfObject value, out byte[]? rawCertificate, out string? error)
+    {
+        rawCertificate = null;
+        error = null;
+        if (!TryResolveObject(value, out PdfObject? resolved))
+        {
+            error = "A DSS certificate reference could not be resolved.";
+            return false;
+        }
+
+        switch (resolved)
+        {
+            case PdfStreamObject stream:
+                rawCertificate = stream.Data.ToArray();
+                return true;
+            case PdfByteStringObject byteString:
+                rawCertificate = byteString.Bytes.ToArray();
+                return true;
+            case PdfStringObject stringObject:
+                rawCertificate = Encoding.ASCII.GetBytes(stringObject.Value);
+                return true;
+            default:
+                error = resolved is null
+                    ? "Unsupported DSS certificate object type '<null>'."
+                    : $"Unsupported DSS certificate object type '{resolved.GetType().Name}'.";
+                return false;
+        }
+    }
+
+    private bool TryResolveDictionaryObject(PdfObject value, out PdfDictionaryObject? dictionary)
+    {
+        dictionary = null;
+        if (!TryResolveObject(value, out PdfObject? resolved))
+        {
+            return false;
+        }
+
+        dictionary = resolved as PdfDictionaryObject;
+        return dictionary is not null;
+    }
+
+    private bool TryResolveArrayObject(PdfObject value, out PdfArrayObject? array)
+    {
+        array = null;
+        if (!TryResolveObject(value, out PdfObject? resolved))
+        {
+            return false;
+        }
+
+        array = resolved as PdfArrayObject;
+        return array is not null;
+    }
+
+    private bool TryResolveObject(PdfObject value, out PdfObject? resolved)
+    {
+        if (value is PdfReferenceObject reference)
+        {
+            foreach (PdfIndirectObject indirectObject in _file.Objects)
+            {
+                if (indirectObject.ObjectId == reference.ObjectId)
+                {
+                    resolved = indirectObject.Value;
+                    return true;
+                }
+            }
+
+            resolved = null;
+            return false;
+        }
+
+        resolved = value;
+        return true;
     }
 
     private static bool EvaluateSignerPolicies(SignedCms signedCms, IReadOnlyList<string> requiredPolicyOids, List<string> diagnostics)
