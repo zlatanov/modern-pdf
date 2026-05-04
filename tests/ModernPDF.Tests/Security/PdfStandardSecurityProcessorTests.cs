@@ -175,6 +175,42 @@ public sealed class PdfStandardSecurityProcessorTests
     }
 
     [Fact]
+    public void EncryptAndDecryptRoundTripWithStandard256BitAesProfile()
+    {
+        PdfFile file = CreatePlainFileWithStringObject("Hello-256-AES");
+        PdfSecurityOptions options = new()
+        {
+            UserPassword = "user-pass",
+            OwnerPassword = "owner-pass",
+            Profile = PdfSecurityProfile.Standard256BitAes,
+            Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms | PdfPermissions.HighQualityPrint,
+        };
+
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(file, options);
+        PdfFile decrypted = PdfStandardSecurityProcessor.Decrypt(encrypted, "owner-pass");
+
+        PdfStringObject text = Assert.IsType<PdfStringObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 3).Value);
+        Assert.Equal("Hello-256-AES", text.Value);
+
+        Assert.True(PdfStandardSecurityProcessor.TryReadEncryptionInfo(encrypted, out PdfEncryptionInfo? info));
+        Assert.NotNull(info);
+        Assert.Equal(5, info.AlgorithmVersion);
+        Assert.Equal(256, info.KeyLengthBits);
+
+        PdfDictionaryObject encryptDictionary = Assert.IsType<PdfDictionaryObject>(
+            Assert.Single(
+                encrypted.Objects,
+                item => item.Value is PdfDictionaryObject dictionary
+                    && dictionary.Entries.Any(entry => string.Equals(entry.Key, "Filter", StringComparison.Ordinal))).Value);
+
+        Assert.Equal(48, Assert.IsType<PdfByteStringObject>(encryptDictionary.Entries.Single(entry => entry.Key == "O").Value).Bytes.Length);
+        Assert.Equal(48, Assert.IsType<PdfByteStringObject>(encryptDictionary.Entries.Single(entry => entry.Key == "U").Value).Bytes.Length);
+        Assert.Equal(32, Assert.IsType<PdfByteStringObject>(encryptDictionary.Entries.Single(entry => entry.Key == "OE").Value).Bytes.Length);
+        Assert.Equal(32, Assert.IsType<PdfByteStringObject>(encryptDictionary.Entries.Single(entry => entry.Key == "UE").Value).Bytes.Length);
+        Assert.Equal(16, Assert.IsType<PdfByteStringObject>(encryptDictionary.Entries.Single(entry => entry.Key == "Perms").Value).Bytes.Length);
+    }
+
+    [Fact]
     public void EncryptWithAesProfileWritesCryptFilterEntries()
     {
         PdfFile file = CreatePlainFileWithStringObject("cf-check");
@@ -197,6 +233,42 @@ public sealed class PdfStandardSecurityProcessorTests
         Assert.IsType<PdfDictionaryObject>(encryptDictionary.Entries.Single(entry => entry.Key == "CF").Value);
         Assert.Equal("StdCF", Assert.IsType<PdfNameObject>(encryptDictionary.Entries.Single(entry => entry.Key == "StrF").Value).Value);
         Assert.Equal("StdCF", Assert.IsType<PdfNameObject>(encryptDictionary.Entries.Single(entry => entry.Key == "StmF").Value).Value);
+    }
+
+    [Fact]
+    public void DecryptThrowsForInvalidRevision6EntryLengths()
+    {
+        PdfDictionaryObject cryptFilter = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("CryptFilter")),
+            new PdfDictionaryEntry("CFM", new PdfNameObject("AESV3")),
+            new PdfDictionaryEntry("AuthEvent", new PdfNameObject("DocOpen")),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(32, isInteger: true)),
+        ]);
+        PdfDictionaryObject encrypt = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("V", new PdfNumberObject(5, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(6, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(256, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfByteStringObject(new byte[48])),
+            new PdfDictionaryEntry("U", new PdfByteStringObject(new byte[48])),
+            new PdfDictionaryEntry("OE", new PdfByteStringObject(new byte[31])),
+            new PdfDictionaryEntry("UE", new PdfByteStringObject(new byte[32])),
+            new PdfDictionaryEntry("Perms", new PdfByteStringObject(new byte[16])),
+            new PdfDictionaryEntry(
+                "CF",
+                new PdfDictionaryObject(
+                [
+                    new PdfDictionaryEntry("StdCF", cryptFilter),
+                ])),
+            new PdfDictionaryEntry("StrF", new PdfNameObject("StdCF")),
+            new PdfDictionaryEntry("StmF", new PdfNameObject("StdCF")),
+        ]);
+        PdfFile file = CreateFileWithEncrypt(encrypt, []);
+
+        Assert.Throws<PdfFormatException>(() => PdfStandardSecurityProcessor.Decrypt(file, "pw"));
     }
 
     [Fact]

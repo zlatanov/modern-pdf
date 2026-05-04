@@ -87,7 +87,7 @@ public sealed class PdfDocument
             encryptedFile = file;
             if (!PdfStandardSecurityProcessor.IsSupportedStandardHandler(file))
             {
-                throw new NotSupportedException("Only Standard security handler profiles V=1/R=2 (40-bit RC4), V=2/R=3 (128-bit RC4), and V=4/R=4 (128-bit AES) are currently supported.");
+                throw new NotSupportedException("Only Standard security handler profiles V=1/R=2 (40-bit RC4), V=2/R=3 (128-bit RC4), V=4/R=4 (128-bit AES), and V=5/R=6 (256-bit AES) are currently supported.");
             }
 
             if (string.IsNullOrEmpty(password))

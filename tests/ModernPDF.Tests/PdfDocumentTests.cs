@@ -855,6 +855,33 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void SaveWithSecurityOptionsSupportsStandard256BitAesProfile()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("secure-256-aes");
+
+        byte[] encryptedBytes = document.Save(
+            new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    Profile = PdfSecurityProfile.Standard256BitAes,
+                    Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms | PdfPermissions.HighQualityPrint,
+                },
+            });
+
+        PdfEncryptionInfo? info = PdfDocument.InspectEncryption(encryptedBytes);
+        Assert.NotNull(info);
+        Assert.Equal("Standard", info.Filter);
+        Assert.Equal(5, info.AlgorithmVersion);
+        Assert.Equal(256, info.KeyLengthBits);
+
+        PdfDocument opened = PdfDocument.Open(encryptedBytes, "pw");
+        Assert.Equal("secure-256-aes", opened.ExtractText());
+    }
+
+    [Fact]
     public void SaveWithoutSecurityOptionsPreservesEncryptionForOpenedEncryptedDocument()
     {
         PdfDocument original = PdfDocument.Create();
@@ -2309,9 +2336,9 @@ public sealed class PdfDocumentTests
         PdfDictionaryObject encryptDictionary = new(
         [
             new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
-            new PdfDictionaryEntry("V", new PdfNumberObject(5, isInteger: true)),
-            new PdfDictionaryEntry("R", new PdfNumberObject(6, isInteger: true)),
-            new PdfDictionaryEntry("Length", new PdfNumberObject(256, isInteger: true)),
+            new PdfDictionaryEntry("V", new PdfNumberObject(4, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(5, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(128, isInteger: true)),
             new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
             new PdfDictionaryEntry("O", new PdfStringObject("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
             new PdfDictionaryEntry("U", new PdfStringObject("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")),

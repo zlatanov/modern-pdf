@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Buffers.Binary;
 using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
@@ -10,7 +11,7 @@ namespace ModernPDF.Security;
 
 internal static class PdfStandardSecurityProcessor
 {
-    private const string SupportedProfilesMessage = "Only Standard security handler profiles V=1/R=2 (40-bit RC4), V=2/R=3 (128-bit RC4), and V=4/R=4 (128-bit AES) are supported.";
+    private const string SupportedProfilesMessage = "Only Standard security handler profiles V=1/R=2 (40-bit RC4), V=2/R=3 (128-bit RC4), V=4/R=4 (128-bit AES), and V=5/R=6 (256-bit AES) are supported.";
 
     private static readonly byte[] PasswordPadding =
     [
@@ -21,6 +22,7 @@ internal static class PdfStandardSecurityProcessor
     ];
 
     private static readonly byte[] AesObjectKeySalt = [0x73, 0x41, 0x6C, 0x54];
+    private static readonly byte[] ZeroIv = new byte[16];
 
     public static PdfFile Encrypt(PdfFile file, PdfSecurityOptions options)
     {
@@ -199,12 +201,54 @@ internal static class PdfStandardSecurityProcessor
         SecurityProfileDefinition profile = ResolveSecurityProfile(options.Profile);
 
         string ownerPassword = options.OwnerPassword ?? options.UserPassword;
+        int permissionValue = BuildPermissionValue(options.Permissions, profile.R);
+
+        if (profile.R >= 6)
+        {
+            byte[] userPasswordBytes = NormalizeR6Password(options.UserPassword);
+            byte[] ownerPasswordBytes = NormalizeR6Password(ownerPassword);
+            byte[] documentIdR6 = RandomNumberGenerator.GetBytes(16);
+            byte[] fileKeyR6 = RandomNumberGenerator.GetBytes(profile.KeyLengthBytes);
+
+            byte[] uValidationSalt = RandomNumberGenerator.GetBytes(8);
+            byte[] uKeySalt = RandomNumberGenerator.GetBytes(8);
+            byte[] uHash = ComputeR6Hash(userPasswordBytes, uValidationSalt, null);
+            byte[] userEntryR6 = Concat(uHash, uValidationSalt, uKeySalt);
+            byte[] ueKey = ComputeR6Hash(userPasswordBytes, uKeySalt, null);
+            byte[] ue = EncryptAesCbcNoPadding(ueKey, ZeroIv, fileKeyR6);
+
+            byte[] oValidationSalt = RandomNumberGenerator.GetBytes(8);
+            byte[] oKeySalt = RandomNumberGenerator.GetBytes(8);
+            byte[] oHash = ComputeR6Hash(ownerPasswordBytes, oValidationSalt, userEntryR6);
+            byte[] ownerEntryR6 = Concat(oHash, oValidationSalt, oKeySalt);
+            byte[] oeKey = ComputeR6Hash(ownerPasswordBytes, oKeySalt, userEntryR6);
+            byte[] oe = EncryptAesCbcNoPadding(oeKey, ZeroIv, fileKeyR6);
+
+            byte[] perms = BuildR6Perms(fileKeyR6, permissionValue, encryptMetadata: true);
+
+            return new EncryptionMaterial(
+                OwnerEntry: ownerEntryR6,
+                UserEntry: userEntryR6,
+                FileKey: fileKeyR6,
+                DocumentId: documentIdR6,
+                PermissionValue: permissionValue,
+                V: profile.V,
+                R: profile.R,
+                KeyLengthBits: profile.KeyLengthBits,
+                EncryptMetadata: true,
+                StringCipher: profile.Cipher,
+                StreamCipher: profile.Cipher,
+                UseCryptFilters: profile.UseCryptFilters,
+                OeEntry: oe,
+                UeEntry: ue,
+                PermsEntry: perms);
+        }
+
         byte[] userPadded = PadPassword(options.UserPassword);
         byte[] ownerPadded = PadPassword(ownerPassword);
         byte[] ownerKey = ComputeOwnerKey(ownerPadded, profile.KeyLengthBytes, profile.R);
         byte[] ownerEntry = ComputeOwnerEntry(ownerKey, userPadded, profile.R);
 
-        int permissionValue = BuildPermissionValue(options.Permissions, profile.R);
         byte[] documentId = RandomNumberGenerator.GetBytes(16);
         byte[] fileKey = ComputeFileKey(
             userPadded,
@@ -228,7 +272,10 @@ internal static class PdfStandardSecurityProcessor
             EncryptMetadata: true,
             StringCipher: profile.Cipher,
             StreamCipher: profile.Cipher,
-            UseCryptFilters: profile.UseCryptFilters);
+            UseCryptFilters: profile.UseCryptFilters,
+            OeEntry: null,
+            UeEntry: null,
+            PermsEntry: null);
     }
 
     private static SecurityProfileDefinition ResolveSecurityProfile(PdfSecurityProfile profile)
@@ -256,6 +303,13 @@ internal static class PdfStandardSecurityProcessor
                 KeyLengthBytes: 16,
                 Cipher: EncryptionCipher.AesV2,
                 UseCryptFilters: true),
+            PdfSecurityProfile.Standard256BitAes => new SecurityProfileDefinition(
+                V: 5,
+                R: 6,
+                KeyLengthBits: 256,
+                KeyLengthBytes: 32,
+                Cipher: EncryptionCipher.AesV3,
+                UseCryptFilters: true),
             _ => throw new ArgumentOutOfRangeException(nameof(profile), "Security profile contains an unsupported value."),
         };
     }
@@ -278,6 +332,7 @@ internal static class PdfStandardSecurityProcessor
             string cfm = material.StreamCipher switch
             {
                 EncryptionCipher.AesV2 => "AESV2",
+                EncryptionCipher.AesV3 => "AESV3",
                 EncryptionCipher.Rc4 => "V2",
                 _ => throw new NotSupportedException("Unsupported crypt filter cipher."),
             };
@@ -303,6 +358,13 @@ internal static class PdfStandardSecurityProcessor
             {
                 entries.Add(new PdfDictionaryEntry("EncryptMetadata", new PdfBooleanObject(false)));
             }
+        }
+
+        if (material.R >= 6)
+        {
+            entries.Add(new PdfDictionaryEntry("OE", new PdfByteStringObject(material.OeEntry ?? throw new PdfFormatException("R=6 encryption material is missing OE."))));
+            entries.Add(new PdfDictionaryEntry("UE", new PdfByteStringObject(material.UeEntry ?? throw new PdfFormatException("R=6 encryption material is missing UE."))));
+            entries.Add(new PdfDictionaryEntry("Perms", new PdfByteStringObject(material.PermsEntry ?? throw new PdfFormatException("R=6 encryption material is missing Perms."))));
         }
 
         return new PdfDictionaryObject(entries);
@@ -415,6 +477,7 @@ internal static class PdfStandardSecurityProcessor
         {
             EncryptionCipher.Rc4 => Rc4(objectKey, bytes),
             EncryptionCipher.AesV2 => EncryptAesV2(objectKey, bytes),
+            EncryptionCipher.AesV3 => EncryptAesV3(objectKey, bytes),
             _ => throw new NotSupportedException("Unsupported encryption cipher."),
         };
     }
@@ -426,12 +489,18 @@ internal static class PdfStandardSecurityProcessor
         {
             EncryptionCipher.Rc4 => Rc4(objectKey, bytes),
             EncryptionCipher.AesV2 => DecryptAesV2(objectKey, bytes),
+            EncryptionCipher.AesV3 => DecryptAesV3(objectKey, bytes),
             _ => throw new NotSupportedException("Unsupported decryption cipher."),
         };
     }
 
     private static byte[] BuildObjectKey(byte[] fileKey, PdfObjectId objectId, EncryptionCipher cipher)
     {
+        if (cipher == EncryptionCipher.AesV3)
+        {
+            return fileKey.ToArray();
+        }
+
         int seedLength = fileKey.Length + 5 + (cipher == EncryptionCipher.AesV2 ? AesObjectKeySalt.Length : 0);
         byte[] seed = new byte[seedLength];
         Buffer.BlockCopy(fileKey, 0, seed, 0, fileKey.Length);
@@ -484,16 +553,19 @@ internal static class PdfStandardSecurityProcessor
         string? subFilter = TryReadName(dictionary, "SubFilter");
         int v = RequireInteger(dictionary, "V");
         int r = RequireInteger(dictionary, "R");
-        int lengthBits = TryReadInteger(dictionary, "Length") ?? 40;
+        int lengthBits = TryReadInteger(dictionary, "Length") ?? (v >= 5 ? 256 : 40);
         int permissions = RequireInteger(dictionary, "P");
         byte[] o = RequireByteString(dictionary, "O");
         byte[] u = RequireByteString(dictionary, "U");
+        byte[]? oe = v >= 5 ? RequireByteString(dictionary, "OE") : null;
+        byte[]? ue = v >= 5 ? RequireByteString(dictionary, "UE") : null;
+        byte[]? perms = v >= 5 ? RequireByteString(dictionary, "Perms") : null;
         byte[] documentId = RequireDocumentId(file.Trailer);
         bool encryptMetadata = TryReadBoolean(dictionary, "EncryptMetadata") ?? true;
 
         EncryptionCipher stringCipher = EncryptionCipher.Rc4;
         EncryptionCipher streamCipher = EncryptionCipher.Rc4;
-        if (v == 4 && !TryResolveV4CryptFilterCiphers(dictionary, out stringCipher, out streamCipher))
+        if (v >= 4 && !TryResolveV4CryptFilterCiphers(dictionary, out stringCipher, out streamCipher))
         {
             stringCipher = EncryptionCipher.Unsupported;
             streamCipher = EncryptionCipher.Unsupported;
@@ -509,6 +581,9 @@ internal static class PdfStandardSecurityProcessor
             Permissions: permissions,
             O: o,
             U: u,
+            Oe: oe,
+            Ue: ue,
+            Perms: perms,
             DocumentId: documentId,
             EncryptMetadata: encryptMetadata,
             StringCipher: stringCipher,
@@ -560,6 +635,7 @@ internal static class PdfStandardSecurityProcessor
         {
             "V2" => EncryptionCipher.Rc4,
             "AESV2" => EncryptionCipher.AesV2,
+            "AESV3" => EncryptionCipher.AesV3,
             _ => EncryptionCipher.Unsupported,
         };
 
@@ -578,6 +654,7 @@ internal static class PdfStandardSecurityProcessor
             (1, 2, 40, EncryptionCipher.Rc4, EncryptionCipher.Rc4) => true,
             (2, 3, 128, EncryptionCipher.Rc4, EncryptionCipher.Rc4) => true,
             (4, 4, 128, EncryptionCipher.AesV2, EncryptionCipher.AesV2) => true,
+            (5, 6, 256, EncryptionCipher.AesV3, EncryptionCipher.AesV3) => true,
             _ => false,
         };
     }
@@ -599,6 +676,7 @@ internal static class PdfStandardSecurityProcessor
             (1, 2, 40, EncryptionCipher.Rc4, EncryptionCipher.Rc4) => PdfSecurityProfile.Standard40BitRc4,
             (2, 3, 128, EncryptionCipher.Rc4, EncryptionCipher.Rc4) => PdfSecurityProfile.Standard128BitRc4,
             (4, 4, 128, EncryptionCipher.AesV2, EncryptionCipher.AesV2) => PdfSecurityProfile.Standard128BitAes,
+            (5, 6, 256, EncryptionCipher.AesV3, EncryptionCipher.AesV3) => PdfSecurityProfile.Standard256BitAes,
             _ => throw new NotSupportedException(SupportedProfilesMessage),
         };
     }
@@ -662,13 +740,50 @@ internal static class PdfStandardSecurityProcessor
             throw new NotSupportedException(SupportedProfilesMessage);
         }
 
+        if (descriptor.R >= 6)
+        {
+            if (descriptor.O.Length != 48
+                || descriptor.U.Length != 48
+                || descriptor.Oe is null || descriptor.Oe.Length != 32
+                || descriptor.Ue is null || descriptor.Ue.Length != 32
+                || descriptor.Perms is null || descriptor.Perms.Length != 16)
+            {
+                throw new PdfFormatException("Encryption dictionary O/U/OE/UE/Perms entries have invalid lengths for revision 6.");
+            }
+
+            byte[] passwordBytes = NormalizeR6Password(password);
+            if (MatchesR6Password(passwordBytes, descriptor.U.AsSpan(32, 8), descriptor.U.AsSpan(0, 32), null))
+            {
+                byte[] userKey = ComputeR6Hash(passwordBytes, descriptor.U.AsSpan(40, 8), null);
+                byte[] candidate = DecryptAesCbcNoPadding(userKey, ZeroIv, descriptor.Ue);
+                if (ValidateR6Perms(candidate, descriptor))
+                {
+                    fileKey = candidate;
+                    return true;
+                }
+            }
+
+            if (MatchesR6Password(passwordBytes, descriptor.O.AsSpan(32, 8), descriptor.O.AsSpan(0, 32), descriptor.U))
+            {
+                byte[] ownerAesKey = ComputeR6Hash(passwordBytes, descriptor.O.AsSpan(40, 8), descriptor.U);
+                byte[] candidate = DecryptAesCbcNoPadding(ownerAesKey, ZeroIv, descriptor.Oe);
+                if (ValidateR6Perms(candidate, descriptor))
+                {
+                    fileKey = candidate;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         if (descriptor.O.Length != 32 || descriptor.U.Length < 32)
         {
             throw new PdfFormatException("Encryption dictionary O/U entries have invalid lengths.");
         }
 
         int keyLengthBytes = descriptor.LengthBits / 8;
-        if (keyLengthBytes is <= 0 or > 16)
+        if (keyLengthBytes is <= 0 or > 32)
         {
             throw new PdfFormatException("Encryption dictionary key length is invalid.");
         }
@@ -869,6 +984,138 @@ internal static class PdfStandardSecurityProcessor
         #pragma warning restore CA5351
     }
 
+    private static byte[] NormalizeR6Password(string password)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(password);
+        if (bytes.Length > 127)
+        {
+            return bytes.AsSpan(0, 127).ToArray();
+        }
+
+        return bytes;
+    }
+
+    private static bool MatchesR6Password(ReadOnlySpan<byte> password, ReadOnlySpan<byte> validationSalt, ReadOnlySpan<byte> expectedHash, byte[]? userEntryForOwner)
+    {
+        byte[] computed = ComputeR6Hash(password, validationSalt, userEntryForOwner);
+        return CryptographicOperations.FixedTimeEquals(computed.AsSpan(0, 32), expectedHash);
+    }
+
+    private static byte[] ComputeR6Hash(ReadOnlySpan<byte> password, ReadOnlySpan<byte> salt, byte[]? userEntryForOwner)
+    {
+        byte[] input = userEntryForOwner is not null
+            ? Concat(password.ToArray(), salt.ToArray(), userEntryForOwner)
+            : Concat(password.ToArray(), salt.ToArray());
+        byte[] k = SHA256.HashData(input);
+
+        byte[] userBytes = userEntryForOwner ?? Array.Empty<byte>();
+        int round = 0;
+        while (round < 64 || k[^1] > round - 32)
+        {
+            byte[] block = userEntryForOwner is not null
+                ? Concat(password.ToArray(), k, userBytes)
+                : Concat(password.ToArray(), k);
+            byte[] k1 = Repeat(block, 64);
+            byte[] e = EncryptAesCbcNoPadding(k.AsSpan(0, 16).ToArray(), k.AsSpan(16, 16).ToArray(), k1);
+
+            int sum = 0;
+            for (int i = 0; i < 16; i++)
+            {
+                sum += e[i];
+            }
+
+            k = (sum % 3) switch
+            {
+                0 => SHA256.HashData(e),
+                1 => SHA384.HashData(e),
+                _ => SHA512.HashData(e),
+            };
+            round++;
+        }
+
+        return k.AsSpan(0, 32).ToArray();
+    }
+
+    private static byte[] BuildR6Perms(byte[] fileKey, int permissions, bool encryptMetadata)
+    {
+        byte[] plain = new byte[16];
+        BinaryPrimitives.WriteInt32LittleEndian(plain.AsSpan(0, 4), permissions);
+        plain[4] = 0xFF;
+        plain[5] = 0xFF;
+        plain[6] = 0xFF;
+        plain[7] = 0xFF;
+        plain[8] = encryptMetadata ? (byte)'T' : (byte)'F';
+        plain[9] = (byte)'a';
+        plain[10] = (byte)'d';
+        plain[11] = (byte)'b';
+        RandomNumberGenerator.Fill(plain.AsSpan(12, 4));
+        return EncryptAesEcbNoPadding(fileKey, plain);
+    }
+
+    private static bool ValidateR6Perms(byte[] fileKey, EncryptionDescriptor descriptor)
+    {
+        if (descriptor.Perms is null)
+        {
+            return false;
+        }
+
+        byte[] decryptedPerms;
+        try
+        {
+            decryptedPerms = DecryptAesEcbNoPadding(fileKey, descriptor.Perms);
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+
+        if (decryptedPerms.Length != 16)
+        {
+            return false;
+        }
+
+        if (decryptedPerms[9] != (byte)'a' || decryptedPerms[10] != (byte)'d' || decryptedPerms[11] != (byte)'b')
+        {
+            return false;
+        }
+
+        bool metadataFlag = decryptedPerms[8] == (byte)'T';
+        if (metadataFlag != descriptor.EncryptMetadata)
+        {
+            return false;
+        }
+
+        int permissions = BinaryPrimitives.ReadInt32LittleEndian(decryptedPerms.AsSpan(0, 4));
+        return permissions == descriptor.Permissions;
+    }
+
+    private static byte[] Concat(params byte[][] parts)
+    {
+        int length = parts.Sum(static part => part.Length);
+        byte[] result = new byte[length];
+        int offset = 0;
+        foreach (byte[] part in parts)
+        {
+            Buffer.BlockCopy(part, 0, result, offset, part.Length);
+            offset += part.Length;
+        }
+
+        return result;
+    }
+
+    private static byte[] Repeat(byte[] value, int times)
+    {
+        byte[] result = new byte[value.Length * times];
+        int offset = 0;
+        for (int i = 0; i < times; i++)
+        {
+            Buffer.BlockCopy(value, 0, result, offset, value.Length);
+            offset += value.Length;
+        }
+
+        return result;
+    }
+
     private static byte[] XorKey(byte[] key, byte value)
     {
         byte[] result = new byte[key.Length];
@@ -891,7 +1138,7 @@ internal static class PdfStandardSecurityProcessor
             throw new NotSupportedException(
                 revision == 2
                     ? "Current 40-bit security profile supports only Print, Modify, Copy, and Annotate permissions."
-                    : "Current 128-bit security profiles support permissions up to HighQualityPrint.");
+                    : "Current 128-bit and 256-bit security profiles support permissions up to HighQualityPrint.");
         }
 
         int value = revision == 2
@@ -975,9 +1222,29 @@ internal static class PdfStandardSecurityProcessor
 
     private static byte[] EncryptAesV2(byte[] key, ReadOnlySpan<byte> plainBytes)
     {
-        if (key.Length != 16)
+        return EncryptAesWithIvPrefix(key, plainBytes, expectedKeyLength: 16, "AES-128");
+    }
+
+    private static byte[] EncryptAesV3(byte[] key, ReadOnlySpan<byte> plainBytes)
+    {
+        return EncryptAesWithIvPrefix(key, plainBytes, expectedKeyLength: 32, "AES-256");
+    }
+
+    private static byte[] DecryptAesV2(byte[] key, ReadOnlySpan<byte> encryptedBytes)
+    {
+        return DecryptAesWithIvPrefix(key, encryptedBytes, expectedKeyLength: 16, "AES-128");
+    }
+
+    private static byte[] DecryptAesV3(byte[] key, ReadOnlySpan<byte> encryptedBytes)
+    {
+        return DecryptAesWithIvPrefix(key, encryptedBytes, expectedKeyLength: 32, "AES-256");
+    }
+
+    private static byte[] EncryptAesWithIvPrefix(byte[] key, ReadOnlySpan<byte> plainBytes, int expectedKeyLength, string label)
+    {
+        if (key.Length != expectedKeyLength)
         {
-            throw new PdfFormatException("AES-128 object key must be 16 bytes.");
+            throw new PdfFormatException($"{label} object key must be {expectedKeyLength} bytes.");
         }
 
         using Aes aes = Aes.Create();
@@ -994,11 +1261,11 @@ internal static class PdfStandardSecurityProcessor
         return result;
     }
 
-    private static byte[] DecryptAesV2(byte[] key, ReadOnlySpan<byte> encryptedBytes)
+    private static byte[] DecryptAesWithIvPrefix(byte[] key, ReadOnlySpan<byte> encryptedBytes, int expectedKeyLength, string label)
     {
-        if (key.Length != 16)
+        if (key.Length != expectedKeyLength)
         {
-            throw new PdfFormatException("AES-128 object key must be 16 bytes.");
+            throw new PdfFormatException($"{label} object key must be {expectedKeyLength} bytes.");
         }
 
         if (encryptedBytes.Length < 16)
@@ -1024,6 +1291,52 @@ internal static class PdfStandardSecurityProcessor
         {
             throw new PdfFormatException($"AES-encrypted object content could not be decrypted: {exception.Message}");
         }
+    }
+
+    private static byte[] EncryptAesCbcNoPadding(byte[] key, byte[] iv, ReadOnlySpan<byte> plainBytes)
+    {
+        using Aes aes = Aes.Create();
+        aes.Key = key;
+        aes.IV = iv;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.None;
+
+        using ICryptoTransform encryptor = aes.CreateEncryptor();
+        return encryptor.TransformFinalBlock(plainBytes.ToArray(), 0, plainBytes.Length);
+    }
+
+    private static byte[] DecryptAesCbcNoPadding(byte[] key, byte[] iv, ReadOnlySpan<byte> encryptedBytes)
+    {
+        using Aes aes = Aes.Create();
+        aes.Key = key;
+        aes.IV = iv;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.None;
+
+        using ICryptoTransform decryptor = aes.CreateDecryptor();
+        return decryptor.TransformFinalBlock(encryptedBytes.ToArray(), 0, encryptedBytes.Length);
+    }
+
+    private static byte[] EncryptAesEcbNoPadding(byte[] key, ReadOnlySpan<byte> plainBytes)
+    {
+        using Aes aes = Aes.Create();
+        aes.Key = key;
+        aes.Mode = CipherMode.ECB;
+        aes.Padding = PaddingMode.None;
+
+        using ICryptoTransform encryptor = aes.CreateEncryptor();
+        return encryptor.TransformFinalBlock(plainBytes.ToArray(), 0, plainBytes.Length);
+    }
+
+    private static byte[] DecryptAesEcbNoPadding(byte[] key, ReadOnlySpan<byte> encryptedBytes)
+    {
+        using Aes aes = Aes.Create();
+        aes.Key = key;
+        aes.Mode = CipherMode.ECB;
+        aes.Padding = PaddingMode.None;
+
+        using ICryptoTransform decryptor = aes.CreateDecryptor();
+        return decryptor.TransformFinalBlock(encryptedBytes.ToArray(), 0, encryptedBytes.Length);
     }
 
     private static PdfDictionaryObject ResolveDictionaryReference(IEnumerable<PdfIndirectObject> objects, PdfObjectId objectId)
@@ -1201,7 +1514,10 @@ internal static class PdfStandardSecurityProcessor
         bool EncryptMetadata,
         EncryptionCipher StringCipher,
         EncryptionCipher StreamCipher,
-        bool UseCryptFilters);
+        bool UseCryptFilters,
+        byte[]? OeEntry,
+        byte[]? UeEntry,
+        byte[]? PermsEntry);
 
     private readonly record struct EncryptionDescriptor(
         PdfObjectId EncryptObjectId,
@@ -1213,6 +1529,9 @@ internal static class PdfStandardSecurityProcessor
         int Permissions,
         byte[] O,
         byte[] U,
+        byte[]? Oe,
+        byte[]? Ue,
+        byte[]? Perms,
         byte[] DocumentId,
         bool EncryptMetadata,
         EncryptionCipher StringCipher,
@@ -1223,5 +1542,6 @@ internal static class PdfStandardSecurityProcessor
         Unsupported = 0,
         Rc4 = 1,
         AesV2 = 2,
+        AesV3 = 3,
     }
 }

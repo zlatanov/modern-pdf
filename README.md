@@ -8,7 +8,7 @@ Current implemented scope includes:
 - text extraction
 - page/content editing
 - destructive text redaction
-- password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, and `V=4 / R=4 / 128-bit AES`
+- password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, `V=4 / R=4 / 128-bit AES`, and `V=5 / R=6 / 256-bit AES`
 - detached digital signatures (callback-based CMS embedding with ByteRange patching)
 - TrueType font embedding for generated/replaced text with automatic subsetting and OpenType shaping
 - corpus-based interoperability/hardening test harness
@@ -193,5 +193,5 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, and `/adbe.pkcs7.sha1`
 - revocation validation can use online retrieval via `RevocationCheckMode = PdfRevocationCheckMode.Online`, but deterministic/offline behavior remains the default (`Offline`)
-- security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, and `V=4 / R=4`
+- security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, `V=4 / R=4`, and `V=5 / R=6`
 - `PdfSaveMode.Incremental` with explicit `PdfSaveOptions.Security` is not currently supported
