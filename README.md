@@ -161,6 +161,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 ## Current limitations
 
-- xref/object stream writing currently ships via `PdfSaveOptions.CrossReferenceStyle = PdfCrossReferenceStyle.Stream` (incremental stream style appends xref streams while object streams are emitted on full saves)
+- xref/object stream writing currently ships via `PdfSaveOptions.CrossReferenceStyle = PdfCrossReferenceStyle.Stream` (incremental stream style appends xref streams and emits object streams for eligible rewritten non-stream objects)
 - signature validation currently supports detached CMS subfilters `/adbe.pkcs7.detached` and `/ETSI.CAdES.detached`
 - security support is intentionally limited to Standard handler `V=1 / R=2`

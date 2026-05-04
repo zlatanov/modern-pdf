@@ -186,6 +186,32 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void SaveWithIncrementalModeAndStreamCrossReferenceStyleEmitsObjectStreamForEligibleObjects()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("before-stream-object-stream");
+        byte[] fullBytes = document.Save();
+
+        PdfDocument opened = PdfDocument.Open(fullBytes);
+        opened.ReplacePageContents(0, "BT /F1 12 Tf 40 120 Td (after-stream-object-stream) Tj ET");
+
+        byte[] incrementalBytes = opened.Save(
+            new PdfSaveOptions
+            {
+                Mode = PdfSaveMode.Incremental,
+                CrossReferenceStyle = PdfCrossReferenceStyle.Stream,
+            });
+        string text = Encoding.ASCII.GetString(incrementalBytes);
+
+        Assert.True(incrementalBytes.Length > fullBytes.Length);
+        Assert.Equal(fullBytes, incrementalBytes.Take(fullBytes.Length).ToArray());
+        Assert.Contains("/Type /XRef", text, StringComparison.Ordinal);
+        Assert.Contains("/Type /ObjStm", text, StringComparison.Ordinal);
+        Assert.Contains("/Prev", text, StringComparison.Ordinal);
+        Assert.Equal("after-stream-object-stream", PdfDocument.Open(incrementalBytes).ExtractText());
+    }
+
+    [Fact]
     public void SaveWithIncrementalClassicStyleAfterStreamFullSaveRoundTrips()
     {
         PdfDocument document = PdfDocument.Create();

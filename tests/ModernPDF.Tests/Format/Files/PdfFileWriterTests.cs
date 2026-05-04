@@ -179,6 +179,30 @@ public sealed class PdfFileWriterTests
     }
 
     [Fact]
+    public void WriteIncrementalWithXrefStreamEmitsObjectStreamForEligibleObjects()
+    {
+        PdfFile original = CreateTwoObjectFile();
+        byte[] fullBytes = PdfFileWriter.Write(original);
+        PdfFile parsed = PdfFileReader.Read(fullBytes);
+        PdfFile updated = CreateUpdatedPagesFile(parsed);
+
+        byte[] incrementalBytes = PdfFileWriter.WriteIncremental(updated, [new PdfObjectId(2, 0)], PdfCrossReferenceStyle.Stream);
+        string text = Encoding.ASCII.GetString(incrementalBytes);
+        PdfFile reparsed = PdfFileReader.Read(incrementalBytes);
+        PdfDictionaryObject pagesDictionary = Assert.IsType<PdfDictionaryObject>(
+            reparsed.Objects.Single(static objectItem => objectItem.ObjectId.ObjectNumber == 2).Value);
+        PdfNumberObject count = Assert.IsType<PdfNumberObject>(
+            Assert.Single(pagesDictionary.Entries, static entry => entry.Key == "Count").Value);
+
+        Assert.True(incrementalBytes.Length > fullBytes.Length);
+        Assert.Equal(fullBytes, incrementalBytes.Take(fullBytes.Length).ToArray());
+        Assert.Contains("/Type /XRef", text, StringComparison.Ordinal);
+        Assert.Contains("/Type /ObjStm", text, StringComparison.Ordinal);
+        Assert.Contains("/Prev", text, StringComparison.Ordinal);
+        Assert.Equal(1, count.Value);
+    }
+
+    [Fact]
     public void WriteIncrementalWithXrefStreamFallsBackToFullStreamWhenNoSourceMetadataExists()
     {
         PdfFile file = CreateMinimalFile();
@@ -343,6 +367,26 @@ public sealed class PdfFileWriterTests
         return new PdfFile(
             parsed.Version,
             [new PdfIndirectObject(new PdfObjectId(1, 0), updatedCatalog)],
+            parsed.Trailer,
+            parsed.SourceBytes,
+            parsed.StartXrefOffset,
+            parsed.XrefEntries);
+    }
+
+    private static PdfFile CreateUpdatedPagesFile(PdfFile parsed)
+    {
+        PdfDictionaryObject updatedPages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(1, isInteger: true)),
+        ]);
+        return new PdfFile(
+            parsed.Version,
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), parsed.Objects.Single(static objectItem => objectItem.ObjectId.ObjectNumber == 1).Value),
+                new PdfIndirectObject(new PdfObjectId(2, 0), updatedPages),
+            ],
             parsed.Trailer,
             parsed.SourceBytes,
             parsed.StartXrefOffset,

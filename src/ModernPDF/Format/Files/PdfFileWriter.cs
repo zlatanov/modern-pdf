@@ -238,29 +238,56 @@ internal static class PdfFileWriter
         List<PdfIndirectObject> objectsToRewrite)
     {
         ByteBufferWriter writer = CreateAppendWriter(sourceBytes);
-        Dictionary<int, PdfObjectId> objectIds = [];
-        foreach (PdfIndirectObject objectItem in file.Objects)
-        {
-            objectIds[objectItem.ObjectId.ObjectNumber] = objectItem.ObjectId;
-        }
-
-        Dictionary<int, PdfXrefEntry> rewrittenEntries = [];
+        HashSet<int> forcedUncompressedObjectNumbers = GetTrailerReferenceObjectNumbers(file.Trailer);
+        List<PdfIndirectObject> uncompressedObjectsToRewrite = [];
+        List<PdfIndirectObject> objectsForObjectStream = [];
         foreach (PdfIndirectObject objectItem in objectsToRewrite)
         {
-            int objectNumber = objectItem.ObjectId.ObjectNumber;
-            int offset = writer.WrittenCount;
-            WriteIndirectObject(writer, objectItem.ObjectId, objectItem.Value);
-            rewrittenEntries[objectNumber] = new PdfXrefEntry(offset, objectItem.ObjectId.GenerationNumber);
+            bool mustBeUncompressed = objectItem.Value is PdfStreamObject
+                || objectItem.ObjectId.GenerationNumber != 0
+                || forcedUncompressedObjectNumbers.Contains(objectItem.ObjectId.ObjectNumber);
+            if (mustBeUncompressed)
+            {
+                uncompressedObjectsToRewrite.Add(objectItem);
+            }
+            else
+            {
+                objectsForObjectStream.Add(objectItem);
+            }
         }
 
-        int xrefObjectNumber = GetNextObjectNumber(file.Objects.Select(static objectItem => objectItem.ObjectId.ObjectNumber));
+        Dictionary<int, PdfXrefEntry> rewrittenUncompressedEntries = [];
+        foreach (PdfIndirectObject objectItem in uncompressedObjectsToRewrite)
+        {
+            int offset = writer.WrittenCount;
+            WriteIndirectObject(writer, objectItem.ObjectId, objectItem.Value);
+            rewrittenUncompressedEntries[objectItem.ObjectId.ObjectNumber] = new PdfXrefEntry(offset, objectItem.ObjectId.GenerationNumber);
+        }
+
+        Dictionary<int, CompressedEntryInfo> compressedEntries = [];
+        int nextObjectNumber = GetNextObjectNumber(file.Objects.Select(static objectItem => objectItem.ObjectId.ObjectNumber));
+        if (objectsForObjectStream.Count > 0)
+        {
+            PdfIndirectObject objectStream = BuildObjectStreamObject(objectsForObjectStream, nextObjectNumber, compressedEntries);
+            int objectStreamOffset = writer.WrittenCount;
+            WriteIndirectObject(writer, objectStream.ObjectId, objectStream.Value);
+            rewrittenUncompressedEntries[objectStream.ObjectId.ObjectNumber] = new PdfXrefEntry(objectStreamOffset, objectStream.ObjectId.GenerationNumber);
+            nextObjectNumber++;
+        }
+
+        int xrefObjectNumber = nextObjectNumber;
         int xrefOffset = writer.WrittenCount;
 
         Dictionary<int, XrefStreamEntry> xrefEntries = [];
         xrefEntries[0] = new XrefStreamEntry(0, 0, 65535);
-        foreach ((int objectNumber, PdfXrefEntry rewrittenEntry) in rewrittenEntries)
+        foreach ((int objectNumber, PdfXrefEntry rewrittenEntry) in rewrittenUncompressedEntries)
         {
             xrefEntries[objectNumber] = new XrefStreamEntry(1, rewrittenEntry.Offset, rewrittenEntry.Generation);
+        }
+
+        foreach ((int objectNumber, CompressedEntryInfo compressedEntry) in compressedEntries)
+        {
+            xrefEntries[objectNumber] = new XrefStreamEntry(2, compressedEntry.ObjectStreamNumber, compressedEntry.ObjectIndex);
         }
 
         xrefEntries[xrefObjectNumber] = new XrefStreamEntry(1, xrefOffset, 0);
