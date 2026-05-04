@@ -317,7 +317,7 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
-    public void SaveWithIncrementalModeAndSecurityOptionsIsNotSupported()
+    public void SaveWithIncrementalModeAndSecurityOptionsRequiresOpenedEncryptedDocument()
     {
         PdfDocument document = PdfDocument.Create();
         document.AddTextPage("x");
@@ -329,6 +329,105 @@ public sealed class PdfDocumentTests
                     Mode = PdfSaveMode.Incremental,
                     Security = new PdfSecurityOptions { UserPassword = "pw" },
                 }));
+    }
+
+    [Fact]
+    public void SaveWithIncrementalModeAndMatchingSecurityOptionsSupportsOpenedEncryptedDocument()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("explicit-security");
+        PdfSecurityOptions security = new()
+        {
+            UserPassword = "pw",
+            Profile = PdfSecurityProfile.Standard128BitAes,
+            Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+        };
+        byte[] encrypted = document.Save(new PdfSaveOptions { Security = security });
+
+        PdfDocument opened = PdfDocument.Open(encrypted, "pw");
+        opened.ReplacePageText(0, "explicit-security-updated");
+        byte[] saved = opened.Save(
+            new PdfSaveOptions
+            {
+                Mode = PdfSaveMode.Incremental,
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    Profile = PdfSecurityProfile.Standard128BitAes,
+                    Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+                },
+            });
+
+        Assert.True(saved.Length > encrypted.Length);
+        Assert.Equal(encrypted, saved.Take(encrypted.Length).ToArray());
+        Assert.Equal("explicit-security-updated", PdfDocument.Open(saved, "pw").ExtractText());
+        Assert.Throws<UnauthorizedAccessException>(() => PdfDocument.Open(saved));
+    }
+
+    [Fact]
+    public void SaveWithIncrementalModeAndMismatchedSecurityPasswordThrows()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("password-mismatch");
+        byte[] encrypted = document.Save(new PdfSaveOptions
+        {
+            Security = new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+                Profile = PdfSecurityProfile.Standard128BitAes,
+                Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+            },
+        });
+
+        PdfDocument opened = PdfDocument.Open(encrypted, "pw");
+        opened.ReplacePageText(0, "password-mismatch-updated");
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => opened.Save(
+                new PdfSaveOptions
+                {
+                    Mode = PdfSaveMode.Incremental,
+                    Security = new PdfSecurityOptions
+                    {
+                        UserPassword = "different-password",
+                        Profile = PdfSecurityProfile.Standard128BitAes,
+                        Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+                    },
+                }));
+
+        Assert.Contains("UserPassword", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SaveWithIncrementalModeAndMismatchedSecurityProfileThrows()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("profile-mismatch");
+        byte[] encrypted = document.Save(new PdfSaveOptions
+        {
+            Security = new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+                Profile = PdfSecurityProfile.Standard128BitAes,
+                Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+            },
+        });
+
+        PdfDocument opened = PdfDocument.Open(encrypted, "pw");
+        opened.ReplacePageText(0, "profile-mismatch-updated");
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => opened.Save(
+                new PdfSaveOptions
+                {
+                    Mode = PdfSaveMode.Incremental,
+                    Security = new PdfSecurityOptions
+                    {
+                        UserPassword = "pw",
+                        Profile = PdfSecurityProfile.Standard40BitRc4,
+                        Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+                    },
+                }));
+
+        Assert.Contains("Profile", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

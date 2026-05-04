@@ -199,11 +199,6 @@ public sealed class PdfDocument
             throw new ArgumentOutOfRangeException(nameof(options), "Save CrossReferenceStyle contains an unsupported value.");
         }
 
-        if (effectiveOptions.Mode == PdfSaveMode.Incremental && effectiveOptions.Security is not null)
-        {
-            throw new NotSupportedException("Incremental save with security options is not currently supported.");
-        }
-
         PdfSecurityOptions? securityToApply = effectiveOptions.Security;
         if (securityToApply is null && _openedEncrypted)
         {
@@ -214,7 +209,13 @@ public sealed class PdfDocument
         {
             if (_openedEncrypted)
             {
-                return SaveIncrementalEncrypted(effectiveOptions.CrossReferenceStyle);
+                PdfSecurityOptions incrementalSecurity = ResolveIncrementalEncryptedSecurityOptions(effectiveOptions.Security);
+                return SaveIncrementalEncrypted(effectiveOptions.CrossReferenceStyle, incrementalSecurity);
+            }
+
+            if (effectiveOptions.Security is not null)
+            {
+                throw new NotSupportedException("Incremental save with security options is supported only for documents opened from encrypted PDFs.");
             }
 
             byte[] incrementalBytes = PdfFileWriter.WriteIncremental(_file, _dirtyObjectIds, effectiveOptions.CrossReferenceStyle);
@@ -1271,15 +1272,50 @@ public sealed class PdfDocument
         _openedEncryptedFile = null;
     }
 
-    private byte[] SaveIncrementalEncrypted(PdfCrossReferenceStyle crossReferenceStyle)
+    private PdfSecurityOptions ResolveIncrementalEncryptedSecurityOptions(PdfSecurityOptions? requestedSecurity)
+    {
+        PdfSecurityOptions openedSecurity = _openedSecurityOptions
+            ?? throw new InvalidOperationException("Encrypted incremental save requires preserved security options.");
+        if (requestedSecurity is null)
+        {
+            return openedSecurity;
+        }
+
+        ValidateSecurityOptions(requestedSecurity);
+        EnsureMatchingIncrementalSecurityContext(requestedSecurity, openedSecurity);
+        return openedSecurity;
+    }
+
+    private static void EnsureMatchingIncrementalSecurityContext(PdfSecurityOptions requested, PdfSecurityOptions opened)
+    {
+        if (!string.Equals(requested.UserPassword, opened.UserPassword, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Incremental save security options must use the same UserPassword as the opened encrypted document.");
+        }
+
+        if (!string.Equals(requested.OwnerPassword, opened.OwnerPassword, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Incremental save security options must use the same OwnerPassword as the opened encrypted document.");
+        }
+
+        if (requested.Profile != opened.Profile)
+        {
+            throw new InvalidOperationException("Incremental save security options must use the same Profile as the opened encrypted document.");
+        }
+
+        if (requested.Permissions != opened.Permissions)
+        {
+            throw new InvalidOperationException("Incremental save security options must use the same Permissions as the opened encrypted document.");
+        }
+    }
+
+    private byte[] SaveIncrementalEncrypted(PdfCrossReferenceStyle crossReferenceStyle, PdfSecurityOptions security)
     {
         if (_openedEncryptedFile is null)
         {
             throw new InvalidOperationException("Encrypted incremental save requires the original encrypted source file.");
         }
 
-        PdfSecurityOptions security = _openedSecurityOptions
-            ?? throw new InvalidOperationException("Encrypted incremental save requires preserved security options.");
         if (string.IsNullOrWhiteSpace(security.UserPassword))
         {
             throw new InvalidOperationException("Encrypted incremental save requires the original password.");
@@ -1293,6 +1329,7 @@ public sealed class PdfDocument
         byte[] encryptedBytes = PdfFileWriter.WriteIncremental(encryptedIncrementalFile, _dirtyObjectIds, crossReferenceStyle);
         _dirtyObjectIds.Clear();
         _openedEncryptedFile = PdfFileReader.Read(encryptedBytes);
+        _openedSecurityOptions = security;
         return encryptedBytes;
     }
 

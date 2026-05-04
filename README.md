@@ -194,4 +194,4 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, and `/adbe.pkcs7.sha1`
 - revocation validation can use online retrieval via `RevocationCheckMode = PdfRevocationCheckMode.Online`, but deterministic/offline behavior remains the default (`Offline`)
 - security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, `V=4 / R=4`, and `V=5 / R=6`
-- `PdfSaveMode.Incremental` with explicit `PdfSaveOptions.Security` is not currently supported
+- explicit `PdfSaveOptions.Security` with `PdfSaveMode.Incremental` is supported only for documents opened from encrypted PDFs, and must match the opened security context (password/profile/permissions)
