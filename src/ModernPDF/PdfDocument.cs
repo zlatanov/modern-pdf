@@ -734,7 +734,7 @@ public sealed class PdfDocument
             bool checkChain = options.VerifyCertificateChain || options.RequireRevocationStatus;
             if (checkChain)
             {
-                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(signedCms, options, signingTime, dssEvidence.Certificates, dssEvidence.Crls);
+                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(signedCms, options, signingTime, dssEvidence.Certificates, dssEvidence.Crls, dssEvidence.Ocsps);
                 diagnostics.AddRange(chainDiagnostics);
                 certificateChainValid = chainIsValid;
                 revocationValid = options.RequireRevocationStatus ? revocationIsValid : null;
@@ -995,7 +995,8 @@ public sealed class PdfDocument
         PdfDetachedSignatureValidationOptions options,
         DateTimeOffset? signingTime,
         IReadOnlyList<X509Certificate2> dssCertificates,
-        IReadOnlyList<CrlEvidence> dssCrls)
+        IReadOnlyList<CrlEvidence> dssCrls,
+        IReadOnlyList<OcspEvidence> dssOcsps)
     {
         bool chainValid = true;
         bool revocationValid = true;
@@ -1077,7 +1078,7 @@ public sealed class PdfDocument
                 }
                 else if (options.RevocationCheckMode == PdfRevocationCheckMode.Offline)
                 {
-                    signerRevocationValid = TryValidateRevocationWithOfflineDss(chain, dssCrls, verificationMoment, diagnostics);
+                    signerRevocationValid = TryValidateRevocationWithOfflineDss(chain, dssCrls, dssOcsps, verificationMoment, diagnostics);
                 }
                 else
                 {
@@ -1110,12 +1111,13 @@ public sealed class PdfDocument
     private static bool TryValidateRevocationWithOfflineDss(
         X509Chain chain,
         IReadOnlyList<CrlEvidence> dssCrls,
+        IReadOnlyList<OcspEvidence> dssOcsps,
         DateTimeOffset verificationMoment,
         List<string> diagnostics)
     {
-        if (dssCrls.Count == 0)
+        if (dssCrls.Count == 0 && dssOcsps.Count == 0)
         {
-            diagnostics.Add("No DSS /CRLs evidence is available for offline revocation validation.");
+            diagnostics.Add("No DSS /CRLs or /OCSPs evidence is available for offline revocation validation.");
             return false;
         }
 
@@ -1128,6 +1130,17 @@ public sealed class PdfDocument
         {
             X509Certificate2 certificate = chain.ChainElements[index].Certificate;
             X509Certificate2 issuerCertificate = chain.ChainElements[index + 1].Certificate;
+            OcspValidationStatus ocspStatus = ValidateCertificateWithOfflineOcsp(certificate, issuerCertificate, verificationMoment, dssOcsps, diagnostics);
+            if (ocspStatus == OcspValidationStatus.Valid)
+            {
+                continue;
+            }
+
+            if (ocspStatus == OcspValidationStatus.Invalid)
+            {
+                return false;
+            }
+
             if (!TryFindValidCrlForCertificate(
                 certificate,
                 issuerCertificate,
@@ -1149,6 +1162,155 @@ public sealed class PdfDocument
         }
 
         return true;
+    }
+
+    private static OcspValidationStatus ValidateCertificateWithOfflineOcsp(
+        X509Certificate2 certificate,
+        X509Certificate2 issuerCertificate,
+        DateTimeOffset verificationMoment,
+        IReadOnlyList<OcspEvidence> dssOcsps,
+        List<string> diagnostics)
+    {
+        if (dssOcsps.Count == 0)
+        {
+            return OcspValidationStatus.NoEvidence;
+        }
+
+        string serialHex = NormalizeSerialHex(certificate.GetSerialNumber().Reverse().ToArray());
+        List<(OcspEvidence Evidence, OcspSingleResponseEvidence Response)> candidates = [];
+        foreach (OcspEvidence ocspEvidence in dssOcsps)
+        {
+            foreach (OcspSingleResponseEvidence singleResponse in ocspEvidence.Responses)
+            {
+                if (singleResponse.SerialNumberHex != serialHex)
+                {
+                    continue;
+                }
+
+                if (IsOcspSingleResponseMatch(singleResponse, certificate, issuerCertificate))
+                {
+                    candidates.Add((ocspEvidence, singleResponse));
+                }
+            }
+        }
+
+        if (candidates.Count == 0)
+        {
+            return OcspValidationStatus.NoEvidence;
+        }
+
+        foreach ((OcspEvidence evidence, OcspSingleResponseEvidence response) in candidates
+            .OrderByDescending(static candidate => candidate.Evidence.ProducedAt)
+            .ThenByDescending(static candidate => candidate.Response.ThisUpdate))
+        {
+            if (!VerifyOcspSignature(evidence, issuerCertificate, out string? signatureError))
+            {
+                diagnostics.Add(signatureError ?? $"DSS OCSP response signature verification failed for issuer '{issuerCertificate.Subject}'.");
+                continue;
+            }
+
+            if (evidence.ProducedAt > verificationMoment)
+            {
+                diagnostics.Add($"DSS OCSP response produced at '{evidence.ProducedAt:O}' is newer than validation time '{verificationMoment:O}'.");
+                continue;
+            }
+
+            if (response.ThisUpdate > verificationMoment)
+            {
+                diagnostics.Add($"DSS OCSP response thisUpdate '{response.ThisUpdate:O}' is newer than validation time '{verificationMoment:O}'.");
+                continue;
+            }
+
+            if (response.NextUpdate is DateTimeOffset nextUpdate && nextUpdate < verificationMoment)
+            {
+                diagnostics.Add($"DSS OCSP response expired at '{nextUpdate:O}' before validation time '{verificationMoment:O}'.");
+                continue;
+            }
+
+            switch (response.CertStatus)
+            {
+                case OcspCertStatus.Good:
+                    return OcspValidationStatus.Valid;
+                case OcspCertStatus.Revoked:
+                    diagnostics.Add($"Certificate '{certificate.Subject}' is revoked according to embedded DSS OCSP evidence.");
+                    return OcspValidationStatus.Invalid;
+                default:
+                    diagnostics.Add($"Certificate '{certificate.Subject}' has unknown status in embedded DSS OCSP evidence.");
+                    return OcspValidationStatus.Invalid;
+            }
+        }
+
+        diagnostics.Add($"No fresh, verifiable DSS OCSP response was found for certificate '{certificate.Subject}'.");
+        return OcspValidationStatus.Invalid;
+    }
+
+    private static bool IsOcspSingleResponseMatch(
+        OcspSingleResponseEvidence response,
+        X509Certificate2 certificate,
+        X509Certificate2 issuerCertificate)
+    {
+        try
+        {
+            byte[] expectedIssuerNameHash = ComputeDigestForOid(response.CertIdHashAlgorithmOid, issuerCertificate.SubjectName.RawData);
+            if (!expectedIssuerNameHash.AsSpan().SequenceEqual(response.IssuerNameHash))
+            {
+                return false;
+            }
+
+            byte[] expectedIssuerKeyHash = ComputeDigestForOid(response.CertIdHashAlgorithmOid, issuerCertificate.PublicKey.EncodedKeyValue.RawData);
+            if (!expectedIssuerKeyHash.AsSpan().SequenceEqual(response.IssuerKeyHash))
+            {
+                return false;
+            }
+
+            string serialHex = NormalizeSerialHex(certificate.GetSerialNumber().Reverse().ToArray());
+            return string.Equals(serialHex, response.SerialNumberHex, StringComparison.Ordinal);
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+    }
+
+    private static bool VerifyOcspSignature(OcspEvidence evidence, X509Certificate2 issuerCertificate, out string? error)
+    {
+        error = null;
+        if (!TryResolveSignatureAlgorithm(evidence.SignatureAlgorithmOid, out HashAlgorithmName hashAlgorithm, out bool useRsa))
+        {
+            error = $"DSS OCSP response uses unsupported signature algorithm OID '{evidence.SignatureAlgorithmOid}'.";
+            return false;
+        }
+
+        bool isValid;
+        if (useRsa)
+        {
+            using RSA? rsa = issuerCertificate.GetRSAPublicKey();
+            if (rsa is null)
+            {
+                error = $"Issuer certificate '{issuerCertificate.Subject}' does not expose an RSA public key required for OCSP validation.";
+                return false;
+            }
+
+            isValid = rsa.VerifyData(evidence.TbsResponseData, evidence.SignatureValue, hashAlgorithm, RSASignaturePadding.Pkcs1);
+        }
+        else
+        {
+            using ECDsa? ecdsa = issuerCertificate.GetECDsaPublicKey();
+            if (ecdsa is null)
+            {
+                error = $"Issuer certificate '{issuerCertificate.Subject}' does not expose an ECDSA public key required for OCSP validation.";
+                return false;
+            }
+
+            isValid = ecdsa.VerifyData(evidence.TbsResponseData, evidence.SignatureValue, hashAlgorithm);
+        }
+
+        if (!isValid)
+        {
+            error = $"DSS OCSP response signature could not be verified for issuer '{issuerCertificate.Subject}'.";
+        }
+
+        return isValid;
     }
 
     private static bool TryFindValidCrlForCertificate(
@@ -1208,7 +1370,7 @@ public sealed class PdfDocument
             return false;
         }
 
-        if (!TryResolveCrlSignatureAlgorithm(crlEvidence.SignatureAlgorithmOid, out HashAlgorithmName hashAlgorithm, out bool useRsa))
+        if (!TryResolveSignatureAlgorithm(crlEvidence.SignatureAlgorithmOid, out HashAlgorithmName hashAlgorithm, out bool useRsa))
         {
             error = $"DSS CRL uses unsupported signature algorithm OID '{crlEvidence.SignatureAlgorithmOid}'.";
             return false;
@@ -1246,7 +1408,7 @@ public sealed class PdfDocument
         return isValid;
     }
 
-    private static bool TryResolveCrlSignatureAlgorithm(string signatureAlgorithmOid, out HashAlgorithmName hashAlgorithm, out bool useRsa)
+    private static bool TryResolveSignatureAlgorithm(string signatureAlgorithmOid, out HashAlgorithmName hashAlgorithm, out bool useRsa)
     {
         useRsa = true;
         switch (signatureAlgorithmOid)
@@ -1304,12 +1466,13 @@ public sealed class PdfDocument
     {
         if (!TryReadDssDictionary(out PdfDictionaryObject? dssDictionary, out string? dssDictionaryError))
         {
-            return new DssValidationEvidence([], [], dssDictionaryError);
+            return new DssValidationEvidence([], [], [], dssDictionaryError);
         }
 
         PdfDictionaryObject resolvedDssDictionary = dssDictionary!;
         List<X509Certificate2> certificates = [];
         List<CrlEvidence> crls = [];
+        List<OcspEvidence> ocsps = [];
         List<string> diagnostics = [];
         if (!string.IsNullOrWhiteSpace(dssDictionaryError))
         {
@@ -1331,7 +1494,9 @@ public sealed class PdfDocument
         }
 
         List<byte[]> crlPayloads = [];
+        List<byte[]> ocspPayloads = [];
         TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "CRLs", "DSS /CRLs", crlPayloads, diagnostics);
+        TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "OCSPs", "DSS /OCSPs", ocspPayloads, diagnostics);
 
         if (TryGetDictionaryEntry(resolvedDssDictionary, "VRI", out PdfObject? vriObject))
         {
@@ -1350,17 +1515,9 @@ public sealed class PdfDocument
                     }
 
                     TryCollectResolvedBinaryEntriesFromDssArray(vriItemDictionary!, "CRL", $"/DSS /VRI '{vriEntry.Key}' /CRL", crlPayloads, diagnostics);
-                    if (TryGetDictionaryEntry(vriItemDictionary!, "OCSP", out _))
-                    {
-                        diagnostics.Add($"Document /DSS /VRI '{vriEntry.Key}' contains /OCSP evidence, but CRL-based validation is currently used.");
-                    }
+                    TryCollectResolvedBinaryEntriesFromDssArray(vriItemDictionary!, "OCSP", $"/DSS /VRI '{vriEntry.Key}' /OCSP", ocspPayloads, diagnostics);
                 }
             }
-        }
-
-        if (TryGetDictionaryEntry(resolvedDssDictionary, "OCSPs", out _))
-        {
-            diagnostics.Add("Document /DSS /OCSPs evidence is present, but CRL-based validation is currently used.");
         }
 
         HashSet<string> seenCrlFingerprints = [];
@@ -1382,10 +1539,29 @@ public sealed class PdfDocument
             }
         }
 
+        HashSet<string> seenOcspFingerprints = [];
+        foreach (byte[] ocspBytes in ocspPayloads)
+        {
+            string fingerprint = Convert.ToHexString(SHA256.HashData(ocspBytes));
+            if (!seenOcspFingerprints.Add(fingerprint))
+            {
+                continue;
+            }
+
+            if (TryParseOcspEvidence(ocspBytes, out OcspEvidence ocspEvidence, out string? ocspError))
+            {
+                ocsps.Add(ocspEvidence);
+            }
+            else if (!string.IsNullOrWhiteSpace(ocspError))
+            {
+                diagnostics.Add(ocspError);
+            }
+        }
+
         string? diagnostic = diagnostics.Count == 0
             ? null
             : string.Join(" | ", diagnostics.Distinct(StringComparer.Ordinal));
-        return new DssValidationEvidence(certificates, crls, diagnostic);
+        return new DssValidationEvidence(certificates, crls, ocsps, diagnostic);
     }
 
     private bool TryReadDssDictionary(out PdfDictionaryObject? dssDictionary, out string? diagnostic)
@@ -1550,6 +1726,216 @@ public sealed class PdfDocument
         }
     }
 
+    private static bool TryParseOcspEvidence(byte[] ocspBytes, out OcspEvidence evidence, out string? error)
+    {
+        evidence = default;
+        error = null;
+
+        try
+        {
+            AsnReader ocspReader = new(ocspBytes, AsnEncodingRules.DER);
+            AsnReader ocspResponse = ocspReader.ReadSequence();
+            OcspResponseStatus responseStatus = ocspResponse.ReadEnumeratedValue<OcspResponseStatus>();
+            if (responseStatus != OcspResponseStatus.Successful)
+            {
+                error = $"A DSS OCSP response has non-success status '{responseStatus}' and was ignored.";
+                return false;
+            }
+
+            Asn1Tag responseBytesTag = new(TagClass.ContextSpecific, 0);
+            if (!ocspResponse.HasData || !ocspResponse.PeekTag().HasSameClassAndValue(responseBytesTag))
+            {
+                error = "A DSS OCSP response is missing responseBytes for successful status.";
+                return false;
+            }
+
+            AsnReader responseBytesContainer = ocspResponse.ReadSequence(responseBytesTag);
+            AsnReader responseBytes = responseBytesContainer.ReadSequence();
+            string responseTypeOid = responseBytes.ReadObjectIdentifier();
+            if (!string.Equals(responseTypeOid, "1.3.6.1.5.5.7.48.1.1", StringComparison.Ordinal))
+            {
+                error = $"A DSS OCSP response has unsupported responseType OID '{responseTypeOid}'.";
+                return false;
+            }
+
+            byte[] basicResponseBytes = responseBytes.ReadOctetString();
+            responseBytes.ThrowIfNotEmpty();
+            responseBytesContainer.ThrowIfNotEmpty();
+            ocspResponse.ThrowIfNotEmpty();
+            ocspReader.ThrowIfNotEmpty();
+
+            return TryParseBasicOcspResponseEvidence(basicResponseBytes, out evidence, out error);
+        }
+        catch (AsnContentException)
+        {
+            error = "A DSS OCSP response payload is malformed and was ignored.";
+            return false;
+        }
+    }
+
+    private static bool TryParseBasicOcspResponseEvidence(byte[] basicResponseBytes, out OcspEvidence evidence, out string? error)
+    {
+        evidence = default;
+        error = null;
+
+        try
+        {
+            AsnReader basicReader = new(basicResponseBytes, AsnEncodingRules.DER);
+            AsnReader basicResponse = basicReader.ReadSequence();
+            ReadOnlyMemory<byte> tbsResponseDataMemory = basicResponse.ReadEncodedValue();
+            AsnReader tbsResponseData = new AsnReader(tbsResponseDataMemory.ToArray(), AsnEncodingRules.DER).ReadSequence();
+
+            Asn1Tag versionTag = new(TagClass.ContextSpecific, 0);
+            if (tbsResponseData.HasData && tbsResponseData.PeekTag().HasSameClassAndValue(versionTag))
+            {
+                AsnReader versionReader = tbsResponseData.ReadSequence(versionTag);
+                _ = versionReader.ReadInteger();
+                versionReader.ThrowIfNotEmpty();
+            }
+
+            Asn1Tag responderByNameTag = new(TagClass.ContextSpecific, 1);
+            Asn1Tag responderByKeyTag = new(TagClass.ContextSpecific, 2);
+            if (!tbsResponseData.HasData
+                || (!tbsResponseData.PeekTag().HasSameClassAndValue(responderByNameTag)
+                    && !tbsResponseData.PeekTag().HasSameClassAndValue(responderByKeyTag)))
+            {
+                error = "A DSS OCSP response is missing responderID.";
+                return false;
+            }
+
+            _ = tbsResponseData.ReadEncodedValue();
+            DateTimeOffset producedAt = ReadAsnTime(tbsResponseData);
+
+            AsnReader responsesReader = tbsResponseData.ReadSequence();
+            List<OcspSingleResponseEvidence> responses = [];
+            while (responsesReader.HasData)
+            {
+                if (!TryParseOcspSingleResponse(responsesReader.ReadSequence(), out OcspSingleResponseEvidence singleResponse, out string? singleResponseError))
+                {
+                    error = singleResponseError;
+                    return false;
+                }
+
+                responses.Add(singleResponse);
+            }
+
+            while (tbsResponseData.HasData)
+            {
+                _ = tbsResponseData.ReadEncodedValue();
+            }
+
+            string signatureAlgorithmOid = ReadAlgorithmIdentifierOid(basicResponse);
+            byte[] signatureValue = basicResponse.ReadBitString(out _);
+
+            Asn1Tag certsTag = new(TagClass.ContextSpecific, 0);
+            if (basicResponse.HasData && basicResponse.PeekTag().HasSameClassAndValue(certsTag))
+            {
+                _ = basicResponse.ReadEncodedValue();
+            }
+
+            basicResponse.ThrowIfNotEmpty();
+            basicReader.ThrowIfNotEmpty();
+            if (responses.Count == 0)
+            {
+                error = "A DSS OCSP response contains no SingleResponse entries.";
+                return false;
+            }
+
+            evidence = new OcspEvidence(
+                tbsResponseDataMemory.ToArray(),
+                producedAt,
+                signatureAlgorithmOid,
+                signatureValue,
+                responses);
+            return true;
+        }
+        catch (AsnContentException)
+        {
+            error = "A DSS OCSP basic response payload is malformed and was ignored.";
+            return false;
+        }
+    }
+
+    private static bool TryParseOcspSingleResponse(AsnReader singleResponseReader, out OcspSingleResponseEvidence response, out string? error)
+    {
+        response = default;
+        error = null;
+        try
+        {
+            AsnReader certId = singleResponseReader.ReadSequence();
+            string hashAlgorithmOid = ReadAlgorithmIdentifierOid(certId);
+            byte[] issuerNameHash = certId.ReadOctetString();
+            byte[] issuerKeyHash = certId.ReadOctetString();
+            string serialHex = NormalizeSerialHex(certId.ReadIntegerBytes().ToArray());
+            certId.ThrowIfNotEmpty();
+
+            if (!singleResponseReader.HasData)
+            {
+                error = "A DSS OCSP SingleResponse is missing certStatus.";
+                return false;
+            }
+
+            OcspCertStatus certStatus = ReadOcspCertStatus(singleResponseReader);
+            DateTimeOffset thisUpdate = ReadAsnTime(singleResponseReader);
+            DateTimeOffset? nextUpdate = null;
+            Asn1Tag nextUpdateTag = new(TagClass.ContextSpecific, 0);
+            if (singleResponseReader.HasData && singleResponseReader.PeekTag().HasSameClassAndValue(nextUpdateTag))
+            {
+                AsnReader nextUpdateReader = singleResponseReader.ReadSequence(nextUpdateTag);
+                nextUpdate = ReadAsnTime(nextUpdateReader);
+                nextUpdateReader.ThrowIfNotEmpty();
+            }
+
+            while (singleResponseReader.HasData)
+            {
+                _ = singleResponseReader.ReadEncodedValue();
+            }
+
+            response = new OcspSingleResponseEvidence(
+                hashAlgorithmOid,
+                issuerNameHash,
+                issuerKeyHash,
+                serialHex,
+                certStatus,
+                thisUpdate,
+                nextUpdate);
+            return true;
+        }
+        catch (AsnContentException)
+        {
+            error = "A DSS OCSP SingleResponse payload is malformed and was ignored.";
+            return false;
+        }
+    }
+
+    private static OcspCertStatus ReadOcspCertStatus(AsnReader singleResponseReader)
+    {
+        Asn1Tag goodTag = new(TagClass.ContextSpecific, 0);
+        Asn1Tag revokedTag = new(TagClass.ContextSpecific, 1);
+        Asn1Tag unknownTag = new(TagClass.ContextSpecific, 2);
+        Asn1Tag statusTag = singleResponseReader.PeekTag();
+
+        if (statusTag.HasSameClassAndValue(goodTag))
+        {
+            singleResponseReader.ReadNull(goodTag);
+            return OcspCertStatus.Good;
+        }
+
+        if (statusTag.HasSameClassAndValue(revokedTag))
+        {
+            _ = singleResponseReader.ReadEncodedValue();
+            return OcspCertStatus.Revoked;
+        }
+
+        if (statusTag.HasSameClassAndValue(unknownTag))
+        {
+            _ = singleResponseReader.ReadEncodedValue();
+            return OcspCertStatus.Unknown;
+        }
+
+        throw new AsnContentException("Unsupported OCSP certStatus tag.");
+    }
+
     private static string ReadAlgorithmIdentifierOid(AsnReader reader)
     {
         AsnReader algorithmIdentifier = reader.ReadSequence();
@@ -1635,6 +2021,7 @@ public sealed class PdfDocument
     private readonly record struct DssValidationEvidence(
         IReadOnlyList<X509Certificate2> Certificates,
         IReadOnlyList<CrlEvidence> Crls,
+        IReadOnlyList<OcspEvidence> Ocsps,
         string? Diagnostic);
 
     private readonly record struct CrlEvidence(
@@ -1645,6 +2032,46 @@ public sealed class PdfDocument
         HashSet<string> RevokedSerialNumbers,
         string SignatureAlgorithmOid,
         byte[] SignatureValue);
+
+    private readonly record struct OcspEvidence(
+        byte[] TbsResponseData,
+        DateTimeOffset ProducedAt,
+        string SignatureAlgorithmOid,
+        byte[] SignatureValue,
+        IReadOnlyList<OcspSingleResponseEvidence> Responses);
+
+    private readonly record struct OcspSingleResponseEvidence(
+        string CertIdHashAlgorithmOid,
+        byte[] IssuerNameHash,
+        byte[] IssuerKeyHash,
+        string SerialNumberHex,
+        OcspCertStatus CertStatus,
+        DateTimeOffset ThisUpdate,
+        DateTimeOffset? NextUpdate);
+
+    private enum OcspValidationStatus
+    {
+        NoEvidence = 0,
+        Valid = 1,
+        Invalid = 2,
+    }
+
+    private enum OcspCertStatus
+    {
+        Good = 0,
+        Revoked = 1,
+        Unknown = 2,
+    }
+
+    private enum OcspResponseStatus
+    {
+        Successful = 0,
+        MalformedRequest = 1,
+        InternalError = 2,
+        TryLater = 3,
+        SigRequired = 5,
+        Unauthorized = 6,
+    }
 
     private static bool EvaluateSignerPolicies(SignedCms signedCms, IReadOnlyList<string> requiredPolicyOids, List<string> diagnostics)
     {
