@@ -1,4 +1,5 @@
 using System.Text;
+using ModernPDF;
 using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
@@ -96,6 +97,25 @@ public sealed class PdfFileWriterTests
     }
 
     [Fact]
+    public void WriteWithXrefStreamAndObjectStreamRoundTrips()
+    {
+        PdfFile file = CreateTwoObjectFile();
+        byte[] bytes = PdfFileWriter.Write(file, PdfCrossReferenceStyle.Stream);
+        string text = Encoding.ASCII.GetString(bytes);
+
+        Assert.Contains("/Type /XRef", text, StringComparison.Ordinal);
+        Assert.Contains("/Type /ObjStm", text, StringComparison.Ordinal);
+
+        PdfFile parsed = PdfFileReader.Read(bytes);
+        Assert.True(parsed.Objects.Count >= 2);
+        PdfDictionaryObject pages = Assert.IsType<PdfDictionaryObject>(
+            parsed.Objects.Single(static objectItem => objectItem.ObjectId.ObjectNumber == 2).Value);
+        PdfNameObject pagesType = Assert.IsType<PdfNameObject>(
+            Assert.Single(pages.Entries, static entry => entry.Key == "Type").Value);
+        Assert.Equal("Pages", pagesType.Value);
+    }
+
+    [Fact]
     public void WriteIncrementalAppendsUpdatedObjectAndPrevTrailerEntry()
     {
         PdfFile original = CreateMinimalFile();
@@ -122,6 +142,38 @@ public sealed class PdfFileWriterTests
 
         Assert.True(incrementalBytes.Length > fullBytes.Length);
         Assert.Equal(fullBytes, incrementalBytes.Take(fullBytes.Length).ToArray());
+        Assert.Contains("/Prev", text, StringComparison.Ordinal);
+        Assert.Contains(dictionary.Entries, static entry => entry.Key == "Version");
+    }
+
+    [Fact]
+    public void WriteIncrementalWithXrefStreamAppendsUpdatedObjectAndPrevEntry()
+    {
+        PdfFile original = CreateMinimalFile();
+        byte[] fullBytes = PdfFileWriter.Write(original);
+        PdfFile parsed = PdfFileReader.Read(fullBytes);
+
+        PdfDictionaryObject updatedCatalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Version", new PdfNameObject("2.0")),
+        ]);
+        PdfFile updated = new(
+            parsed.Version,
+            [new PdfIndirectObject(new PdfObjectId(1, 0), updatedCatalog)],
+            parsed.Trailer,
+            parsed.SourceBytes,
+            parsed.StartXrefOffset,
+            parsed.XrefEntries);
+
+        byte[] incrementalBytes = PdfFileWriter.WriteIncremental(updated, [new PdfObjectId(1, 0)], PdfCrossReferenceStyle.Stream);
+        string text = Encoding.ASCII.GetString(incrementalBytes);
+        PdfFile reparsed = PdfFileReader.Read(incrementalBytes);
+        PdfDictionaryObject dictionary = Assert.IsType<PdfDictionaryObject>(reparsed.Objects[0].Value);
+
+        Assert.True(incrementalBytes.Length > fullBytes.Length);
+        Assert.Equal(fullBytes, incrementalBytes.Take(fullBytes.Length).ToArray());
+        Assert.Contains("/Type /XRef", text, StringComparison.Ordinal);
         Assert.Contains("/Prev", text, StringComparison.Ordinal);
         Assert.Contains(dictionary.Entries, static entry => entry.Key == "Version");
     }
@@ -200,5 +252,33 @@ public sealed class PdfFileWriterTests
         ]);
 
         return new PdfFile("2.0", [object1], trailer);
+    }
+
+    private static PdfFile CreateTwoObjectFile()
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(0, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+        ]);
+
+        return new PdfFile(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+                new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+            ],
+            trailer);
     }
 }

@@ -7,49 +7,49 @@ namespace ModernPDF.Format.Files;
 
 internal static class PdfFileWriter
 {
-    public static byte[] Write(PdfFile file)
+    private const int XrefStreamField2Width = 4;
+    private const int XrefStreamField3Width = 2;
+
+    private static readonly HashSet<string> XrefStreamOnlyKeys =
+    [
+        "Type",
+        "Length",
+        "Filter",
+        "DecodeParms",
+        "W",
+        "Index",
+        "XRefStm",
+    ];
+
+    private readonly record struct CompressedEntryInfo(int ObjectStreamNumber, int ObjectIndex);
+
+    private readonly record struct XrefStreamEntry(byte Type, int Field2, int Field3);
+
+    private readonly record struct IndexRange(int StartObjectNumber, int Count);
+
+    public static byte[] Write(PdfFile file, PdfCrossReferenceStyle crossReferenceStyle = PdfCrossReferenceStyle.Classic)
     {
         ArgumentNullException.ThrowIfNull(file);
 
-        ByteBufferWriter writer = new();
-        Dictionary<int, PdfObjectId> objectIds = [];
-        Dictionary<int, int> objectOffsets = [];
-
-        WriteHeader(writer, file.Version);
-
-        foreach (PdfIndirectObject indirectObject in file.Objects.OrderBy(item => item.ObjectId.ObjectNumber))
+        return crossReferenceStyle switch
         {
-            int objectNumber = indirectObject.ObjectId.ObjectNumber;
-            objectIds[objectNumber] = indirectObject.ObjectId;
-            objectOffsets[objectNumber] = writer.WrittenCount;
-
-            WriteAscii(writer, $"{objectNumber} {indirectObject.ObjectId.GenerationNumber} obj\n");
-            WriteIndirectObjectValue(writer, indirectObject.Value);
-            WriteAscii(writer, "\nendobj\n");
-        }
-
-        int xrefOffset = writer.WrittenCount;
-        Dictionary<int, PdfXrefEntry> xrefEntries = BuildInUseXrefEntries(objectOffsets, objectIds);
-        WriteCrossReferenceTable(writer, xrefEntries, objectIds);
-
-        PdfDictionaryObject trailer = BuildTrailerWithSize(file.Trailer, objectOffsets);
-        WriteAscii(writer, "trailer\n");
-        writer.Write(PdfObjectWriter.Write(trailer));
-        WriteAscii(writer, "\nstartxref\n");
-        WriteAscii(writer, xrefOffset.ToString(CultureInfo.InvariantCulture));
-        WriteAscii(writer, "\n%%EOF\n");
-
-        return writer.ToArray();
+            PdfCrossReferenceStyle.Classic => WriteClassic(file),
+            PdfCrossReferenceStyle.Stream => WriteWithXrefStream(file),
+            _ => throw new ArgumentOutOfRangeException(nameof(crossReferenceStyle), "Unsupported cross-reference style."),
+        };
     }
 
-    public static byte[] WriteIncremental(PdfFile file, IReadOnlyCollection<PdfObjectId> dirtyObjectIds)
+    public static byte[] WriteIncremental(
+        PdfFile file,
+        IReadOnlyCollection<PdfObjectId> dirtyObjectIds,
+        PdfCrossReferenceStyle crossReferenceStyle = PdfCrossReferenceStyle.Classic)
     {
         ArgumentNullException.ThrowIfNull(file);
         ArgumentNullException.ThrowIfNull(dirtyObjectIds);
 
         if (!HasUsableIncrementalMetadata(file))
         {
-            return Write(file);
+            return Write(file, crossReferenceStyle);
         }
 
         byte[] sourceBytes = file.SourceBytes!;
@@ -79,16 +79,127 @@ internal static class PdfFileWriter
             return sourceBytes.ToArray();
         }
 
-        ByteBufferWriter writer = new();
-        writer.Write(sourceBytes.AsSpan());
-        if (sourceBytes.Length > 0)
+        return crossReferenceStyle switch
         {
-            byte lastByte = sourceBytes[^1];
-            if (lastByte is not (byte)'\n' and not (byte)'\r')
+            PdfCrossReferenceStyle.Classic => WriteIncrementalClassic(file, sourceBytes, previousXrefOffset, objectsToRewrite),
+            PdfCrossReferenceStyle.Stream => WriteIncrementalWithXrefStream(file, sourceBytes, previousXrefOffset, objectsToRewrite),
+            _ => throw new ArgumentOutOfRangeException(nameof(crossReferenceStyle), "Unsupported cross-reference style."),
+        };
+    }
+
+    private static byte[] WriteClassic(PdfFile file)
+    {
+        ByteBufferWriter writer = new();
+        Dictionary<int, PdfObjectId> objectIds = [];
+        Dictionary<int, int> objectOffsets = [];
+
+        WriteHeader(writer, file.Version);
+
+        foreach (PdfIndirectObject indirectObject in file.Objects.OrderBy(item => item.ObjectId.ObjectNumber))
+        {
+            int objectNumber = indirectObject.ObjectId.ObjectNumber;
+            objectIds[objectNumber] = indirectObject.ObjectId;
+            objectOffsets[objectNumber] = writer.WrittenCount;
+
+            WriteIndirectObject(writer, indirectObject.ObjectId, indirectObject.Value);
+        }
+
+        int xrefOffset = writer.WrittenCount;
+        Dictionary<int, PdfXrefEntry> xrefEntries = BuildInUseXrefEntries(objectOffsets, objectIds);
+        WriteCrossReferenceTable(writer, xrefEntries, objectIds);
+
+        PdfDictionaryObject trailer = BuildTrailerWithSize(file.Trailer, objectOffsets);
+        WriteAscii(writer, "trailer\n");
+        writer.Write(PdfObjectWriter.Write(trailer));
+        WriteAscii(writer, "\nstartxref\n");
+        WriteAscii(writer, xrefOffset.ToString(CultureInfo.InvariantCulture));
+        WriteAscii(writer, "\n%%EOF\n");
+
+        return writer.ToArray();
+    }
+
+    private static byte[] WriteWithXrefStream(PdfFile file)
+    {
+        List<PdfIndirectObject> sortedObjects = file.Objects
+            .OrderBy(static objectItem => objectItem.ObjectId.ObjectNumber)
+            .ToList();
+        HashSet<int> forcedUncompressedObjectNumbers = GetTrailerReferenceObjectNumbers(file.Trailer);
+
+        List<PdfIndirectObject> uncompressedObjects = [];
+        List<PdfIndirectObject> objectsForObjectStream = [];
+        foreach (PdfIndirectObject indirectObject in sortedObjects)
+        {
+            bool mustBeUncompressed = indirectObject.Value is PdfStreamObject
+                || indirectObject.ObjectId.GenerationNumber != 0
+                || forcedUncompressedObjectNumbers.Contains(indirectObject.ObjectId.ObjectNumber);
+            if (mustBeUncompressed)
             {
-                WriteAscii(writer, "\n");
+                uncompressedObjects.Add(indirectObject);
+            }
+            else
+            {
+                objectsForObjectStream.Add(indirectObject);
             }
         }
+
+        Dictionary<int, CompressedEntryInfo> compressedEntries = [];
+        int nextObjectNumber = GetNextObjectNumber(sortedObjects.Select(static objectItem => objectItem.ObjectId.ObjectNumber));
+        if (objectsForObjectStream.Count > 0)
+        {
+            PdfIndirectObject objectStream = BuildObjectStreamObject(objectsForObjectStream, nextObjectNumber, compressedEntries);
+            uncompressedObjects.Add(objectStream);
+            nextObjectNumber++;
+        }
+
+        int xrefObjectNumber = nextObjectNumber;
+        ByteBufferWriter writer = new();
+        WriteHeader(writer, file.Version);
+
+        Dictionary<int, PdfXrefEntry> uncompressedOffsets = [];
+        foreach (PdfIndirectObject indirectObject in uncompressedObjects.OrderBy(static objectItem => objectItem.ObjectId.ObjectNumber))
+        {
+            int objectNumber = indirectObject.ObjectId.ObjectNumber;
+            uncompressedOffsets[objectNumber] = new PdfXrefEntry(writer.WrittenCount, indirectObject.ObjectId.GenerationNumber);
+            WriteIndirectObject(writer, indirectObject.ObjectId, indirectObject.Value);
+        }
+
+        int xrefOffset = writer.WrittenCount;
+        int maxObjectNumber = Math.Max(GetMaxObjectNumber(sortedObjects.Select(static objectItem => objectItem.ObjectId.ObjectNumber)), xrefObjectNumber);
+        int size = maxObjectNumber + 1;
+
+        Dictionary<int, XrefStreamEntry> xrefEntries = [];
+        xrefEntries[0] = new XrefStreamEntry(0, 0, 65535);
+        foreach ((int objectNumber, PdfXrefEntry entry) in uncompressedOffsets)
+        {
+            xrefEntries[objectNumber] = new XrefStreamEntry(1, entry.Offset, entry.Generation);
+        }
+
+        foreach ((int objectNumber, CompressedEntryInfo compressedEntry) in compressedEntries)
+        {
+            xrefEntries[objectNumber] = new XrefStreamEntry(2, compressedEntry.ObjectStreamNumber, compressedEntry.ObjectIndex);
+        }
+
+        xrefEntries[xrefObjectNumber] = new XrefStreamEntry(1, xrefOffset, 0);
+
+        List<IndexRange> indexRanges = [new IndexRange(0, size)];
+        byte[] xrefPayload = BuildXrefStreamPayload(indexRanges, xrefEntries);
+        PdfDictionaryObject xrefDictionary = BuildXrefStreamDictionary(file.Trailer, size, indexRanges, previousXrefOffset: null);
+        PdfStreamObject xrefStream = new(xrefDictionary, xrefPayload);
+        WriteIndirectObject(writer, new PdfObjectId(xrefObjectNumber, 0), xrefStream);
+
+        WriteAscii(writer, "startxref\n");
+        WriteAscii(writer, xrefOffset.ToString(CultureInfo.InvariantCulture));
+        WriteAscii(writer, "\n%%EOF\n");
+        return writer.ToArray();
+    }
+
+    private static byte[] WriteIncrementalClassic(
+        PdfFile file,
+        byte[] sourceBytes,
+        int previousXrefOffset,
+        List<PdfIndirectObject> objectsToRewrite)
+    {
+        ByteBufferWriter writer = CreateAppendWriter(sourceBytes);
 
         Dictionary<int, PdfXrefEntry> mergedEntries = new(file.XrefEntries);
         Dictionary<int, PdfObjectId> objectIds = [];
@@ -101,9 +212,7 @@ internal static class PdfFileWriter
         {
             int objectNumber = objectItem.ObjectId.ObjectNumber;
             int offset = writer.WrittenCount;
-            WriteAscii(writer, $"{objectNumber} {objectItem.ObjectId.GenerationNumber} obj\n");
-            WriteIndirectObjectValue(writer, objectItem.Value);
-            WriteAscii(writer, "\nendobj\n");
+            WriteIndirectObject(writer, objectItem.ObjectId, objectItem.Value);
             mergedEntries[objectNumber] = new PdfXrefEntry(offset, objectItem.ObjectId.GenerationNumber);
         }
 
@@ -119,6 +228,63 @@ internal static class PdfFileWriter
         WriteAscii(writer, "\nstartxref\n");
         WriteAscii(writer, xrefOffset.ToString(CultureInfo.InvariantCulture));
         WriteAscii(writer, "\n%%EOF\n");
+        return FinalizeIncrementalWrite(writer, sourceBytes);
+    }
+
+    private static byte[] WriteIncrementalWithXrefStream(
+        PdfFile file,
+        byte[] sourceBytes,
+        int previousXrefOffset,
+        List<PdfIndirectObject> objectsToRewrite)
+    {
+        ByteBufferWriter writer = CreateAppendWriter(sourceBytes);
+        Dictionary<int, PdfObjectId> objectIds = [];
+        foreach (PdfIndirectObject objectItem in file.Objects)
+        {
+            objectIds[objectItem.ObjectId.ObjectNumber] = objectItem.ObjectId;
+        }
+
+        Dictionary<int, PdfXrefEntry> rewrittenEntries = [];
+        foreach (PdfIndirectObject objectItem in objectsToRewrite)
+        {
+            int objectNumber = objectItem.ObjectId.ObjectNumber;
+            int offset = writer.WrittenCount;
+            WriteIndirectObject(writer, objectItem.ObjectId, objectItem.Value);
+            rewrittenEntries[objectNumber] = new PdfXrefEntry(offset, objectItem.ObjectId.GenerationNumber);
+        }
+
+        int xrefObjectNumber = GetNextObjectNumber(file.Objects.Select(static objectItem => objectItem.ObjectId.ObjectNumber));
+        int xrefOffset = writer.WrittenCount;
+
+        Dictionary<int, XrefStreamEntry> xrefEntries = [];
+        xrefEntries[0] = new XrefStreamEntry(0, 0, 65535);
+        foreach ((int objectNumber, PdfXrefEntry rewrittenEntry) in rewrittenEntries)
+        {
+            xrefEntries[objectNumber] = new XrefStreamEntry(1, rewrittenEntry.Offset, rewrittenEntry.Generation);
+        }
+
+        xrefEntries[xrefObjectNumber] = new XrefStreamEntry(1, xrefOffset, 0);
+
+        List<IndexRange> indexRanges = BuildContiguousRanges(xrefEntries.Keys);
+        int maxObjectNumber = Math.Max(
+            xrefObjectNumber,
+            Math.Max(
+                GetMaxObjectNumber(file.Objects.Select(static objectItem => objectItem.ObjectId.ObjectNumber)),
+                GetMaxObjectNumber(file.XrefEntries.Keys)));
+        int size = maxObjectNumber + 1;
+        byte[] xrefPayload = BuildXrefStreamPayload(indexRanges, xrefEntries);
+        PdfDictionaryObject xrefDictionary = BuildXrefStreamDictionary(file.Trailer, size, indexRanges, previousXrefOffset);
+        PdfStreamObject xrefStream = new(xrefDictionary, xrefPayload);
+        WriteIndirectObject(writer, new PdfObjectId(xrefObjectNumber, 0), xrefStream);
+
+        WriteAscii(writer, "startxref\n");
+        WriteAscii(writer, xrefOffset.ToString(CultureInfo.InvariantCulture));
+        WriteAscii(writer, "\n%%EOF\n");
+        return FinalizeIncrementalWrite(writer, sourceBytes);
+    }
+
+    private static byte[] FinalizeIncrementalWrite(ByteBufferWriter writer, byte[] sourceBytes)
+    {
         byte[] output = writer.ToArray();
         if (!output.AsSpan(0, sourceBytes.Length).SequenceEqual(sourceBytes))
         {
@@ -126,6 +292,232 @@ internal static class PdfFileWriter
         }
 
         return output;
+    }
+
+    private static ByteBufferWriter CreateAppendWriter(byte[] sourceBytes)
+    {
+        ByteBufferWriter writer = new();
+        writer.Write(sourceBytes.AsSpan());
+        if (sourceBytes.Length > 0)
+        {
+            byte lastByte = sourceBytes[^1];
+            if (lastByte is not (byte)'\n' and not (byte)'\r')
+            {
+                WriteAscii(writer, "\n");
+            }
+        }
+
+        return writer;
+    }
+
+    private static PdfIndirectObject BuildObjectStreamObject(
+        List<PdfIndirectObject> objectsForObjectStream,
+        int objectStreamNumber,
+        Dictionary<int, CompressedEntryInfo> compressedEntries)
+    {
+        ByteBufferWriter headerWriter = new();
+        ByteBufferWriter contentWriter = new();
+
+        int index = 0;
+        foreach (PdfIndirectObject objectItem in objectsForObjectStream.OrderBy(static item => item.ObjectId.ObjectNumber))
+        {
+            WriteAscii(headerWriter, $"{objectItem.ObjectId.ObjectNumber} {contentWriter.WrittenCount} ");
+            contentWriter.Write(PdfObjectWriter.Write(objectItem.Value));
+            WriteAscii(contentWriter, "\n");
+            compressedEntries[objectItem.ObjectId.ObjectNumber] = new CompressedEntryInfo(objectStreamNumber, index);
+            index++;
+        }
+
+        ByteBufferWriter objectStreamDataWriter = new();
+        objectStreamDataWriter.Write(headerWriter.WrittenSpan);
+        int first = headerWriter.WrittenCount;
+        objectStreamDataWriter.Write(contentWriter.WrittenSpan);
+
+        PdfDictionaryObject dictionary = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("ObjStm")),
+            new PdfDictionaryEntry("N", new PdfNumberObject(objectsForObjectStream.Count, isInteger: true)),
+            new PdfDictionaryEntry("First", new PdfNumberObject(first, isInteger: true)),
+        ]);
+
+        PdfStreamObject objectStream = new(dictionary, objectStreamDataWriter.ToArray());
+        return new PdfIndirectObject(new PdfObjectId(objectStreamNumber, 0), objectStream);
+    }
+
+    private static List<IndexRange> BuildContiguousRanges(IEnumerable<int> objectNumbers)
+    {
+        List<int> sorted = objectNumbers
+            .Where(static objectNumber => objectNumber >= 0)
+            .Distinct()
+            .OrderBy(static objectNumber => objectNumber)
+            .ToList();
+        if (sorted.Count == 0)
+        {
+            return [];
+        }
+
+        List<IndexRange> ranges = [];
+        int currentStart = sorted[0];
+        int previous = currentStart;
+        int count = 1;
+
+        for (int index = 1; index < sorted.Count; index++)
+        {
+            int value = sorted[index];
+            if (value == previous + 1)
+            {
+                count++;
+                previous = value;
+                continue;
+            }
+
+            ranges.Add(new IndexRange(currentStart, count));
+            currentStart = value;
+            previous = value;
+            count = 1;
+        }
+
+        ranges.Add(new IndexRange(currentStart, count));
+        return ranges;
+    }
+
+    private static PdfDictionaryObject BuildXrefStreamDictionary(
+        PdfDictionaryObject originalTrailer,
+        int size,
+        List<IndexRange> indexRanges,
+        int? previousXrefOffset)
+    {
+        List<PdfDictionaryEntry> entries = [];
+        foreach (PdfDictionaryEntry entry in originalTrailer.Entries)
+        {
+            if (!string.Equals(entry.Key, "Size", StringComparison.Ordinal)
+                && !string.Equals(entry.Key, "Prev", StringComparison.Ordinal)
+                && !XrefStreamOnlyKeys.Contains(entry.Key))
+            {
+                entries.Add(entry);
+            }
+        }
+
+        entries.Add(new PdfDictionaryEntry("Type", new PdfNameObject("XRef")));
+        entries.Add(new PdfDictionaryEntry("Size", new PdfNumberObject(size, isInteger: true)));
+        entries.Add(new PdfDictionaryEntry(
+            "W",
+            new PdfArrayObject(
+            [
+                new PdfNumberObject(1, isInteger: true),
+                new PdfNumberObject(XrefStreamField2Width, isInteger: true),
+                new PdfNumberObject(XrefStreamField3Width, isInteger: true),
+            ])));
+        entries.Add(new PdfDictionaryEntry("Index", BuildIndexArray(indexRanges)));
+        if (previousXrefOffset.HasValue)
+        {
+            entries.Add(new PdfDictionaryEntry("Prev", new PdfNumberObject(previousXrefOffset.Value, isInteger: true)));
+        }
+
+        return new PdfDictionaryObject(entries);
+    }
+
+    private static PdfArrayObject BuildIndexArray(List<IndexRange> ranges)
+    {
+        List<PdfObject> items = [];
+        foreach (IndexRange range in ranges)
+        {
+            items.Add(new PdfNumberObject(range.StartObjectNumber, isInteger: true));
+            items.Add(new PdfNumberObject(range.Count, isInteger: true));
+        }
+
+        return new PdfArrayObject(items);
+    }
+
+    private static byte[] BuildXrefStreamPayload(List<IndexRange> indexRanges, Dictionary<int, XrefStreamEntry> xrefEntries)
+    {
+        ByteBufferWriter payloadWriter = new();
+        foreach (IndexRange range in indexRanges)
+        {
+            for (int objectNumber = range.StartObjectNumber; objectNumber < range.StartObjectNumber + range.Count; objectNumber++)
+            {
+                XrefStreamEntry entry = xrefEntries.TryGetValue(objectNumber, out XrefStreamEntry value)
+                    ? value
+                    : objectNumber == 0
+                        ? new XrefStreamEntry(0, 0, 65535)
+                        : new XrefStreamEntry(0, 0, 0);
+
+                payloadWriter.WriteByte(entry.Type);
+                WriteUnsignedInt32(payloadWriter, entry.Field2);
+                WriteUnsignedInt16(payloadWriter, entry.Field3);
+            }
+        }
+
+        return payloadWriter.ToArray();
+    }
+
+    private static void WriteUnsignedInt32(ByteBufferWriter writer, int value)
+    {
+        if (value < 0)
+        {
+            throw new PdfFormatException("Cross-reference stream field value cannot be negative.");
+        }
+
+        writer.WriteByte((byte)((value >> 24) & 0xFF));
+        writer.WriteByte((byte)((value >> 16) & 0xFF));
+        writer.WriteByte((byte)((value >> 8) & 0xFF));
+        writer.WriteByte((byte)(value & 0xFF));
+    }
+
+    private static void WriteUnsignedInt16(ByteBufferWriter writer, int value)
+    {
+        if (value < 0 || value > ushort.MaxValue)
+        {
+            throw new PdfFormatException("Cross-reference stream field value exceeded 16-bit range.");
+        }
+
+        writer.WriteByte((byte)((value >> 8) & 0xFF));
+        writer.WriteByte((byte)(value & 0xFF));
+    }
+
+    private static HashSet<int> GetTrailerReferenceObjectNumbers(PdfDictionaryObject trailer)
+    {
+        HashSet<int> objectNumbers = [];
+        foreach (PdfDictionaryEntry entry in trailer.Entries)
+        {
+            if ((string.Equals(entry.Key, "Root", StringComparison.Ordinal)
+                    || string.Equals(entry.Key, "Info", StringComparison.Ordinal)
+                    || string.Equals(entry.Key, "Encrypt", StringComparison.Ordinal))
+                && entry.Value is PdfReferenceObject reference)
+            {
+                objectNumbers.Add(reference.ObjectId.ObjectNumber);
+            }
+        }
+
+        return objectNumbers;
+    }
+
+    private static int GetMaxObjectNumber(IEnumerable<int> objectNumbers)
+    {
+        int max = 0;
+        bool hasAny = false;
+        foreach (int objectNumber in objectNumbers)
+        {
+            hasAny = true;
+            if (objectNumber > max)
+            {
+                max = objectNumber;
+            }
+        }
+
+        return hasAny ? max : 0;
+    }
+
+    private static int GetNextObjectNumber(IEnumerable<int> objectNumbers)
+    {
+        return GetMaxObjectNumber(objectNumbers) + 1;
+    }
+
+    private static void WriteIndirectObject(ByteBufferWriter writer, PdfObjectId objectId, PdfObject value)
+    {
+        WriteAscii(writer, $"{objectId.ObjectNumber} {objectId.GenerationNumber} obj\n");
+        WriteIndirectObjectValue(writer, value);
+        WriteAscii(writer, "\nendobj\n");
     }
 
     private static void WriteIndirectObjectValue(ByteBufferWriter writer, PdfObject value)

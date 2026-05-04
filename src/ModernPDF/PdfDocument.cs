@@ -168,6 +168,16 @@ public sealed class PdfDocument
     public byte[] Save(PdfSaveOptions? options = null)
     {
         PdfSaveOptions effectiveOptions = options ?? new PdfSaveOptions();
+        if (!Enum.IsDefined(effectiveOptions.Mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Save Mode contains an unsupported value.");
+        }
+
+        if (!Enum.IsDefined(effectiveOptions.CrossReferenceStyle))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Save CrossReferenceStyle contains an unsupported value.");
+        }
+
         if (effectiveOptions.Mode == PdfSaveMode.Incremental && effectiveOptions.Security is not null)
         {
             throw new NotSupportedException("Incremental save with security options is not currently supported.");
@@ -177,7 +187,7 @@ public sealed class PdfDocument
         {
             ValidateSecurityOptions(effectiveOptions.Security);
             PdfFile encryptedFile = PdfStandardSecurityProcessor.Encrypt(_file, effectiveOptions.Security);
-            return PdfFileWriter.Write(encryptedFile);
+            return PdfFileWriter.Write(encryptedFile, effectiveOptions.CrossReferenceStyle);
         }
 
         if (effectiveOptions.Mode == PdfSaveMode.Incremental)
@@ -187,12 +197,12 @@ public sealed class PdfDocument
                 throw new NotSupportedException("Incremental save is not supported for documents opened from encrypted PDFs.");
             }
 
-            byte[] incrementalBytes = PdfFileWriter.WriteIncremental(_file, _dirtyObjectIds);
+            byte[] incrementalBytes = PdfFileWriter.WriteIncremental(_file, _dirtyObjectIds, effectiveOptions.CrossReferenceStyle);
             RebaseFromSavedBytes(incrementalBytes);
             return incrementalBytes;
         }
 
-        byte[] fullBytes = PdfFileWriter.Write(_file);
+        byte[] fullBytes = PdfFileWriter.Write(_file, effectiveOptions.CrossReferenceStyle);
         RebaseFromSavedBytes(fullBytes);
         return fullBytes;
     }
@@ -757,21 +767,63 @@ public sealed class PdfDocument
         }
 
         ReadOnlySpan<byte> bytes = byteString.Bytes.Span;
-        int length = bytes.Length;
-        while (length > 0 && bytes[length - 1] == 0)
-        {
-            length--;
-        }
-
-        if (length == 0)
+        if (bytes.Length == 0)
         {
             error = "Signature /Contents does not contain CMS signature bytes.";
             return false;
         }
 
-        cmsBytes = bytes[..length].ToArray();
+        if (!TryReadDerEncodedLength(bytes, out int cmsLength))
+        {
+            error = "Signature /Contents does not contain a valid DER-encoded CMS object.";
+            return false;
+        }
+
+        cmsBytes = bytes[..cmsLength].ToArray();
         error = null;
         return true;
+    }
+
+    private static bool TryReadDerEncodedLength(ReadOnlySpan<byte> bytes, out int totalLength)
+    {
+        totalLength = 0;
+        if (bytes.Length < 2)
+        {
+            return false;
+        }
+
+        byte firstLengthByte = bytes[1];
+        if ((firstLengthByte & 0x80) == 0)
+        {
+            int contentLength = firstLengthByte;
+            totalLength = 2 + contentLength;
+            return totalLength <= bytes.Length;
+        }
+
+        int lengthByteCount = firstLengthByte & 0x7F;
+        if (lengthByteCount is <= 0 or > 4)
+        {
+            return false;
+        }
+
+        if (2 + lengthByteCount > bytes.Length)
+        {
+            return false;
+        }
+
+        int contentLengthLong = 0;
+        for (int index = 0; index < lengthByteCount; index++)
+        {
+            contentLengthLong = (contentLengthLong << 8) | bytes[2 + index];
+        }
+
+        if (contentLengthLong < 0)
+        {
+            return false;
+        }
+
+        totalLength = 2 + lengthByteCount + contentLengthLong;
+        return totalLength <= bytes.Length;
     }
 
     private static List<(int Start, int Length)> ParseByteRangeTokenSlots(string text, int byteRangeArrayStart)

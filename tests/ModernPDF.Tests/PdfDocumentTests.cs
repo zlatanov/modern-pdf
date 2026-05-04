@@ -143,6 +143,49 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void SaveWithStreamCrossReferenceStyleWritesXrefAndObjectStreams()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("stream-save");
+
+        byte[] streamBytes = document.Save(
+            new PdfSaveOptions
+            {
+                CrossReferenceStyle = PdfCrossReferenceStyle.Stream,
+            });
+        string text = Encoding.ASCII.GetString(streamBytes);
+
+        Assert.Contains("/Type /XRef", text, StringComparison.Ordinal);
+        Assert.Contains("/Type /ObjStm", text, StringComparison.Ordinal);
+        Assert.Equal("stream-save", PdfDocument.Open(streamBytes).ExtractText());
+    }
+
+    [Fact]
+    public void SaveWithIncrementalModeAndStreamCrossReferenceStyleAppendsXrefStream()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("before-stream-incremental");
+        byte[] fullBytes = document.Save();
+
+        PdfDocument opened = PdfDocument.Open(fullBytes);
+        opened.ReplacePageText(0, "after-stream-incremental");
+
+        byte[] incrementalBytes = opened.Save(
+            new PdfSaveOptions
+            {
+                Mode = PdfSaveMode.Incremental,
+                CrossReferenceStyle = PdfCrossReferenceStyle.Stream,
+            });
+        string text = Encoding.ASCII.GetString(incrementalBytes);
+
+        Assert.True(incrementalBytes.Length > fullBytes.Length);
+        Assert.Equal(fullBytes, incrementalBytes.Take(fullBytes.Length).ToArray());
+        Assert.Contains("/Type /XRef", text, StringComparison.Ordinal);
+        Assert.Contains("/Prev", text, StringComparison.Ordinal);
+        Assert.Equal("after-stream-incremental", PdfDocument.Open(incrementalBytes).ExtractText());
+    }
+
+    [Fact]
     public void SaveWithIncrementalModeAndSecurityOptionsIsNotSupported()
     {
         PdfDocument document = PdfDocument.Create();
@@ -1432,6 +1475,12 @@ public sealed class PdfDocumentTests
                     UserPassword = "pw",
                     Permissions = (PdfPermissions)256,
                 },
+            }));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => document.Save(new PdfSaveOptions
+            {
+                CrossReferenceStyle = (PdfCrossReferenceStyle)999,
             }));
     }
 
