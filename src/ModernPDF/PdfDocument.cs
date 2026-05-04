@@ -6,9 +6,11 @@ using ModernPDF.Format.Objects;
 using ModernPDF.Primitives;
 using ModernPDF.Security;
 using ModernPDF.Text;
+using System.Formats.Asn1;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
 namespace ModernPDF;
@@ -234,6 +236,16 @@ public sealed class PdfDocument
 
     public IReadOnlyList<PdfDetachedSignatureValidationResult> ValidateDetachedSignatures(bool verifyCertificateChain = false)
     {
+        return ValidateDetachedSignatures(
+            new PdfDetachedSignatureValidationOptions
+            {
+                VerifyCertificateChain = verifyCertificateChain,
+            });
+    }
+
+    public IReadOnlyList<PdfDetachedSignatureValidationResult> ValidateDetachedSignatures(PdfDetachedSignatureValidationOptions? options)
+    {
+        PdfDetachedSignatureValidationOptions effectiveOptions = options ?? new PdfDetachedSignatureValidationOptions();
         List<PdfDetachedSignatureValidationResult> results = [];
         foreach (PdfIndirectObject indirectObject in _file.Objects.OrderBy(static objectItem => objectItem.ObjectId.ObjectNumber))
         {
@@ -242,7 +254,7 @@ public sealed class PdfDocument
                 continue;
             }
 
-            results.Add(ValidateDetachedSignature(indirectObject.ObjectId.ObjectNumber, dictionary, verifyCertificateChain));
+            results.Add(ValidateDetachedSignature(indirectObject.ObjectId.ObjectNumber, dictionary, effectiveOptions));
         }
 
         return results;
@@ -589,7 +601,7 @@ public sealed class PdfDocument
     private PdfDetachedSignatureValidationResult ValidateDetachedSignature(
         int signatureObjectNumber,
         PdfDictionaryObject dictionary,
-        bool verifyCertificateChain)
+        PdfDetachedSignatureValidationOptions options)
     {
         string? filter = TryReadNameEntry(dictionary, "Filter");
         string? subFilter = TryReadNameEntry(dictionary, "SubFilter");
@@ -630,14 +642,83 @@ public sealed class PdfDocument
         {
             SignedCms signedCms = new(new ContentInfo(signedPayload), detached: true);
             signedCms.Decode(detachedCmsBytes);
-            signedCms.CheckSignature(verifySignatureOnly: !verifyCertificateChain);
+            signedCms.CheckSignature(verifySignatureOnly: true);
+
+            if (signedCms.SignerInfos.Count == 0)
+            {
+                return CreateInvalidSignatureResult(
+                    signatureObjectNumber,
+                    filter,
+                    subFilter,
+                    "Detached CMS signature does not contain signer information.");
+            }
+
+            List<string> diagnostics = [];
+            DateTimeOffset? signingTime = TryReadFirstSigningTime(signedCms);
+            bool? signingTimeValid = null;
+            bool? certificateChainValid = null;
+            bool? revocationValid = null;
+            bool? certificatePolicyValid = null;
+            bool trustChecksPassed = true;
+
+            if (options.RequireSigningTime)
+            {
+                if (!signingTime.HasValue)
+                {
+                    trustChecksPassed = false;
+                    signingTimeValid = false;
+                    diagnostics.Add("Signing time is required but missing from CMS signed attributes.");
+                }
+                else
+                {
+                    signingTimeValid = IsSigningTimeWithinSignerCertificateValidity(signedCms, signingTime.Value);
+                    if (signingTimeValid is false)
+                    {
+                        trustChecksPassed = false;
+                        diagnostics.Add("Signing time is outside signer certificate validity.");
+                    }
+                }
+            }
+
+            bool checkChain = options.VerifyCertificateChain || options.RequireRevocationStatus;
+            if (checkChain)
+            {
+                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(signedCms, options, signingTime);
+                diagnostics.AddRange(chainDiagnostics);
+                certificateChainValid = chainIsValid;
+                revocationValid = options.RequireRevocationStatus ? revocationIsValid : null;
+                if (!chainIsValid || (options.RequireRevocationStatus && !revocationIsValid))
+                {
+                    trustChecksPassed = false;
+                }
+            }
+
+            if (options.RequiredCertificatePolicyOids is { Count: > 0 })
+            {
+                bool policyValid = EvaluateSignerPolicies(signedCms, options.RequiredCertificatePolicyOids, diagnostics);
+                certificatePolicyValid = policyValid;
+                if (!policyValid)
+                {
+                    trustChecksPassed = false;
+                }
+            }
+
+            string? failureReason = trustChecksPassed ? null : diagnostics.FirstOrDefault() ?? "Detached signature trust checks failed.";
             return new PdfDetachedSignatureValidationResult(
                 signatureObjectNumber,
                 filter,
                 subFilter,
-                isValid: true,
+                isValid: trustChecksPassed,
+                cryptographicallyValid: true,
+                trustChecksPassed: trustChecksPassed,
                 signerCount: signedCms.SignerInfos.Count,
-                failureReason: null);
+                failureReason: failureReason,
+                certificateChainValid: certificateChainValid,
+                revocationValid: revocationValid,
+                signingTimeValid: signingTimeValid,
+                signingTime: signingTime,
+                certificatePolicyValid: certificatePolicyValid,
+                diagnostics: diagnostics);
         }
         catch (CryptographicException exception)
         {
@@ -660,8 +741,214 @@ public sealed class PdfDocument
             filter,
             subFilter,
             isValid: false,
+            cryptographicallyValid: false,
+            trustChecksPassed: false,
             signerCount: 0,
-            failureReason: reason ?? "Signature validation failed.");
+            failureReason: reason ?? "Signature validation failed.",
+            diagnostics: reason is null ? null : [reason]);
+    }
+
+    private static DateTimeOffset? TryReadFirstSigningTime(SignedCms signedCms)
+    {
+        foreach (SignerInfo signerInfo in signedCms.SignerInfos)
+        {
+            if (TryReadSigningTime(signerInfo, out DateTimeOffset signingTime))
+            {
+                return signingTime;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryReadSigningTime(SignerInfo signerInfo, out DateTimeOffset signingTime)
+    {
+        foreach (CryptographicAttributeObject attribute in signerInfo.SignedAttributes)
+        {
+            if (!string.Equals(attribute.Oid?.Value, "1.2.840.113549.1.9.5", StringComparison.Ordinal) || attribute.Values.Count == 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                Pkcs9SigningTime pkcsSigningTime = new(attribute.Values[0].RawData);
+                signingTime = pkcsSigningTime.SigningTime;
+                return true;
+            }
+            catch (CryptographicException)
+            {
+                break;
+            }
+        }
+
+        signingTime = default;
+        return false;
+    }
+
+    private static bool IsSigningTimeWithinSignerCertificateValidity(SignedCms signedCms, DateTimeOffset signingTime)
+    {
+        bool hasCertificate = false;
+        foreach (SignerInfo signerInfo in signedCms.SignerInfos)
+        {
+            X509Certificate2? certificate = signerInfo.Certificate;
+            if (certificate is null)
+            {
+                continue;
+            }
+
+            hasCertificate = true;
+            if (signingTime.UtcDateTime < certificate.NotBefore || signingTime.UtcDateTime > certificate.NotAfter)
+            {
+                return false;
+            }
+        }
+
+        return hasCertificate;
+    }
+
+    private static (bool ChainValid, bool RevocationValid, List<string> Diagnostics) EvaluateSignerChains(
+        SignedCms signedCms,
+        PdfDetachedSignatureValidationOptions options,
+        DateTimeOffset? signingTime)
+    {
+        bool chainValid = true;
+        bool revocationValid = true;
+        List<string> diagnostics = [];
+        DateTimeOffset verificationMoment = options.ValidationTime ?? signingTime ?? DateTimeOffset.UtcNow;
+
+        foreach (SignerInfo signerInfo in signedCms.SignerInfos)
+        {
+            X509Certificate2? certificate = signerInfo.Certificate;
+            if (certificate is null)
+            {
+                chainValid = false;
+                diagnostics.Add("Signer certificate is missing from CMS payload.");
+                if (options.RequireRevocationStatus)
+                {
+                    revocationValid = false;
+                }
+
+                continue;
+            }
+
+            using X509Chain chain = new();
+            chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+            chain.ChainPolicy.VerificationTime = verificationMoment.UtcDateTime;
+            chain.ChainPolicy.RevocationFlag = X509RevocationFlag.EntireChain;
+            chain.ChainPolicy.RevocationMode = options.RequireRevocationStatus
+                ? X509RevocationMode.Offline
+                : X509RevocationMode.NoCheck;
+            chain.ChainPolicy.DisableCertificateDownloads = true;
+
+            if (options.TrustedRoots is { Count: > 0 })
+            {
+                chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+                foreach (X509Certificate2 trustedRoot in options.TrustedRoots)
+                {
+                    chain.ChainPolicy.CustomTrustStore.Add(trustedRoot);
+                }
+            }
+
+            foreach (X509Certificate2 cmsCertificate in signedCms.Certificates)
+            {
+                chain.ChainPolicy.ExtraStore.Add(cmsCertificate);
+            }
+
+            bool signerChainValid = chain.Build(certificate);
+            chainValid &= signerChainValid;
+            if (!signerChainValid)
+            {
+                diagnostics.AddRange(chain.ChainStatus.Select(static status => $"Certificate chain status: {status.Status} ({status.StatusInformation.Trim()})"));
+            }
+
+            if (options.RequireRevocationStatus)
+            {
+                bool hasRevocationPointers = certificate.Extensions["2.5.29.31"] is not null
+                    || certificate.Extensions["1.3.6.1.5.5.7.1.1"] is not null;
+                bool signerRevocationValid = signerChainValid
+                    && hasRevocationPointers
+                    && !chain.ChainStatus.Any(static status =>
+                        status.Status is X509ChainStatusFlags.Revoked
+                            or X509ChainStatusFlags.RevocationStatusUnknown
+                            or X509ChainStatusFlags.OfflineRevocation
+                            or X509ChainStatusFlags.NoIssuanceChainPolicy);
+
+                revocationValid &= signerRevocationValid;
+                if (!signerRevocationValid)
+                {
+                    diagnostics.Add(hasRevocationPointers
+                        ? "Revocation status could not be established for all certificates in the signer chain."
+                        : "Revocation status validation requires CRL or AIA certificate extensions.");
+                }
+            }
+        }
+
+        return (chainValid, revocationValid, diagnostics);
+    }
+
+    private static bool EvaluateSignerPolicies(SignedCms signedCms, IReadOnlyList<string> requiredPolicyOids, List<string> diagnostics)
+    {
+        HashSet<string> requiredPolicies = new(requiredPolicyOids.Where(static oid => !string.IsNullOrWhiteSpace(oid)), StringComparer.Ordinal);
+        if (requiredPolicies.Count == 0)
+        {
+            diagnostics.Add("Certificate policy validation requested but no non-empty policy OIDs were provided.");
+            return false;
+        }
+
+        bool anySigner = false;
+        foreach (SignerInfo signerInfo in signedCms.SignerInfos)
+        {
+            X509Certificate2? certificate = signerInfo.Certificate;
+            if (certificate is null)
+            {
+                diagnostics.Add("Signer certificate is missing for certificate policy validation.");
+                return false;
+            }
+
+            anySigner = true;
+            HashSet<string> signerPolicies = ReadCertificatePolicyOids(certificate);
+            if (!signerPolicies.Overlaps(requiredPolicies))
+            {
+                diagnostics.Add(
+                    $"Signer certificate policies [{string.Join(", ", signerPolicies.OrderBy(static oid => oid))}] do not satisfy required policies [{string.Join(", ", requiredPolicies.OrderBy(static oid => oid))}].");
+                return false;
+            }
+        }
+
+        if (!anySigner)
+        {
+            diagnostics.Add("No signer certificates were available for certificate policy validation.");
+        }
+
+        return anySigner;
+    }
+
+    private static HashSet<string> ReadCertificatePolicyOids(X509Certificate2 certificate)
+    {
+        X509Extension? policyExtension = certificate.Extensions["2.5.29.32"];
+        if (policyExtension is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            AsnReader reader = new(policyExtension.RawData, AsnEncodingRules.DER);
+            AsnReader policySequence = reader.ReadSequence();
+            HashSet<string> oids = [];
+            while (policySequence.HasData)
+            {
+                AsnReader policyInformation = policySequence.ReadSequence();
+                oids.Add(policyInformation.ReadObjectIdentifier());
+            }
+
+            return oids;
+        }
+        catch (AsnContentException)
+        {
+            return [];
+        }
     }
 
     private static bool IsSignatureDictionary(PdfDictionaryObject dictionary)

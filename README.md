@@ -134,8 +134,18 @@ Validate detached signatures (CMS/PKCS#7):
 ```csharp
 PdfDocument signed = PdfDocument.Open(signedBytes);
 IReadOnlyList<PdfDetachedSignatureValidationResult> results =
-    signed.ValidateDetachedSignatures(verifyCertificateChain: false);
+    signed.ValidateDetachedSignatures(
+        new PdfDetachedSignatureValidationOptions
+        {
+            VerifyCertificateChain = true,
+            RequireSigningTime = true,
+            RequireRevocationStatus = false,
+            RequiredCertificatePolicyOids = ["1.2.3.4.5"],
+            ValidationTime = DateTimeOffset.UtcNow,
+        });
 ```
+
+Each `PdfDetachedSignatureValidationResult` reports cryptographic validity and trust diagnostics separately (`CryptographicallyValid`, `TrustChecksPassed`, chain/revocation/signing-time/policy outcomes, and diagnostic messages).
 
 ## Corpus tests
 
@@ -162,4 +172,5 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 ## Current limitations
 
 - signature validation currently supports detached CMS subfilters `/adbe.pkcs7.detached` and `/ETSI.CAdES.detached`
+- trust validation is deterministic/offline-only by design (`RequireRevocationStatus` uses offline chain status and does not fetch OCSP/CRLs)
 - security support is intentionally limited to Standard handler `V=1 / R=2`

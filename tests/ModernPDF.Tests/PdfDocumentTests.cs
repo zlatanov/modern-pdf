@@ -1,5 +1,6 @@
 using System.Text;
 using System.Reflection;
+using System.Formats.Asn1;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
@@ -376,6 +377,8 @@ public sealed class PdfDocumentTests
         PdfDetachedSignatureValidationResult result = Assert.Single(opened.ValidateDetachedSignatures());
 
         Assert.True(result.IsValid);
+        Assert.True(result.CryptographicallyValid);
+        Assert.True(result.TrustChecksPassed);
         Assert.Equal(1, result.SignerCount);
         Assert.Null(result.FailureReason);
         Assert.Equal("adbe.pkcs7.detached", result.SubFilter);
@@ -399,9 +402,167 @@ public sealed class PdfDocumentTests
         PdfDetachedSignatureValidationResult result = Assert.Single(opened.ValidateDetachedSignatures());
 
         Assert.True(result.IsValid);
+        Assert.True(result.CryptographicallyValid);
         Assert.Equal(1, result.SignerCount);
         Assert.Null(result.FailureReason);
         Assert.Equal("ETSI.CAdES.detached", result.SubFilter);
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesWithTrustOptionsSupportsChainPolicyAndSigningTimeChecks()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using X509Certificate2 certificate = CreateTestSigningCertificate(
+            now.AddDays(-2),
+            now.AddDays(2),
+            ["1.2.3.4.5"]);
+
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("trust-valid");
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span, certificate, signingTime: now),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+            });
+
+        PdfDetachedSignatureValidationResult result = Assert.Single(
+            PdfDocument.Open(signedBytes).ValidateDetachedSignatures(
+                new PdfDetachedSignatureValidationOptions
+                {
+                    VerifyCertificateChain = true,
+                    TrustedRoots = [certificate],
+                    RequireSigningTime = true,
+                    RequiredCertificatePolicyOids = ["1.2.3.4.5"],
+                    ValidationTime = now,
+                }));
+
+        Assert.True(result.IsValid);
+        Assert.True(result.CryptographicallyValid);
+        Assert.True(result.TrustChecksPassed);
+        Assert.True(result.CertificateChainValid);
+        Assert.True(result.SigningTimeValid);
+        Assert.True(result.CertificatePolicyValid);
+        Assert.NotNull(result.SigningTime);
+        Assert.Empty(result.Diagnostics);
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesWithTrustOptionsRejectsMissingSigningTime()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using X509Certificate2 certificate = CreateTestSigningCertificate(now.AddDays(-2), now.AddDays(2));
+
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("missing-signing-time");
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span, certificate),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+            });
+
+        PdfDetachedSignatureValidationResult result = Assert.Single(
+            PdfDocument.Open(signedBytes).ValidateDetachedSignatures(
+                new PdfDetachedSignatureValidationOptions
+                {
+                    RequireSigningTime = true,
+                }));
+
+        Assert.False(result.IsValid);
+        Assert.True(result.CryptographicallyValid);
+        Assert.False(result.SigningTimeValid);
+        Assert.Contains(result.Diagnostics, static item => item.Contains("Signing time is required", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesWithTrustOptionsRejectsExpiredChainAtValidationTime()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using X509Certificate2 certificate = CreateTestSigningCertificate(
+            now.AddDays(-5),
+            now.AddDays(-1),
+            ["1.2.3.4.5"]);
+
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("expired-chain");
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span, certificate, signingTime: now.AddDays(-2)),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+            });
+
+        PdfDetachedSignatureValidationResult result = Assert.Single(
+            PdfDocument.Open(signedBytes).ValidateDetachedSignatures(
+                new PdfDetachedSignatureValidationOptions
+                {
+                    VerifyCertificateChain = true,
+                    TrustedRoots = [certificate],
+                    ValidationTime = now,
+                }));
+
+        Assert.False(result.IsValid);
+        Assert.True(result.CryptographicallyValid);
+        Assert.False(result.CertificateChainValid);
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesWithTrustOptionsRejectsMissingRequiredPolicy()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using X509Certificate2 certificate = CreateTestSigningCertificate(now.AddDays(-2), now.AddDays(2));
+
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("policy-mismatch");
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span, certificate, signingTime: now),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+            });
+
+        PdfDetachedSignatureValidationResult result = Assert.Single(
+            PdfDocument.Open(signedBytes).ValidateDetachedSignatures(
+                new PdfDetachedSignatureValidationOptions
+                {
+                    RequiredCertificatePolicyOids = ["1.2.3.4.5"],
+                }));
+
+        Assert.False(result.IsValid);
+        Assert.True(result.CryptographicallyValid);
+        Assert.False(result.CertificatePolicyValid);
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesWithTrustOptionsReportsRevocationFailureWhenRequired()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using X509Certificate2 certificate = CreateTestSigningCertificate(now.AddDays(-2), now.AddDays(2));
+
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("revocation-required");
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span, certificate, signingTime: now),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+            });
+
+        PdfDetachedSignatureValidationResult result = Assert.Single(
+            PdfDocument.Open(signedBytes).ValidateDetachedSignatures(
+                new PdfDetachedSignatureValidationOptions
+                {
+                    VerifyCertificateChain = true,
+                    RequireRevocationStatus = true,
+                    TrustedRoots = [certificate],
+                    ValidationTime = now,
+                }));
+
+        Assert.False(result.IsValid);
+        Assert.True(result.CryptographicallyValid);
+        Assert.False(result.RevocationValid);
+        Assert.Contains(result.Diagnostics, static item => item.Contains("Revocation status", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1599,24 +1760,66 @@ public sealed class PdfDocumentTests
 
     private static byte[] CreateDetachedCmsSignature(ReadOnlySpan<byte> payload)
     {
-        using RSA rsa = RSA.Create(2048);
-        CertificateRequest request = new(
-            "CN=ModernPDF Test Signer",
-            rsa,
-            HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1);
-        using X509Certificate2 certificate = request.CreateSelfSigned(
+        using X509Certificate2 certificate = CreateTestSigningCertificate(
             DateTimeOffset.UtcNow.AddDays(-1),
             DateTimeOffset.UtcNow.AddDays(1));
+        return CreateDetachedCmsSignature(payload, certificate);
+    }
 
+    private static byte[] CreateDetachedCmsSignature(ReadOnlySpan<byte> payload, X509Certificate2 certificate, DateTimeOffset? signingTime = null)
+    {
         SignedCms cms = new(new ContentInfo(payload.ToArray()), detached: true);
         CmsSigner signer = new(SubjectIdentifierType.IssuerAndSerialNumber, certificate)
         {
             IncludeOption = X509IncludeOption.EndCertOnly,
             DigestAlgorithm = new Oid("2.16.840.1.101.3.4.2.1"),
         };
+
+        if (signingTime.HasValue)
+        {
+            signer.SignedAttributes.Add(new Pkcs9SigningTime(signingTime.Value.UtcDateTime));
+        }
+
         cms.ComputeSignature(signer);
         return cms.Encode();
+    }
+
+    private static X509Certificate2 CreateTestSigningCertificate(
+        DateTimeOffset notBefore,
+        DateTimeOffset notAfter,
+        IReadOnlyList<string>? certificatePolicyOids = null)
+    {
+        using RSA rsa = RSA.Create(2048);
+        CertificateRequest request = new(
+            "CN=ModernPDF Test Signer",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+
+        if (certificatePolicyOids is { Count: > 0 })
+        {
+            request.CertificateExtensions.Add(CreateCertificatePoliciesExtension(certificatePolicyOids));
+        }
+
+        return request.CreateSelfSigned(notBefore, notAfter);
+    }
+
+    private static X509Extension CreateCertificatePoliciesExtension(IReadOnlyList<string> policyOids)
+    {
+        AsnWriter writer = new(AsnEncodingRules.DER);
+        writer.PushSequence();
+        foreach (string policyOid in policyOids)
+        {
+            writer.PushSequence();
+            writer.WriteObjectIdentifier(policyOid);
+            writer.PopSequence();
+        }
+
+        writer.PopSequence();
+        return new X509Extension("2.5.29.32", writer.Encode(), critical: false);
     }
 
     private static string GetFixtureFontPath()
