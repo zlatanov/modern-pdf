@@ -8,7 +8,7 @@ Current implemented scope includes:
 - text extraction
 - page/content editing
 - destructive text redaction
-- password security for Standard handler `V=1 / R=2 / 40-bit` (with permission flags)
+- password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, and `V=4 / R=4 / 128-bit AES`
 - detached digital signatures (callback-based CMS embedding with ByteRange patching)
 - TrueType font embedding for generated/replaced text with automatic subsetting and OpenType shaping
 - corpus-based interoperability/hardening test harness
@@ -106,6 +106,23 @@ byte[] streamStylePdf = document.Save(
     });
 ```
 
+## Security profiles
+
+`PdfSecurityOptions.Profile` selects the Standard security handler profile used when saving:
+
+```csharp
+byte[] encryptedPdf = document.Save(
+    new PdfSaveOptions
+    {
+        Security = new PdfSecurityOptions
+        {
+            UserPassword = "pw",
+            Profile = PdfSecurityProfile.Standard128BitAes,
+            Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+        },
+    });
+```
+
 ## Detached signatures (MVP)
 
 The signature API is callback-based: ModernPDF computes and patches `/ByteRange`, provides the exact signed payload bytes, and embeds returned CMS bytes into `/Contents`.
@@ -174,4 +191,4 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, and `/adbe.pkcs7.sha1`
 - revocation validation can use online retrieval via `RevocationCheckMode = PdfRevocationCheckMode.Online`, but deterministic/offline behavior remains the default (`Offline`)
-- security support is intentionally limited to Standard handler `V=1 / R=2`
+- security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, and `V=4 / R=4`

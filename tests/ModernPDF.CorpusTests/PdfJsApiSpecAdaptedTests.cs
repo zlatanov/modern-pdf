@@ -17,9 +17,9 @@ public sealed class PdfJsApiSpecAdaptedTests
         yield return ScenarioError("pdfjs-api-pr6531-1", "qwerty", "ModernPDF.Format.PdfFormatException", "Only classic xref tables are supported in the current reader slice.");
         yield return ScenarioError("pdfjs-api-pr6531-1", "asdfasdf", "ModernPDF.Format.PdfFormatException", "Only classic xref tables are supported in the current reader slice.");
 
-        yield return ScenarioError("pdfjs-api-pr6531-2", null, typeof(NotSupportedException).FullName!, "Only Standard security handler V=1 R=2 (40-bit) is currently supported.");
-        yield return ScenarioError("pdfjs-api-pr6531-2", "qwerty", typeof(NotSupportedException).FullName!, "Only Standard security handler V=1 R=2 (40-bit) is currently supported.");
-        yield return ScenarioError("pdfjs-api-pr6531-2", "asdfasdf", typeof(NotSupportedException).FullName!, "Only Standard security handler V=1 R=2 (40-bit) is currently supported.");
+        yield return ScenarioError("pdfjs-api-pr6531-2", null, typeof(NotSupportedException).FullName!, "Only Standard security handler profiles");
+        yield return ScenarioError("pdfjs-api-pr6531-2", "qwerty", typeof(NotSupportedException).FullName!, "Only Standard security handler profiles");
+        yield return ScenarioError("pdfjs-api-pr6531-2", "asdfasdf", typeof(NotSupportedException).FullName!, "Only Standard security handler profiles");
 
         yield return ScenarioError("pdfjs-api-issue3371", null, "ModernPDF.Format.PdfFormatException", "Only classic xref tables are supported in the current reader slice.");
         yield return ScenarioError("pdfjs-api-pdfbox-4352-0", null, typeof(FormatException).FullName!, "The input string");
@@ -36,7 +36,7 @@ public sealed class PdfJsApiSpecAdaptedTests
 
         yield return ScenarioOpen("pdfjs-api-issue15150", password: null, expectedPageCount: 1);
         yield return ScenarioError("pdfjs-api-issue15590", null, "ModernPDF.Format.PdfFormatException", "Missing startxref marker.");
-        yield return ScenarioError("pdfjs-api-issue6010-1", null, typeof(NotSupportedException).FullName!, "Only Standard security handler V=1 R=2 (40-bit) is currently supported.");
+        yield return ScenarioError("pdfjs-api-issue6010-1", null, typeof(NotSupportedException).FullName!, "Only Standard security handler profiles");
         yield return ScenarioError("pdfjs-api-bug1980958", null, "ModernPDF.Format.PdfFormatException", "Missing startxref marker.");
     }
 

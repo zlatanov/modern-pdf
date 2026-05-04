@@ -6,6 +6,8 @@ public sealed class PdfSecurityOptions
 
     public string? OwnerPassword { get; init; }
 
+    public PdfSecurityProfile Profile { get; init; } = PdfSecurityProfile.Standard40BitRc4;
+
     public PdfPermissions Permissions { get; init; } =
         PdfPermissions.Print | PdfPermissions.Modify | PdfPermissions.Copy | PdfPermissions.Annotate;
 }

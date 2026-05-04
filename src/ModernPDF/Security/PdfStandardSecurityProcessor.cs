@@ -10,6 +10,8 @@ namespace ModernPDF.Security;
 
 internal static class PdfStandardSecurityProcessor
 {
+    private const string SupportedProfilesMessage = "Only Standard security handler profiles V=1/R=2 (40-bit RC4), V=2/R=3 (128-bit RC4), and V=4/R=4 (128-bit AES) are supported.";
+
     private static readonly byte[] PasswordPadding =
     [
         0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41,
@@ -17,6 +19,8 @@ internal static class PdfStandardSecurityProcessor
         0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80,
         0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A,
     ];
+
+    private static readonly byte[] AesObjectKeySalt = [0x73, 0x41, 0x6C, 0x54];
 
     public static PdfFile Encrypt(PdfFile file, PdfSecurityOptions options)
     {
@@ -32,7 +36,12 @@ internal static class PdfStandardSecurityProcessor
         List<PdfIndirectObject> objects = [];
         foreach (PdfIndirectObject indirectObject in file.Objects)
         {
-            PdfObject encryptedValue = EncryptObject(indirectObject.Value, indirectObject.ObjectId, material.FileKey);
+            PdfObject encryptedValue = EncryptObject(
+                indirectObject.Value,
+                indirectObject.ObjectId,
+                material.FileKey,
+                material.StringCipher,
+                material.StreamCipher);
             objects.Add(new PdfIndirectObject(indirectObject.ObjectId, encryptedValue));
         }
 
@@ -66,7 +75,12 @@ internal static class PdfStandardSecurityProcessor
                 continue;
             }
 
-            PdfObject decryptedValue = DecryptObject(item.Value, item.ObjectId, fileKey);
+            PdfObject decryptedValue = DecryptObject(
+                item.Value,
+                item.ObjectId,
+                fileKey,
+                descriptor.StringCipher,
+                descriptor.StreamCipher);
             decryptedObjects.Add(new PdfIndirectObject(item.ObjectId, decryptedValue));
         }
 
@@ -104,32 +118,116 @@ internal static class PdfStandardSecurityProcessor
 
     private static EncryptionMaterial CreateEncryptionMaterial(PdfSecurityOptions options)
     {
+        SecurityProfileDefinition profile = ResolveSecurityProfile(options.Profile);
+
         string ownerPassword = options.OwnerPassword ?? options.UserPassword;
         byte[] userPadded = PadPassword(options.UserPassword);
         byte[] ownerPadded = PadPassword(ownerPassword);
-        byte[] ownerKey = ComputeOwnerKey(ownerPadded);
-        byte[] ownerEntry = Rc4(ownerKey, userPadded);
+        byte[] ownerKey = ComputeOwnerKey(ownerPadded, profile.KeyLengthBytes, profile.R);
+        byte[] ownerEntry = ComputeOwnerEntry(ownerKey, userPadded, profile.R);
 
-        int permissionValue = BuildPermissionValue(options.Permissions);
+        int permissionValue = BuildPermissionValue(options.Permissions, profile.R);
         byte[] documentId = RandomNumberGenerator.GetBytes(16);
-        byte[] fileKey = ComputeFileKey(userPadded, ownerEntry, permissionValue, documentId);
-        byte[] userEntry = Rc4(fileKey, PasswordPadding);
+        byte[] fileKey = ComputeFileKey(
+            userPadded,
+            ownerEntry,
+            permissionValue,
+            documentId,
+            profile.KeyLengthBytes,
+            profile.R,
+            encryptMetadata: true);
+        byte[] userEntry = ComputeUserEntry(fileKey, documentId, profile.R);
 
-        return new EncryptionMaterial(ownerEntry, userEntry, fileKey, documentId, permissionValue);
+        return new EncryptionMaterial(
+            OwnerEntry: ownerEntry,
+            UserEntry: userEntry,
+            FileKey: fileKey,
+            DocumentId: documentId,
+            PermissionValue: permissionValue,
+            V: profile.V,
+            R: profile.R,
+            KeyLengthBits: profile.KeyLengthBits,
+            EncryptMetadata: true,
+            StringCipher: profile.Cipher,
+            StreamCipher: profile.Cipher,
+            UseCryptFilters: profile.UseCryptFilters);
+    }
+
+    private static SecurityProfileDefinition ResolveSecurityProfile(PdfSecurityProfile profile)
+    {
+        return profile switch
+        {
+            PdfSecurityProfile.Standard40BitRc4 => new SecurityProfileDefinition(
+                V: 1,
+                R: 2,
+                KeyLengthBits: 40,
+                KeyLengthBytes: 5,
+                Cipher: EncryptionCipher.Rc4,
+                UseCryptFilters: false),
+            PdfSecurityProfile.Standard128BitRc4 => new SecurityProfileDefinition(
+                V: 2,
+                R: 3,
+                KeyLengthBits: 128,
+                KeyLengthBytes: 16,
+                Cipher: EncryptionCipher.Rc4,
+                UseCryptFilters: false),
+            PdfSecurityProfile.Standard128BitAes => new SecurityProfileDefinition(
+                V: 4,
+                R: 4,
+                KeyLengthBits: 128,
+                KeyLengthBytes: 16,
+                Cipher: EncryptionCipher.AesV2,
+                UseCryptFilters: true),
+            _ => throw new ArgumentOutOfRangeException(nameof(profile), "Security profile contains an unsupported value."),
+        };
     }
 
     private static PdfDictionaryObject BuildEncryptionDictionary(EncryptionMaterial material)
     {
-        return new PdfDictionaryObject(
+        List<PdfDictionaryEntry> entries =
         [
             new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
-            new PdfDictionaryEntry("V", new PdfNumberObject(1, isInteger: true)),
-            new PdfDictionaryEntry("R", new PdfNumberObject(2, isInteger: true)),
-            new PdfDictionaryEntry("Length", new PdfNumberObject(40, isInteger: true)),
+            new PdfDictionaryEntry("V", new PdfNumberObject(material.V, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(material.R, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(material.KeyLengthBits, isInteger: true)),
             new PdfDictionaryEntry("P", new PdfNumberObject(material.PermissionValue, isInteger: true)),
             new PdfDictionaryEntry("O", new PdfByteStringObject(material.OwnerEntry)),
             new PdfDictionaryEntry("U", new PdfByteStringObject(material.UserEntry)),
-        ]);
+        ];
+
+        if (material.UseCryptFilters)
+        {
+            string cfm = material.StreamCipher switch
+            {
+                EncryptionCipher.AesV2 => "AESV2",
+                EncryptionCipher.Rc4 => "V2",
+                _ => throw new NotSupportedException("Unsupported crypt filter cipher."),
+            };
+
+            PdfDictionaryObject stdCf = new(
+            [
+                new PdfDictionaryEntry("Type", new PdfNameObject("CryptFilter")),
+                new PdfDictionaryEntry("CFM", new PdfNameObject(cfm)),
+                new PdfDictionaryEntry("AuthEvent", new PdfNameObject("DocOpen")),
+                new PdfDictionaryEntry("Length", new PdfNumberObject(material.KeyLengthBits / 8, isInteger: true)),
+            ]);
+
+            PdfDictionaryObject cf = new(
+            [
+                new PdfDictionaryEntry("StdCF", stdCf),
+            ]);
+
+            entries.Add(new PdfDictionaryEntry("CF", cf));
+            entries.Add(new PdfDictionaryEntry("StmF", new PdfNameObject("StdCF")));
+            entries.Add(new PdfDictionaryEntry("StrF", new PdfNameObject("StdCF")));
+
+            if (!material.EncryptMetadata)
+            {
+                entries.Add(new PdfDictionaryEntry("EncryptMetadata", new PdfBooleanObject(false)));
+            }
+        }
+
+        return new PdfDictionaryObject(entries);
     }
 
     private static PdfDictionaryObject UpdateTrailerForEncryption(PdfDictionaryObject trailer, PdfObjectId encryptObjectId, byte[] documentId)
@@ -155,7 +253,12 @@ internal static class PdfStandardSecurityProcessor
         return new PdfDictionaryObject(entries);
     }
 
-    private static PdfObject EncryptObject(PdfObject value, PdfObjectId objectId, byte[] fileKey)
+    private static PdfObject EncryptObject(
+        PdfObject value,
+        PdfObjectId objectId,
+        byte[] fileKey,
+        EncryptionCipher stringCipher,
+        EncryptionCipher streamCipher)
     {
         return value switch
         {
@@ -164,19 +267,24 @@ internal static class PdfStandardSecurityProcessor
             PdfNumberObject => value,
             PdfNameObject => value,
             PdfReferenceObject => value,
-            PdfStringObject stringValue => new PdfByteStringObject(EncryptBytes(Encoding.ASCII.GetBytes(stringValue.Value), objectId, fileKey)),
-            PdfByteStringObject bytesValue => new PdfByteStringObject(EncryptBytes(bytesValue.Bytes.Span, objectId, fileKey)),
-            PdfArrayObject arrayValue => new PdfArrayObject(arrayValue.Items.Select(item => EncryptObject(item, objectId, fileKey))),
+            PdfStringObject stringValue => new PdfByteStringObject(EncryptBytes(Encoding.ASCII.GetBytes(stringValue.Value), objectId, fileKey, stringCipher)),
+            PdfByteStringObject bytesValue => new PdfByteStringObject(EncryptBytes(bytesValue.Bytes.Span, objectId, fileKey, stringCipher)),
+            PdfArrayObject arrayValue => new PdfArrayObject(arrayValue.Items.Select(item => EncryptObject(item, objectId, fileKey, stringCipher, streamCipher))),
             PdfDictionaryObject dictionaryValue => new PdfDictionaryObject(
-                dictionaryValue.Entries.Select(entry => new PdfDictionaryEntry(entry.Key, EncryptObject(entry.Value, objectId, fileKey)))),
+                dictionaryValue.Entries.Select(entry => new PdfDictionaryEntry(entry.Key, EncryptObject(entry.Value, objectId, fileKey, stringCipher, streamCipher)))),
             PdfStreamObject streamValue => new PdfStreamObject(
-                dictionary: (PdfDictionaryObject)EncryptObject(streamValue.Dictionary, objectId, fileKey),
-                data: EncryptBytes(streamValue.Data.Span, objectId, fileKey)),
+                dictionary: (PdfDictionaryObject)EncryptObject(streamValue.Dictionary, objectId, fileKey, stringCipher, streamCipher),
+                data: EncryptBytes(streamValue.Data.Span, objectId, fileKey, streamCipher)),
             _ => throw new PdfFormatException($"Unsupported object type for encryption '{value.GetType().Name}'."),
         };
     }
 
-    private static PdfObject DecryptObject(PdfObject value, PdfObjectId objectId, byte[] fileKey)
+    private static PdfObject DecryptObject(
+        PdfObject value,
+        PdfObjectId objectId,
+        byte[] fileKey,
+        EncryptionCipher stringCipher,
+        EncryptionCipher streamCipher)
     {
         return value switch
         {
@@ -185,43 +293,59 @@ internal static class PdfStandardSecurityProcessor
             PdfNumberObject => value,
             PdfNameObject => value,
             PdfReferenceObject => value,
-            PdfStringObject stringValue => new PdfStringObject(Encoding.ASCII.GetString(DecryptBytes(Encoding.ASCII.GetBytes(stringValue.Value), objectId, fileKey))),
-            PdfByteStringObject bytesValue => new PdfStringObject(Encoding.ASCII.GetString(DecryptBytes(bytesValue.Bytes.Span, objectId, fileKey))),
-            PdfArrayObject arrayValue => new PdfArrayObject(arrayValue.Items.Select(item => DecryptObject(item, objectId, fileKey))),
+            PdfStringObject stringValue => new PdfStringObject(Encoding.ASCII.GetString(DecryptBytes(Encoding.ASCII.GetBytes(stringValue.Value), objectId, fileKey, stringCipher))),
+            PdfByteStringObject bytesValue => new PdfStringObject(Encoding.ASCII.GetString(DecryptBytes(bytesValue.Bytes.Span, objectId, fileKey, stringCipher))),
+            PdfArrayObject arrayValue => new PdfArrayObject(arrayValue.Items.Select(item => DecryptObject(item, objectId, fileKey, stringCipher, streamCipher))),
             PdfDictionaryObject dictionaryValue => new PdfDictionaryObject(
-                dictionaryValue.Entries.Select(entry => new PdfDictionaryEntry(entry.Key, DecryptObject(entry.Value, objectId, fileKey)))),
+                dictionaryValue.Entries.Select(entry => new PdfDictionaryEntry(entry.Key, DecryptObject(entry.Value, objectId, fileKey, stringCipher, streamCipher)))),
             PdfStreamObject streamValue => new PdfStreamObject(
-                dictionary: (PdfDictionaryObject)DecryptObject(streamValue.Dictionary, objectId, fileKey),
-                data: DecryptBytes(streamValue.Data.Span, objectId, fileKey)),
+                dictionary: (PdfDictionaryObject)DecryptObject(streamValue.Dictionary, objectId, fileKey, stringCipher, streamCipher),
+                data: DecryptBytes(streamValue.Data.Span, objectId, fileKey, streamCipher)),
             _ => throw new PdfFormatException($"Unsupported object type for decryption '{value.GetType().Name}'."),
         };
     }
 
-    private static byte[] EncryptBytes(ReadOnlySpan<byte> bytes, PdfObjectId objectId, byte[] fileKey)
+    private static byte[] EncryptBytes(ReadOnlySpan<byte> bytes, PdfObjectId objectId, byte[] fileKey, EncryptionCipher cipher)
     {
-        byte[] objectKey = BuildObjectKey(fileKey, objectId);
-        return Rc4(objectKey, bytes);
+        byte[] objectKey = BuildObjectKey(fileKey, objectId, cipher);
+        return cipher switch
+        {
+            EncryptionCipher.Rc4 => Rc4(objectKey, bytes),
+            EncryptionCipher.AesV2 => EncryptAesV2(objectKey, bytes),
+            _ => throw new NotSupportedException("Unsupported encryption cipher."),
+        };
     }
 
-    private static byte[] DecryptBytes(ReadOnlySpan<byte> bytes, PdfObjectId objectId, byte[] fileKey)
+    private static byte[] DecryptBytes(ReadOnlySpan<byte> bytes, PdfObjectId objectId, byte[] fileKey, EncryptionCipher cipher)
     {
-        byte[] objectKey = BuildObjectKey(fileKey, objectId);
-        return Rc4(objectKey, bytes);
+        byte[] objectKey = BuildObjectKey(fileKey, objectId, cipher);
+        return cipher switch
+        {
+            EncryptionCipher.Rc4 => Rc4(objectKey, bytes),
+            EncryptionCipher.AesV2 => DecryptAesV2(objectKey, bytes),
+            _ => throw new NotSupportedException("Unsupported decryption cipher."),
+        };
     }
 
-    private static byte[] BuildObjectKey(byte[] fileKey, PdfObjectId objectId)
+    private static byte[] BuildObjectKey(byte[] fileKey, PdfObjectId objectId, EncryptionCipher cipher)
     {
-        byte[] seed = new byte[fileKey.Length + 5];
+        int seedLength = fileKey.Length + 5 + (cipher == EncryptionCipher.AesV2 ? AesObjectKeySalt.Length : 0);
+        byte[] seed = new byte[seedLength];
         Buffer.BlockCopy(fileKey, 0, seed, 0, fileKey.Length);
         seed[fileKey.Length + 0] = (byte)(objectId.ObjectNumber & 0xFF);
         seed[fileKey.Length + 1] = (byte)((objectId.ObjectNumber >> 8) & 0xFF);
         seed[fileKey.Length + 2] = (byte)((objectId.ObjectNumber >> 16) & 0xFF);
         seed[fileKey.Length + 3] = (byte)(objectId.GenerationNumber & 0xFF);
         seed[fileKey.Length + 4] = (byte)((objectId.GenerationNumber >> 8) & 0xFF);
+        if (cipher == EncryptionCipher.AesV2)
+        {
+            Buffer.BlockCopy(AesObjectKeySalt, 0, seed, fileKey.Length + 5, AesObjectKeySalt.Length);
+        }
 
-        #pragma warning disable CA5351 // PDF Standard Security Handler R2 requires MD5.
+        #pragma warning disable CA5351 // Standard security key derivation uses MD5 by specification.
         byte[] digest = MD5.HashData(seed);
         #pragma warning restore CA5351
+
         int keyLength = Math.Min(fileKey.Length + 5, 16);
         return digest.AsSpan(0, keyLength).ToArray();
     }
@@ -262,6 +386,15 @@ internal static class PdfStandardSecurityProcessor
         byte[] o = RequireByteString(dictionary, "O");
         byte[] u = RequireByteString(dictionary, "U");
         byte[] documentId = RequireDocumentId(file.Trailer);
+        bool encryptMetadata = TryReadBoolean(dictionary, "EncryptMetadata") ?? true;
+
+        EncryptionCipher stringCipher = EncryptionCipher.Rc4;
+        EncryptionCipher streamCipher = EncryptionCipher.Rc4;
+        if (v == 4 && !TryResolveV4CryptFilterCiphers(dictionary, out stringCipher, out streamCipher))
+        {
+            stringCipher = EncryptionCipher.Unsupported;
+            streamCipher = EncryptionCipher.Unsupported;
+        }
 
         descriptor = new EncryptionDescriptor(
             EncryptObjectId: encryptObjectId,
@@ -273,16 +406,77 @@ internal static class PdfStandardSecurityProcessor
             Permissions: permissions,
             O: o,
             U: u,
-            DocumentId: documentId);
+            DocumentId: documentId,
+            EncryptMetadata: encryptMetadata,
+            StringCipher: stringCipher,
+            StreamCipher: streamCipher);
         return true;
+    }
+
+    private static bool TryResolveV4CryptFilterCiphers(PdfDictionaryObject encryptDictionary, out EncryptionCipher stringCipher, out EncryptionCipher streamCipher)
+    {
+        stringCipher = EncryptionCipher.Unsupported;
+        streamCipher = EncryptionCipher.Unsupported;
+
+        if (!TryGetDictionaryEntry(encryptDictionary, "CF", out PdfObject? cryptFiltersObject) || cryptFiltersObject is not PdfDictionaryObject cryptFilters)
+        {
+            return false;
+        }
+
+        string? strF = TryReadName(encryptDictionary, "StrF");
+        string? stmF = TryReadName(encryptDictionary, "StmF");
+        if (string.IsNullOrWhiteSpace(strF) || string.IsNullOrWhiteSpace(stmF))
+        {
+            return false;
+        }
+
+        if (string.Equals(strF, "Identity", StringComparison.Ordinal) || string.Equals(stmF, "Identity", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return TryResolveCryptFilterCipher(cryptFilters, strF, out stringCipher)
+            && TryResolveCryptFilterCipher(cryptFilters, stmF, out streamCipher);
+    }
+
+    private static bool TryResolveCryptFilterCipher(PdfDictionaryObject cryptFilters, string filterName, out EncryptionCipher cipher)
+    {
+        cipher = EncryptionCipher.Unsupported;
+        if (!TryGetDictionaryEntry(cryptFilters, filterName, out PdfObject? filterObject) || filterObject is not PdfDictionaryObject filterDictionary)
+        {
+            return false;
+        }
+
+        string? cfm = TryReadName(filterDictionary, "CFM");
+        if (string.IsNullOrWhiteSpace(cfm))
+        {
+            return false;
+        }
+
+        cipher = cfm switch
+        {
+            "V2" => EncryptionCipher.Rc4,
+            "AESV2" => EncryptionCipher.AesV2,
+            _ => EncryptionCipher.Unsupported,
+        };
+
+        return cipher != EncryptionCipher.Unsupported;
     }
 
     private static bool IsSupportedDescriptor(EncryptionDescriptor descriptor)
     {
-        return string.Equals(descriptor.Filter, "Standard", StringComparison.Ordinal)
-            && descriptor.V == 1
-            && descriptor.R == 2
-            && descriptor.LengthBits == 40;
+        if (!string.Equals(descriptor.Filter, "Standard", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return (descriptor.V, descriptor.R, descriptor.LengthBits, descriptor.StringCipher, descriptor.StreamCipher) switch
+        {
+            (1, 2, 40, EncryptionCipher.Rc4, EncryptionCipher.Rc4) => true,
+            (2, 3, 128, EncryptionCipher.Rc4, EncryptionCipher.Rc4) => true,
+            (4, 4, 128, EncryptionCipher.AesV2, EncryptionCipher.AesV2) => true,
+            _ => false,
+        };
     }
 
     private static bool TryResolveFileKey(EncryptionDescriptor descriptor, string password, out byte[]? fileKey)
@@ -291,7 +485,7 @@ internal static class PdfStandardSecurityProcessor
 
         if (!IsSupportedDescriptor(descriptor))
         {
-            throw new NotSupportedException("Only Standard security handler V=1 R=2 (40-bit) is supported.");
+            throw new NotSupportedException(SupportedProfilesMessage);
         }
 
         if (descriptor.O.Length != 32 || descriptor.U.Length < 32)
@@ -299,19 +493,39 @@ internal static class PdfStandardSecurityProcessor
             throw new PdfFormatException("Encryption dictionary O/U entries have invalid lengths.");
         }
 
+        int keyLengthBytes = descriptor.LengthBits / 8;
+        if (keyLengthBytes is <= 0 or > 16)
+        {
+            throw new PdfFormatException("Encryption dictionary key length is invalid.");
+        }
+
         byte[] userPadded = PadPassword(password);
-        byte[] keyFromUser = ComputeFileKey(userPadded, descriptor.O, descriptor.Permissions, descriptor.DocumentId);
-        if (MatchesUserEntry(keyFromUser, descriptor.U))
+        byte[] keyFromUser = ComputeFileKey(
+            userPadded,
+            descriptor.O,
+            descriptor.Permissions,
+            descriptor.DocumentId,
+            keyLengthBytes,
+            descriptor.R,
+            descriptor.EncryptMetadata);
+        if (MatchesUserEntry(keyFromUser, descriptor.U, descriptor.DocumentId, descriptor.R))
         {
             fileKey = keyFromUser;
             return true;
         }
 
         byte[] ownerPadded = PadPassword(password);
-        byte[] ownerKey = ComputeOwnerKey(ownerPadded);
-        byte[] recoveredUserPadded = Rc4(ownerKey, descriptor.O);
-        byte[] keyFromOwner = ComputeFileKey(recoveredUserPadded, descriptor.O, descriptor.Permissions, descriptor.DocumentId);
-        if (MatchesUserEntry(keyFromOwner, descriptor.U))
+        byte[] ownerKey = ComputeOwnerKey(ownerPadded, keyLengthBytes, descriptor.R);
+        byte[] recoveredUserPadded = RecoverUserPaddedFromOwnerEntry(ownerKey, descriptor.O, descriptor.R);
+        byte[] keyFromOwner = ComputeFileKey(
+            recoveredUserPadded,
+            descriptor.O,
+            descriptor.Permissions,
+            descriptor.DocumentId,
+            keyLengthBytes,
+            descriptor.R,
+            descriptor.EncryptMetadata);
+        if (MatchesUserEntry(keyFromOwner, descriptor.U, descriptor.DocumentId, descriptor.R))
         {
             fileKey = keyFromOwner;
             return true;
@@ -320,10 +534,22 @@ internal static class PdfStandardSecurityProcessor
         return false;
     }
 
-    private static bool MatchesUserEntry(byte[] fileKey, byte[] uEntry)
+    private static bool MatchesUserEntry(byte[] fileKey, byte[] uEntry, byte[] documentId, int revision)
     {
-        byte[] expected = Rc4(fileKey, PasswordPadding);
-        return CryptographicOperations.FixedTimeEquals(expected.AsSpan(0, 32), uEntry.AsSpan(0, 32));
+        if (revision == 2)
+        {
+            byte[] expected = Rc4(fileKey, PasswordPadding);
+            return CryptographicOperations.FixedTimeEquals(expected.AsSpan(0, 32), uEntry.AsSpan(0, 32));
+        }
+
+        byte[] digest = ComputeUserValidationDigest(documentId);
+        byte[] encrypted = Rc4(fileKey, digest);
+        for (int i = 1; i <= 19; i++)
+        {
+            encrypted = Rc4(XorKey(fileKey, (byte)i), encrypted);
+        }
+
+        return CryptographicOperations.FixedTimeEquals(encrypted.AsSpan(0, 16), uEntry.AsSpan(0, 16));
     }
 
     private static byte[] PadPassword(string password)
@@ -341,17 +567,65 @@ internal static class PdfStandardSecurityProcessor
         return padded;
     }
 
-    private static byte[] ComputeOwnerKey(byte[] ownerPadded)
+    private static byte[] ComputeOwnerKey(byte[] ownerPadded, int keyLengthBytes, int revision)
     {
-        #pragma warning disable CA5351 // PDF Standard Security Handler R2 requires MD5.
+        #pragma warning disable CA5351 // Standard security key derivation uses MD5 by specification.
         byte[] digest = MD5.HashData(ownerPadded);
+        if (revision >= 3)
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                digest = MD5.HashData(digest);
+            }
+        }
         #pragma warning restore CA5351
-        return digest.AsSpan(0, 5).ToArray();
+
+        return digest.AsSpan(0, keyLengthBytes).ToArray();
     }
 
-    private static byte[] ComputeFileKey(byte[] userPadded, byte[] ownerEntry, int permissions, byte[] documentId)
+    private static byte[] ComputeOwnerEntry(byte[] ownerKey, byte[] userPadded, int revision)
     {
-        byte[] buffer = new byte[userPadded.Length + ownerEntry.Length + 4 + documentId.Length];
+        if (revision == 2)
+        {
+            return Rc4(ownerKey, userPadded);
+        }
+
+        byte[] encrypted = Rc4(ownerKey, userPadded);
+        for (int i = 1; i <= 19; i++)
+        {
+            encrypted = Rc4(XorKey(ownerKey, (byte)i), encrypted);
+        }
+
+        return encrypted;
+    }
+
+    private static byte[] RecoverUserPaddedFromOwnerEntry(byte[] ownerKey, byte[] ownerEntry, int revision)
+    {
+        if (revision == 2)
+        {
+            return Rc4(ownerKey, ownerEntry);
+        }
+
+        byte[] recovered = ownerEntry.ToArray();
+        for (int i = 19; i >= 0; i--)
+        {
+            recovered = Rc4(XorKey(ownerKey, (byte)i), recovered);
+        }
+
+        return recovered;
+    }
+
+    private static byte[] ComputeFileKey(
+        byte[] userPadded,
+        byte[] ownerEntry,
+        int permissions,
+        byte[] documentId,
+        int keyLengthBytes,
+        int revision,
+        bool encryptMetadata)
+    {
+        int metadataBytes = revision >= 4 && !encryptMetadata ? 4 : 0;
+        byte[] buffer = new byte[userPadded.Length + ownerEntry.Length + 4 + documentId.Length + metadataBytes];
         int offset = 0;
 
         Buffer.BlockCopy(userPadded, 0, buffer, offset, userPadded.Length);
@@ -366,21 +640,90 @@ internal static class PdfStandardSecurityProcessor
         offset += 4;
 
         Buffer.BlockCopy(documentId, 0, buffer, offset, documentId.Length);
-        #pragma warning disable CA5351 // PDF Standard Security Handler R2 requires MD5.
-        byte[] digest = MD5.HashData(buffer);
-        #pragma warning restore CA5351
-        return digest.AsSpan(0, 5).ToArray();
-    }
+        offset += documentId.Length;
 
-    private static int BuildPermissionValue(PdfPermissions permissions)
-    {
-        int supportedMask = (int)(PdfPermissions.Print | PdfPermissions.Modify | PdfPermissions.Copy | PdfPermissions.Annotate);
-        if (((int)permissions & ~supportedMask) != 0)
+        if (metadataBytes == 4)
         {
-            throw new NotSupportedException("Current security profile supports only Print, Modify, Copy, and Annotate permissions.");
+            buffer[offset + 0] = 0xFF;
+            buffer[offset + 1] = 0xFF;
+            buffer[offset + 2] = 0xFF;
+            buffer[offset + 3] = 0xFF;
         }
 
-        int value = unchecked((int)0xFFFFFFC0);
+        #pragma warning disable CA5351 // Standard security key derivation uses MD5 by specification.
+        byte[] digest = MD5.HashData(buffer);
+        if (revision >= 3)
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                digest = MD5.HashData(digest.AsSpan(0, keyLengthBytes));
+            }
+        }
+        #pragma warning restore CA5351
+
+        return digest.AsSpan(0, keyLengthBytes).ToArray();
+    }
+
+    private static byte[] ComputeUserEntry(byte[] fileKey, byte[] documentId, int revision)
+    {
+        if (revision == 2)
+        {
+            return Rc4(fileKey, PasswordPadding);
+        }
+
+        byte[] digest = ComputeUserValidationDigest(documentId);
+        byte[] encrypted = Rc4(fileKey, digest);
+        for (int i = 1; i <= 19; i++)
+        {
+            encrypted = Rc4(XorKey(fileKey, (byte)i), encrypted);
+        }
+
+        byte[] result = new byte[32];
+        encrypted.CopyTo(result, 0);
+        RandomNumberGenerator.Fill(result.AsSpan(16));
+        return result;
+    }
+
+    private static byte[] ComputeUserValidationDigest(byte[] documentId)
+    {
+        byte[] buffer = new byte[PasswordPadding.Length + documentId.Length];
+        Buffer.BlockCopy(PasswordPadding, 0, buffer, 0, PasswordPadding.Length);
+        Buffer.BlockCopy(documentId, 0, buffer, PasswordPadding.Length, documentId.Length);
+
+        #pragma warning disable CA5351 // Standard security key derivation uses MD5 by specification.
+        return MD5.HashData(buffer);
+        #pragma warning restore CA5351
+    }
+
+    private static byte[] XorKey(byte[] key, byte value)
+    {
+        byte[] result = new byte[key.Length];
+        for (int i = 0; i < key.Length; i++)
+        {
+            result[i] = (byte)(key[i] ^ value);
+        }
+
+        return result;
+    }
+
+    private static int BuildPermissionValue(PdfPermissions permissions, int revision)
+    {
+        PdfPermissions supportedPermissions = revision == 2
+            ? PdfPermissions.Print | PdfPermissions.Modify | PdfPermissions.Copy | PdfPermissions.Annotate
+            : PdfPermissions.All;
+
+        if ((permissions & ~supportedPermissions) != 0)
+        {
+            throw new NotSupportedException(
+                revision == 2
+                    ? "Current 40-bit security profile supports only Print, Modify, Copy, and Annotate permissions."
+                    : "Current 128-bit security profiles support permissions up to HighQualityPrint.");
+        }
+
+        int value = revision == 2
+            ? unchecked((int)0xFFFFFFC0)
+            : unchecked((int)0xFFFFF0C0);
+
         if ((permissions & PdfPermissions.Print) != 0)
         {
             value |= 1 << 2;
@@ -399,6 +742,26 @@ internal static class PdfStandardSecurityProcessor
         if ((permissions & PdfPermissions.Annotate) != 0)
         {
             value |= 1 << 5;
+        }
+
+        if ((permissions & PdfPermissions.FillForms) != 0)
+        {
+            value |= 1 << 8;
+        }
+
+        if ((permissions & PdfPermissions.Accessibility) != 0)
+        {
+            value |= 1 << 9;
+        }
+
+        if ((permissions & PdfPermissions.AssembleDocument) != 0)
+        {
+            value |= 1 << 10;
+        }
+
+        if ((permissions & PdfPermissions.HighQualityPrint) != 0)
+        {
+            value |= 1 << 11;
         }
 
         return value;
@@ -434,6 +797,59 @@ internal static class PdfStandardSecurityProcessor
         }
 
         return output;
+    }
+
+    private static byte[] EncryptAesV2(byte[] key, ReadOnlySpan<byte> plainBytes)
+    {
+        if (key.Length != 16)
+        {
+            throw new PdfFormatException("AES-128 object key must be 16 bytes.");
+        }
+
+        using Aes aes = Aes.Create();
+        aes.Key = key;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+        aes.IV = RandomNumberGenerator.GetBytes(16);
+
+        using ICryptoTransform encryptor = aes.CreateEncryptor();
+        byte[] cipher = encryptor.TransformFinalBlock(plainBytes.ToArray(), 0, plainBytes.Length);
+        byte[] result = new byte[aes.IV.Length + cipher.Length];
+        Buffer.BlockCopy(aes.IV, 0, result, 0, aes.IV.Length);
+        Buffer.BlockCopy(cipher, 0, result, aes.IV.Length, cipher.Length);
+        return result;
+    }
+
+    private static byte[] DecryptAesV2(byte[] key, ReadOnlySpan<byte> encryptedBytes)
+    {
+        if (key.Length != 16)
+        {
+            throw new PdfFormatException("AES-128 object key must be 16 bytes.");
+        }
+
+        if (encryptedBytes.Length < 16)
+        {
+            throw new PdfFormatException("AES-encrypted object content is too short to include an initialization vector.");
+        }
+
+        byte[] iv = encryptedBytes[..16].ToArray();
+        byte[] cipher = encryptedBytes[16..].ToArray();
+
+        using Aes aes = Aes.Create();
+        aes.Key = key;
+        aes.IV = iv;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+
+        try
+        {
+            using ICryptoTransform decryptor = aes.CreateDecryptor();
+            return decryptor.TransformFinalBlock(cipher, 0, cipher.Length);
+        }
+        catch (CryptographicException exception)
+        {
+            throw new PdfFormatException($"AES-encrypted object content could not be decrypted: {exception.Message}");
+        }
     }
 
     private static PdfDictionaryObject ResolveDictionaryReference(IEnumerable<PdfIndirectObject> objects, PdfObjectId objectId)
@@ -523,6 +939,16 @@ internal static class PdfStandardSecurityProcessor
         return Convert.ToInt32(number.Value, CultureInfo.InvariantCulture);
     }
 
+    private static bool? TryReadBoolean(PdfDictionaryObject dictionary, string key)
+    {
+        if (!TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
+        {
+            return null;
+        }
+
+        return value as PdfBooleanObject is PdfBooleanObject boolean ? boolean.Value : null;
+    }
+
     private static PdfObject RequireDictionaryEntry(PdfDictionaryObject dictionary, string key)
     {
         if (TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
@@ -581,12 +1007,27 @@ internal static class PdfStandardSecurityProcessor
         }
     }
 
+    private readonly record struct SecurityProfileDefinition(
+        int V,
+        int R,
+        int KeyLengthBits,
+        int KeyLengthBytes,
+        EncryptionCipher Cipher,
+        bool UseCryptFilters);
+
     private readonly record struct EncryptionMaterial(
         byte[] OwnerEntry,
         byte[] UserEntry,
         byte[] FileKey,
         byte[] DocumentId,
-        int PermissionValue);
+        int PermissionValue,
+        int V,
+        int R,
+        int KeyLengthBits,
+        bool EncryptMetadata,
+        EncryptionCipher StringCipher,
+        EncryptionCipher StreamCipher,
+        bool UseCryptFilters);
 
     private readonly record struct EncryptionDescriptor(
         PdfObjectId EncryptObjectId,
@@ -598,5 +1039,15 @@ internal static class PdfStandardSecurityProcessor
         int Permissions,
         byte[] O,
         byte[] U,
-        byte[] DocumentId);
+        byte[] DocumentId,
+        bool EncryptMetadata,
+        EncryptionCipher StringCipher,
+        EncryptionCipher StreamCipher);
+
+    private enum EncryptionCipher
+    {
+        Unsupported = 0,
+        Rc4 = 1,
+        AesV2 = 2,
+    }
 }

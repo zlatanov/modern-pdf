@@ -127,6 +127,79 @@ public sealed class PdfStandardSecurityProcessorTests
     }
 
     [Fact]
+    public void EncryptAndDecryptRoundTripWithStandard128BitRc4Profile()
+    {
+        PdfFile file = CreatePlainFileWithStringObject("Hello-128-RC4");
+        PdfSecurityOptions options = new()
+        {
+            UserPassword = "user-pass",
+            OwnerPassword = "owner-pass",
+            Profile = PdfSecurityProfile.Standard128BitRc4,
+            Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms | PdfPermissions.Accessibility,
+        };
+
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(file, options);
+        PdfFile decrypted = PdfStandardSecurityProcessor.Decrypt(encrypted, "user-pass");
+
+        PdfStringObject text = Assert.IsType<PdfStringObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 3).Value);
+        Assert.Equal("Hello-128-RC4", text.Value);
+
+        Assert.True(PdfStandardSecurityProcessor.TryReadEncryptionInfo(encrypted, out PdfEncryptionInfo? info));
+        Assert.NotNull(info);
+        Assert.Equal(2, info.AlgorithmVersion);
+        Assert.Equal(128, info.KeyLengthBits);
+    }
+
+    [Fact]
+    public void EncryptAndDecryptRoundTripWithStandard128BitAesProfile()
+    {
+        PdfFile file = CreatePlainFileWithStringObject("Hello-128-AES");
+        PdfSecurityOptions options = new()
+        {
+            UserPassword = "user-pass",
+            OwnerPassword = "owner-pass",
+            Profile = PdfSecurityProfile.Standard128BitAes,
+            Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms | PdfPermissions.HighQualityPrint,
+        };
+
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(file, options);
+        PdfFile decrypted = PdfStandardSecurityProcessor.Decrypt(encrypted, "owner-pass");
+
+        PdfStringObject text = Assert.IsType<PdfStringObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 3).Value);
+        Assert.Equal("Hello-128-AES", text.Value);
+
+        Assert.True(PdfStandardSecurityProcessor.TryReadEncryptionInfo(encrypted, out PdfEncryptionInfo? info));
+        Assert.NotNull(info);
+        Assert.Equal(4, info.AlgorithmVersion);
+        Assert.Equal(128, info.KeyLengthBits);
+    }
+
+    [Fact]
+    public void EncryptWithAesProfileWritesCryptFilterEntries()
+    {
+        PdfFile file = CreatePlainFileWithStringObject("cf-check");
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(
+            file,
+            new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+                Profile = PdfSecurityProfile.Standard128BitAes,
+            });
+
+        PdfDictionaryObject encryptDictionary = Assert.IsType<PdfDictionaryObject>(
+            Assert.Single(
+                encrypted.Objects,
+                item => item.Value is PdfDictionaryObject dictionary
+                    && dictionary.Entries.Any(entry => string.Equals(entry.Key, "Filter", StringComparison.Ordinal))).Value);
+
+        PdfNameObject filter = Assert.IsType<PdfNameObject>(encryptDictionary.Entries.Single(entry => entry.Key == "Filter").Value);
+        Assert.Equal("Standard", filter.Value);
+        Assert.IsType<PdfDictionaryObject>(encryptDictionary.Entries.Single(entry => entry.Key == "CF").Value);
+        Assert.Equal("StdCF", Assert.IsType<PdfNameObject>(encryptDictionary.Entries.Single(entry => entry.Key == "StrF").Value).Value);
+        Assert.Equal("StdCF", Assert.IsType<PdfNameObject>(encryptDictionary.Entries.Single(entry => entry.Key == "StmF").Value).Value);
+    }
+
+    [Fact]
     public void EncryptAndDecryptHandlePrimitiveAndCompositeObjects()
     {
         PdfFile file = new(

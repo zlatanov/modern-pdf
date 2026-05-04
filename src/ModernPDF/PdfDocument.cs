@@ -70,7 +70,7 @@ public sealed class PdfDocument
         {
             if (!PdfStandardSecurityProcessor.IsSupportedStandardHandler(file))
             {
-                throw new NotSupportedException("Only Standard security handler V=1 R=2 (40-bit) is currently supported.");
+                throw new NotSupportedException("Only Standard security handler profiles V=1/R=2 (40-bit RC4), V=2/R=3 (128-bit RC4), and V=4/R=4 (128-bit AES) are currently supported.");
             }
 
             if (string.IsNullOrEmpty(password))
@@ -3837,6 +3837,11 @@ public sealed class PdfDocument
         if (security.OwnerPassword is not null && security.OwnerPassword.Length == 0)
         {
             throw new ArgumentException("Security OwnerPassword cannot be empty when provided.", nameof(security));
+        }
+
+        if (!Enum.IsDefined(security.Profile))
+        {
+            throw new ArgumentOutOfRangeException(nameof(security), "Security profile contains an unsupported value.");
         }
 
         const PdfPermissions knownPermissions = PdfPermissions.All;

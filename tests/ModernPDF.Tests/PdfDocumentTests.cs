@@ -759,6 +759,60 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void SaveWithSecurityOptionsSupportsStandard128BitRc4Profile()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("secure-128-rc4");
+
+        byte[] encryptedBytes = document.Save(
+            new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    Profile = PdfSecurityProfile.Standard128BitRc4,
+                    Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+                },
+            });
+
+        PdfEncryptionInfo? info = PdfDocument.InspectEncryption(encryptedBytes);
+        Assert.NotNull(info);
+        Assert.Equal("Standard", info.Filter);
+        Assert.Equal(2, info.AlgorithmVersion);
+        Assert.Equal(128, info.KeyLengthBits);
+
+        PdfDocument opened = PdfDocument.Open(encryptedBytes, "pw");
+        Assert.Equal("secure-128-rc4", opened.ExtractText());
+    }
+
+    [Fact]
+    public void SaveWithSecurityOptionsSupportsStandard128BitAesProfile()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("secure-128-aes");
+
+        byte[] encryptedBytes = document.Save(
+            new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    Profile = PdfSecurityProfile.Standard128BitAes,
+                    Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms | PdfPermissions.HighQualityPrint,
+                },
+            });
+
+        PdfEncryptionInfo? info = PdfDocument.InspectEncryption(encryptedBytes);
+        Assert.NotNull(info);
+        Assert.Equal("Standard", info.Filter);
+        Assert.Equal(4, info.AlgorithmVersion);
+        Assert.Equal(128, info.KeyLengthBits);
+
+        PdfDocument opened = PdfDocument.Open(encryptedBytes, "pw");
+        Assert.Equal("secure-128-aes", opened.ExtractText());
+    }
+
+    [Fact]
     public void SaveWithSecurityOptionsRejectsMissingUserPassword()
     {
         PdfDocument document = PdfDocument.Create();
@@ -842,15 +896,15 @@ public sealed class PdfDocumentTests
     [Fact]
     public void OpenThrowsForUnsupportedEncryptedProfile()
     {
-        byte[] encryptedPdfBytes = CreateEncryptedPdf();
+        byte[] encryptedPdfBytes = CreateUnsupportedEncryptedPdf();
 
         Assert.Throws<NotSupportedException>(() => PdfDocument.Open(encryptedPdfBytes));
     }
 
     [Fact]
-    public void OpenWithPasswordThrowsForEncryptedPdfUntilSecuritySupportArrives()
+    public void OpenWithPasswordThrowsForUnsupportedEncryptedProfile()
     {
-        byte[] encryptedPdfBytes = CreateEncryptedPdf();
+        byte[] encryptedPdfBytes = CreateUnsupportedEncryptedPdf();
 
         Assert.Throws<NotSupportedException>(() => PdfDocument.Open(encryptedPdfBytes, "password"));
     }
@@ -1822,6 +1876,16 @@ public sealed class PdfDocumentTests
         Assert.Throws<ArgumentOutOfRangeException>(
             () => document.Save(new PdfSaveOptions
             {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    Profile = (PdfSecurityProfile)999,
+                },
+            }));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => document.Save(new PdfSaveOptions
+            {
                 CrossReferenceStyle = (PdfCrossReferenceStyle)999,
             }));
     }
@@ -2125,6 +2189,57 @@ public sealed class PdfDocumentTests
             new PdfDictionaryEntry("V", new PdfNumberObject(4, isInteger: true)),
             new PdfDictionaryEntry("R", new PdfNumberObject(4, isInteger: true)),
             new PdfDictionaryEntry("Length", new PdfNumberObject(128, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
+            new PdfDictionaryEntry("O", new PdfStringObject("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
+            new PdfDictionaryEntry("U", new PdfStringObject("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")),
+        ]);
+
+        PdfDictionaryObject trailer = new(
+        [
+            new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+            new PdfDictionaryEntry("Encrypt", new PdfReferenceObject(new PdfObjectId(3, 0))),
+            new PdfDictionaryEntry(
+                "ID",
+                new PdfArrayObject(
+                [
+                    new PdfStringObject("0123456789ABCDEF"),
+                    new PdfStringObject("0123456789ABCDEF"),
+                ])),
+        ]);
+
+        PdfFile file = new(
+            "2.0",
+            [
+                new PdfIndirectObject(new PdfObjectId(1, 0), catalog),
+                new PdfIndirectObject(new PdfObjectId(2, 0), pages),
+                new PdfIndirectObject(new PdfObjectId(3, 0), encryptDictionary),
+            ],
+            trailer);
+
+        return PdfFileWriter.Write(file);
+    }
+
+    private static byte[] CreateUnsupportedEncryptedPdf()
+    {
+        PdfDictionaryObject catalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Pages", new PdfReferenceObject(new PdfObjectId(2, 0))),
+        ]);
+
+        PdfDictionaryObject pages = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pages")),
+            new PdfDictionaryEntry("Kids", new PdfArrayObject([])),
+            new PdfDictionaryEntry("Count", new PdfNumberObject(0, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject encryptDictionary = new(
+        [
+            new PdfDictionaryEntry("Filter", new PdfNameObject("Standard")),
+            new PdfDictionaryEntry("V", new PdfNumberObject(5, isInteger: true)),
+            new PdfDictionaryEntry("R", new PdfNumberObject(6, isInteger: true)),
+            new PdfDictionaryEntry("Length", new PdfNumberObject(256, isInteger: true)),
             new PdfDictionaryEntry("P", new PdfNumberObject(-4, isInteger: true)),
             new PdfDictionaryEntry("O", new PdfStringObject("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
             new PdfDictionaryEntry("U", new PdfStringObject("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")),
