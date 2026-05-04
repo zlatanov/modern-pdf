@@ -711,6 +711,8 @@ public sealed class PdfDocument
             bool? revocationValid = null;
             bool? certificatePolicyValid = null;
             bool trustChecksPassed = true;
+            (IReadOnlyList<CrlEvidence> scopedCrls, IReadOnlyList<OcspEvidence> scopedOcsps) =
+                ResolveSignatureScopedRevocationEvidence(cmsSignatureBytes, dssEvidence, diagnostics);
 
             if (options.RequireSigningTime)
             {
@@ -734,7 +736,13 @@ public sealed class PdfDocument
             bool checkChain = options.VerifyCertificateChain || options.RequireRevocationStatus;
             if (checkChain)
             {
-                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(signedCms, options, signingTime, dssEvidence.Certificates, dssEvidence.Crls, dssEvidence.Ocsps);
+                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(
+                    signedCms,
+                    options,
+                    signingTime,
+                    dssEvidence.Certificates,
+                    scopedCrls,
+                    scopedOcsps);
                 diagnostics.AddRange(chainDiagnostics);
                 certificateChainValid = chainIsValid;
                 revocationValid = options.RequireRevocationStatus ? revocationIsValid : null;
@@ -1098,6 +1106,46 @@ public sealed class PdfDocument
         }
 
         return (chainValid, revocationValid, diagnostics);
+    }
+
+    private static (IReadOnlyList<CrlEvidence> Crls, IReadOnlyList<OcspEvidence> Ocsps) ResolveSignatureScopedRevocationEvidence(
+        byte[] cmsSignatureBytes,
+        DssValidationEvidence dssEvidence,
+        List<string> diagnostics)
+    {
+        if (dssEvidence.VriEvidenceByKey.Count == 0)
+        {
+            return (dssEvidence.Crls, dssEvidence.Ocsps);
+        }
+
+        List<string> lookupKeys = GetSignatureVriLookupKeys(cmsSignatureBytes);
+        foreach (string lookupKey in lookupKeys)
+        {
+            if (!dssEvidence.VriEvidenceByKey.TryGetValue(lookupKey, out DssVriEvidence scopedEvidence))
+            {
+                continue;
+            }
+
+            return (scopedEvidence.Crls, scopedEvidence.Ocsps);
+        }
+
+        diagnostics.Add($"No /DSS /VRI entry matched signature digest key(s): {string.Join(", ", lookupKeys)}.");
+        return ([], []);
+    }
+
+    private static List<string> GetSignatureVriLookupKeys(ReadOnlySpan<byte> cmsSignatureBytes)
+    {
+        List<string> keys = [];
+#pragma warning disable CA5350 // DSS /VRI interoperability may use SHA-1 digest keys
+        keys.Add(Convert.ToHexString(SHA1.HashData(cmsSignatureBytes)));
+#pragma warning restore CA5350
+        keys.Add(Convert.ToHexString(SHA256.HashData(cmsSignatureBytes)));
+        return keys;
+    }
+
+    private static string NormalizeDssVriKey(string key)
+    {
+        return key.Trim().TrimStart('/').ToUpperInvariant();
     }
 
     private static bool IsRevocationChainStatus(X509ChainStatusFlags status)
@@ -1613,37 +1661,34 @@ public sealed class PdfDocument
     {
         if (!TryReadDssDictionary(out PdfDictionaryObject? dssDictionary, out string? dssDictionaryError))
         {
-            return new DssValidationEvidence([], [], [], dssDictionaryError);
+            return new DssValidationEvidence([], [], [], new Dictionary<string, DssVriEvidence>(StringComparer.OrdinalIgnoreCase), dssDictionaryError);
         }
 
         PdfDictionaryObject resolvedDssDictionary = dssDictionary!;
         List<X509Certificate2> certificates = [];
         List<CrlEvidence> crls = [];
         List<OcspEvidence> ocsps = [];
+        Dictionary<string, DssVriEvidence> vriEvidenceByKey = new(StringComparer.OrdinalIgnoreCase);
         List<string> diagnostics = [];
         if (!string.IsNullOrWhiteSpace(dssDictionaryError))
         {
             diagnostics.Add(dssDictionaryError);
         }
 
+        HashSet<string> seenCertificateFingerprints = [];
         List<byte[]> certificatePayloads = [];
         TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "Certs", "DSS /Certs", certificatePayloads, diagnostics);
         for (int index = 0; index < certificatePayloads.Count; index++)
         {
-            try
-            {
-                certificates.Add(X509CertificateLoader.LoadCertificate(certificatePayloads[index]));
-            }
-            catch (CryptographicException exception)
-            {
-                diagnostics.Add($"DSS certificate at index {index} is invalid: {exception.Message}");
-            }
+            TryAddDssCertificate(certificatePayloads[index], $"DSS /Certs[{index}]", certificates, seenCertificateFingerprints, diagnostics);
         }
 
-        List<byte[]> crlPayloads = [];
-        List<byte[]> ocspPayloads = [];
-        TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "CRLs", "DSS /CRLs", crlPayloads, diagnostics);
-        TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "OCSPs", "DSS /OCSPs", ocspPayloads, diagnostics);
+        List<byte[]> globalCrlPayloads = [];
+        List<byte[]> globalOcspPayloads = [];
+        TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "CRLs", "DSS /CRLs", globalCrlPayloads, diagnostics);
+        TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "OCSPs", "DSS /OCSPs", globalOcspPayloads, diagnostics);
+        crls.AddRange(ParseDistinctDssCrlEvidence(globalCrlPayloads, "DSS /CRLs", diagnostics));
+        ocsps.AddRange(ParseDistinctDssOcspEvidence(globalOcspPayloads, "DSS /OCSPs", diagnostics));
 
         if (TryGetDictionaryEntry(resolvedDssDictionary, "VRI", out PdfObject? vriObject))
         {
@@ -1661,54 +1706,114 @@ public sealed class PdfDocument
                         continue;
                     }
 
-                    TryCollectResolvedBinaryEntriesFromDssArray(vriItemDictionary!, "CRL", $"/DSS /VRI '{vriEntry.Key}' /CRL", crlPayloads, diagnostics);
-                    TryCollectResolvedBinaryEntriesFromDssArray(vriItemDictionary!, "OCSP", $"/DSS /VRI '{vriEntry.Key}' /OCSP", ocspPayloads, diagnostics);
+                    string normalizedVriKey = NormalizeDssVriKey(vriEntry.Key);
+                    List<byte[]> vriCertificatePayloads = [];
+                    List<byte[]> vriCrlPayloads = [];
+                    List<byte[]> vriOcspPayloads = [];
+                    TryCollectResolvedBinaryEntriesFromDssArray(vriItemDictionary!, "Cert", $"/DSS /VRI '{vriEntry.Key}' /Cert", vriCertificatePayloads, diagnostics);
+                    TryCollectResolvedBinaryEntriesFromDssArray(vriItemDictionary!, "CRL", $"/DSS /VRI '{vriEntry.Key}' /CRL", vriCrlPayloads, diagnostics);
+                    TryCollectResolvedBinaryEntriesFromDssArray(vriItemDictionary!, "OCSP", $"/DSS /VRI '{vriEntry.Key}' /OCSP", vriOcspPayloads, diagnostics);
+
+                    for (int index = 0; index < vriCertificatePayloads.Count; index++)
+                    {
+                        TryAddDssCertificate(vriCertificatePayloads[index], $"/DSS /VRI '{vriEntry.Key}' /Cert[{index}]", certificates, seenCertificateFingerprints, diagnostics);
+                    }
+
+                    List<CrlEvidence> vriCrls = ParseDistinctDssCrlEvidence(vriCrlPayloads, $"/DSS /VRI '{vriEntry.Key}' /CRL", diagnostics);
+                    List<OcspEvidence> vriOcsps = ParseDistinctDssOcspEvidence(vriOcspPayloads, $"/DSS /VRI '{vriEntry.Key}' /OCSP", diagnostics);
+                    if (vriEvidenceByKey.TryGetValue(normalizedVriKey, out DssVriEvidence existingVriEvidence))
+                    {
+                        vriEvidenceByKey[normalizedVriKey] = new DssVriEvidence(
+                            [.. existingVriEvidence.Crls, .. vriCrls],
+                            [.. existingVriEvidence.Ocsps, .. vriOcsps]);
+                    }
+                    else
+                    {
+                        vriEvidenceByKey[normalizedVriKey] = new DssVriEvidence(vriCrls, vriOcsps);
+                    }
                 }
-            }
-        }
-
-        HashSet<string> seenCrlFingerprints = [];
-        foreach (byte[] crlBytes in crlPayloads)
-        {
-            string fingerprint = Convert.ToHexString(SHA256.HashData(crlBytes));
-            if (!seenCrlFingerprints.Add(fingerprint))
-            {
-                continue;
-            }
-
-            if (TryParseCrlEvidence(crlBytes, out CrlEvidence crlEvidence, out string? crlError))
-            {
-                crls.Add(crlEvidence);
-            }
-            else if (!string.IsNullOrWhiteSpace(crlError))
-            {
-                diagnostics.Add(crlError);
-            }
-        }
-
-        HashSet<string> seenOcspFingerprints = [];
-        foreach (byte[] ocspBytes in ocspPayloads)
-        {
-            string fingerprint = Convert.ToHexString(SHA256.HashData(ocspBytes));
-            if (!seenOcspFingerprints.Add(fingerprint))
-            {
-                continue;
-            }
-
-            if (TryParseOcspEvidence(ocspBytes, out OcspEvidence ocspEvidence, out string? ocspError))
-            {
-                ocsps.Add(ocspEvidence);
-            }
-            else if (!string.IsNullOrWhiteSpace(ocspError))
-            {
-                diagnostics.Add(ocspError);
             }
         }
 
         string? diagnostic = diagnostics.Count == 0
             ? null
             : string.Join(" | ", diagnostics.Distinct(StringComparer.Ordinal));
-        return new DssValidationEvidence(certificates, crls, ocsps, diagnostic);
+        return new DssValidationEvidence(certificates, crls, ocsps, vriEvidenceByKey, diagnostic);
+    }
+
+    private static void TryAddDssCertificate(
+        byte[] certificateBytes,
+        string context,
+        List<X509Certificate2> certificates,
+        HashSet<string> seenCertificateFingerprints,
+        List<string> diagnostics)
+    {
+        string fingerprint = Convert.ToHexString(SHA256.HashData(certificateBytes));
+        if (!seenCertificateFingerprints.Add(fingerprint))
+        {
+            return;
+        }
+
+        try
+        {
+            certificates.Add(X509CertificateLoader.LoadCertificate(certificateBytes));
+        }
+        catch (CryptographicException exception)
+        {
+            diagnostics.Add($"{context} is invalid: {exception.Message}");
+        }
+    }
+
+    private static List<CrlEvidence> ParseDistinctDssCrlEvidence(List<byte[]> payloads, string context, List<string> diagnostics)
+    {
+        List<CrlEvidence> parsedEvidence = [];
+        HashSet<string> seenFingerprints = [];
+        for (int index = 0; index < payloads.Count; index++)
+        {
+            byte[] crlBytes = payloads[index];
+            string fingerprint = Convert.ToHexString(SHA256.HashData(crlBytes));
+            if (!seenFingerprints.Add(fingerprint))
+            {
+                continue;
+            }
+
+            if (TryParseCrlEvidence(crlBytes, out CrlEvidence crlEvidence, out string? crlError))
+            {
+                parsedEvidence.Add(crlEvidence);
+            }
+            else if (!string.IsNullOrWhiteSpace(crlError))
+            {
+                diagnostics.Add($"{context}[{index}] {crlError}");
+            }
+        }
+
+        return parsedEvidence;
+    }
+
+    private static List<OcspEvidence> ParseDistinctDssOcspEvidence(List<byte[]> payloads, string context, List<string> diagnostics)
+    {
+        List<OcspEvidence> parsedEvidence = [];
+        HashSet<string> seenFingerprints = [];
+        for (int index = 0; index < payloads.Count; index++)
+        {
+            byte[] ocspBytes = payloads[index];
+            string fingerprint = Convert.ToHexString(SHA256.HashData(ocspBytes));
+            if (!seenFingerprints.Add(fingerprint))
+            {
+                continue;
+            }
+
+            if (TryParseOcspEvidence(ocspBytes, out OcspEvidence ocspEvidence, out string? ocspError))
+            {
+                parsedEvidence.Add(ocspEvidence);
+            }
+            else if (!string.IsNullOrWhiteSpace(ocspError))
+            {
+                diagnostics.Add($"{context}[{index}] {ocspError}");
+            }
+        }
+
+        return parsedEvidence;
     }
 
     private bool TryReadDssDictionary(out PdfDictionaryObject? dssDictionary, out string? diagnostic)
@@ -2223,7 +2328,12 @@ public sealed class PdfDocument
         IReadOnlyList<X509Certificate2> Certificates,
         IReadOnlyList<CrlEvidence> Crls,
         IReadOnlyList<OcspEvidence> Ocsps,
+        IReadOnlyDictionary<string, DssVriEvidence> VriEvidenceByKey,
         string? Diagnostic);
+
+    private readonly record struct DssVriEvidence(
+        IReadOnlyList<CrlEvidence> Crls,
+        IReadOnlyList<OcspEvidence> Ocsps);
 
     private readonly record struct CrlEvidence(
         byte[] TbsCertList,
