@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using HarfBuzzSharp;
@@ -62,6 +63,21 @@ internal static class PdfTrueTypeFontEmbedder
         byte[] bytes = File.ReadAllBytes(fontPath);
         TrueTypeFont font = TrueTypeFont.Parse(bytes, fontPath);
         return font.CanRenderText(text, direction);
+    }
+
+    public static bool CanMapText(string fontPath, string text)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fontPath);
+        ArgumentNullException.ThrowIfNull(text);
+
+        if (!File.Exists(fontPath))
+        {
+            return false;
+        }
+
+        byte[] bytes = File.ReadAllBytes(fontPath);
+        TrueTypeFont font = TrueTypeFont.Parse(bytes, fontPath);
+        return font.CanMapText(text);
     }
 
     public static PdfEmbeddedTrueTypeFont Build(string fontPath, string text, bool subsetFont, PdfTextDirection direction)
@@ -262,6 +278,7 @@ internal static class PdfTrueTypeFontEmbedder
             Dictionary<int, string> cidToUnicode = [];
             List<PdfShapedGlyph> glyphRun = [];
             Dictionary<int, (int Start, int End)> clusterRanges = BuildClusterRanges(text, shapedGlyphs);
+            Dictionary<int, int> clusterEmissionCounts = [];
             int nextCid = 1;
 
             foreach (ShapedGlyphEntry shaped in shapedGlyphs)
@@ -276,9 +293,17 @@ internal static class PdfTrueTypeFontEmbedder
                     range = (0, text.Length);
                 }
 
+                int clampedCluster = ClampCluster(shaped.Cluster, text.Length);
+                clusterEmissionCounts.TryGetValue(clampedCluster, out int emissionCount);
+                clusterEmissionCounts[clampedCluster] = emissionCount + 1;
+
                 string unicodeSlice = range.End > range.Start
                     ? text.Substring(range.Start, range.End - range.Start)
                     : "\uFFFD";
+                if (emissionCount > 0)
+                {
+                    unicodeSlice = string.Empty;
+                }
 
                 CidKey cidKey = new(shaped.GlyphId, unicodeSlice);
                 if (!cidByKey.TryGetValue(cidKey, out int cid))
@@ -367,7 +392,8 @@ internal static class PdfTrueTypeFontEmbedder
             Dictionary<int, (int Start, int End)> ranges = BuildClusterRanges(text, shapedGlyphs);
             foreach (ShapedGlyphEntry glyph in shapedGlyphs)
             {
-                if (glyph.GlyphId != 0)
+                // Glyph ids 0 and 1 are reserved in TrueType and represent missing/notdef output.
+                if (glyph.GlyphId > 1)
                 {
                     continue;
                 }
@@ -390,6 +416,39 @@ internal static class PdfTrueTypeFontEmbedder
             }
 
             return true;
+        }
+
+        public bool CanMapText(string text)
+        {
+            foreach (Rune rune in text.EnumerateRunes())
+            {
+                if (IsIgnorableTextRune(rune))
+                {
+                    continue;
+                }
+
+                if (_cmap.GetGlyphId(rune.Value) <= 1)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsIgnorableTextRune(Rune rune)
+        {
+            if (Rune.IsWhiteSpace(rune))
+            {
+                return true;
+            }
+
+            UnicodeCategory category = Rune.GetUnicodeCategory(rune);
+            return category is UnicodeCategory.Format
+                or UnicodeCategory.NonSpacingMark
+                or UnicodeCategory.SpacingCombiningMark
+                or UnicodeCategory.EnclosingMark
+                or UnicodeCategory.Control;
         }
 
         private SubsetResult BuildSubset(

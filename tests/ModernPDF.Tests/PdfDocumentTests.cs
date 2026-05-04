@@ -1,6 +1,7 @@
 using System.Text;
 using System.Reflection;
 using ModernPDF.DocumentModel;
+using ModernPDF.Fonts;
 using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
@@ -453,6 +454,39 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void AddTextPageWithEmbeddedTrueTypeFontSupportsMixedFallbackRuns()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fullFontPath = GetFixtureFontPath();
+        string subsetPath = CreateTempSubsetFontFile(fullFontPath, "Fallback mixed runs abc ");
+        const string text = "Fallback mixed runs café abc";
+
+        try
+        {
+            document.AddTextPage(
+                text,
+                textOptions: new PdfTextOptions
+                {
+                    TrueTypeFontPath = subsetPath,
+                    FallbackTrueTypeFontPaths = [fullFontPath],
+                    SubsetFont = true,
+                    MaxWidth = 320,
+                });
+        }
+        finally
+        {
+            File.Delete(subsetPath);
+        }
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal(text, document.ExtractText());
+        Assert.Contains("/FontFile2", ascii, StringComparison.Ordinal);
+        Assert.Contains("/F2", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AddTextPageWithBuiltInFontSupportsJustifyAlignment()
     {
         PdfDocument document = PdfDocument.Create();
@@ -474,6 +508,30 @@ public sealed class PdfDocumentTests
 
         Assert.Equal(text, document.ExtractText());
         Assert.Contains(" Tw ", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddTextPageWithBuiltInFontJustifyWithoutSpacesUsesCharacterSpacing()
+    {
+        PdfDocument document = PdfDocument.Create();
+        const string text = "Supercalifragilisticexpialidociousword";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 12,
+                X = 72,
+                Y = 720,
+                MaxWidth = 120,
+                Alignment = PdfTextAlignment.Justify,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal(text, document.ExtractText());
+        Assert.Contains(" Tc ", ascii, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -502,6 +560,33 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void AddTextPageWithVerticalRtlDirectionMovesColumnsRightToLeft()
+    {
+        PdfDocument document = PdfDocument.Create();
+        const string text = "ABCD";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 12,
+                X = 100,
+                Y = 700,
+                WritingMode = PdfWritingMode.Vertical,
+                LineHeightMultiplier = 1,
+                MaxWidth = 24,
+                Direction = PdfTextDirection.RightToLeft,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal(text, document.ExtractText());
+        Assert.Contains("1 0 0 1 100 700 Tm (A) Tj", ascii, StringComparison.Ordinal);
+        Assert.Contains("1 0 0 1 88 700 Tm (C) Tj", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AddRichTextPageSupportsMixedSpanSizes()
     {
         PdfDocument document = PdfDocument.Create();
@@ -526,6 +611,37 @@ public sealed class PdfDocumentTests
         Assert.Equal("Hello BIG world", document.ExtractText());
         Assert.Contains("/F1 24 Tf", ascii, StringComparison.Ordinal);
         Assert.Contains("/F1 12 Tf", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddRichTextPageSupportsEmbeddedTrueTypeSpans()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+
+        document.AddRichTextPage(
+        [
+            new PdfTextSpan { Text = "Rich " },
+            new PdfTextSpan { Text = "embedded", FontSize = 20 },
+            new PdfTextSpan { Text = " 👩‍💻 text", FontSize = 14 },
+        ],
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 14,
+                X = 72,
+                Y = 720,
+                MaxWidth = 420,
+                TrueTypeFontPath = fontPath,
+                FallbackTrueTypeFontPaths = [fontPath],
+                Alignment = PdfTextAlignment.Justify,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal("Rich embedded 👩‍💻 text", document.ExtractText());
+        Assert.Contains("/FontFile2", ascii, StringComparison.Ordinal);
+        Assert.Contains(" Tf 1 0 0 1 ", ascii, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -989,6 +1105,24 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void ReplacePageRichTextRejectsInvalidSpanFallbackEntries()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("initial");
+
+        Assert.Throws<ArgumentException>(
+            () => document.ReplacePageRichText(
+                0,
+                [
+                    new PdfTextSpan
+                    {
+                        Text = "x",
+                        FallbackTrueTypeFontPaths = [" "],
+                    },
+                ]));
+    }
+
+    [Fact]
     public void DefaultTextOptionsRejectsInvalidValues()
     {
         PdfDocument document = PdfDocument.Create();
@@ -1036,6 +1170,18 @@ public sealed class PdfDocumentTests
     {
         string path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Fonts", "LiberationSans-Regular.ttf");
         Assert.True(File.Exists(path), $"Expected test font fixture at '{path}'.");
+        return path;
+    }
+
+    private static string CreateTempSubsetFontFile(string sourceFontPath, string subsetText)
+    {
+        PdfEmbeddedTrueTypeFont subset = PdfTrueTypeFontEmbedder.Build(
+            sourceFontPath,
+            subsetText,
+            subsetFont: true,
+            direction: PdfTextDirection.Auto);
+        string path = Path.Combine(Path.GetTempPath(), $"modernpdf-subset-{Guid.NewGuid():N}.ttf");
+        File.WriteAllBytes(path, subset.FontProgram);
         return path;
     }
 

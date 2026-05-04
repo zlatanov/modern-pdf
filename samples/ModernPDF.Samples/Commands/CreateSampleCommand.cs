@@ -42,6 +42,9 @@ internal static class CreateSampleCommand
                 FontSize = 14,
                 X = 72,
                 Y = 740,
+                TrueTypeFontPath = defaultText.TrueTypeFontPath,
+                FallbackTrueTypeFontPaths = defaultText.FallbackTrueTypeFontPaths,
+                SubsetFont = defaultText.SubsetFont,
                 MaxWidth = 468,
                 LineHeightMultiplier = 1.35,
                 Alignment = PdfTextAlignment.Justify,
@@ -71,6 +74,7 @@ internal static class CreateSampleCommand
                 X = 72,
                 Y = 720,
                 WritingMode = PdfWritingMode.Vertical,
+                Direction = PdfTextDirection.RightToLeft,
                 MaxWidth = 200,
                 LineHeightMultiplier = 1.1,
             });

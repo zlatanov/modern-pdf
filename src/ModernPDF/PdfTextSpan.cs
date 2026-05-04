@@ -7,4 +7,6 @@ public sealed class PdfTextSpan
     public double? FontSize { get; init; }
 
     public string? TrueTypeFontPath { get; init; }
+
+    public IReadOnlyList<string>? FallbackTrueTypeFontPaths { get; init; }
 }
