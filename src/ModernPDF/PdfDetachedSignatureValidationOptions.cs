@@ -8,6 +8,8 @@ public sealed class PdfDetachedSignatureValidationOptions
 
     public bool RequireRevocationStatus { get; init; }
 
+    public PdfRevocationCheckMode RevocationCheckMode { get; init; } = PdfRevocationCheckMode.Offline;
+
     public bool RequireSigningTime { get; init; }
 
     public DateTimeOffset? ValidationTime { get; init; }

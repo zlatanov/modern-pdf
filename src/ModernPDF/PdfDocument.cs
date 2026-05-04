@@ -17,10 +17,11 @@ namespace ModernPDF;
 
 public sealed class PdfDocument
 {
-    private static readonly HashSet<string> SupportedDetachedCmsSubFilters =
+    private static readonly HashSet<string> SupportedCmsSubFilters =
     [
         "adbe.pkcs7.detached",
         "ETSI.CAdES.detached",
+        "adbe.pkcs7.sha1",
     ];
 
     private PdfFile _file;
@@ -246,6 +247,7 @@ public sealed class PdfDocument
     public IReadOnlyList<PdfDetachedSignatureValidationResult> ValidateDetachedSignatures(PdfDetachedSignatureValidationOptions? options)
     {
         PdfDetachedSignatureValidationOptions effectiveOptions = options ?? new PdfDetachedSignatureValidationOptions();
+        ValidateSignatureValidationOptions(effectiveOptions);
         List<PdfDetachedSignatureValidationResult> results = [];
         foreach (PdfIndirectObject indirectObject in _file.Objects.OrderBy(static objectItem => objectItem.ObjectId.ObjectNumber))
         {
@@ -605,13 +607,13 @@ public sealed class PdfDocument
     {
         string? filter = TryReadNameEntry(dictionary, "Filter");
         string? subFilter = TryReadNameEntry(dictionary, "SubFilter");
-        if (!IsSupportedDetachedCmsSubFilter(subFilter))
+        if (!IsSupportedCmsSubFilter(subFilter))
         {
             return CreateInvalidSignatureResult(
                 signatureObjectNumber,
                 filter,
                 subFilter,
-                "Only detached CMS signatures with /SubFilter /adbe.pkcs7.detached or /ETSI.CAdES.detached are currently supported.");
+                "Only CMS signatures with /SubFilter /adbe.pkcs7.detached, /ETSI.CAdES.detached, or /adbe.pkcs7.sha1 are currently supported.");
         }
 
         if (_file.SourceBytes is null)
@@ -628,11 +630,11 @@ public sealed class PdfDocument
             return CreateInvalidSignatureResult(signatureObjectNumber, filter, subFilter, byteRangeError);
         }
 
-        if (!TryReadDetachedCmsBytes(dictionary, out byte[]? cmsBytes, out string? cmsError))
+        if (!TryReadCmsBytes(dictionary, out byte[]? cmsBytes, out string? cmsError))
         {
             return CreateInvalidSignatureResult(signatureObjectNumber, filter, subFilter, cmsError);
         }
-        byte[] detachedCmsBytes = cmsBytes!;
+        byte[] cmsSignatureBytes = cmsBytes!;
 
         byte[] signedPayload = new byte[firstRange.Length + secondRange.Length];
         Buffer.BlockCopy(_file.SourceBytes, firstRange.Start, signedPayload, 0, firstRange.Length);
@@ -640,9 +642,7 @@ public sealed class PdfDocument
 
         try
         {
-            SignedCms signedCms = new(new ContentInfo(signedPayload), detached: true);
-            signedCms.Decode(detachedCmsBytes);
-            signedCms.CheckSignature(verifySignatureOnly: true);
+            SignedCms signedCms = ValidateCmsSignature(cmsSignatureBytes, signedPayload, subFilter!);
 
             if (signedCms.SignerInfos.Count == 0)
             {
@@ -650,7 +650,7 @@ public sealed class PdfDocument
                     signatureObjectNumber,
                     filter,
                     subFilter,
-                    "Detached CMS signature does not contain signer information.");
+                    "CMS signature does not contain signer information.");
             }
 
             List<string> diagnostics = [];
@@ -748,6 +748,48 @@ public sealed class PdfDocument
             diagnostics: reason is null ? null : [reason]);
     }
 
+    private static SignedCms ValidateCmsSignature(byte[] cmsSignatureBytes, byte[] signedPayload, string subFilter)
+    {
+        return subFilter switch
+        {
+            "adbe.pkcs7.sha1" => ValidatePkcs7Sha1Signature(cmsSignatureBytes, signedPayload),
+            _ => ValidateDetachedCmsSignature(cmsSignatureBytes, signedPayload),
+        };
+    }
+
+    private static SignedCms ValidateDetachedCmsSignature(byte[] cmsSignatureBytes, byte[] signedPayload)
+    {
+        SignedCms signedCms = new(new ContentInfo(signedPayload), detached: true);
+        signedCms.Decode(cmsSignatureBytes);
+        signedCms.CheckSignature(verifySignatureOnly: true);
+        return signedCms;
+    }
+
+    private static SignedCms ValidatePkcs7Sha1Signature(byte[] cmsSignatureBytes, byte[] signedPayload)
+    {
+        SignedCms signedCms = new();
+        signedCms.Decode(cmsSignatureBytes);
+
+        if (signedCms.Detached)
+        {
+            SignedCms detachedSha1 = new(new ContentInfo(signedPayload), detached: true);
+            detachedSha1.Decode(cmsSignatureBytes);
+            detachedSha1.CheckSignature(verifySignatureOnly: true);
+            return detachedSha1;
+        }
+
+        signedCms.CheckSignature(verifySignatureOnly: true);
+#pragma warning disable CA5350 // adbe.pkcs7.sha1 compatibility requires SHA-1 digest comparison
+        byte[] expectedDigest = SHA1.HashData(signedPayload);
+#pragma warning restore CA5350
+        if (!signedCms.ContentInfo.Content.AsSpan().SequenceEqual(expectedDigest))
+        {
+            throw new CryptographicException("Signature /SubFilter /adbe.pkcs7.sha1 CMS payload digest does not match the signed /ByteRange content.");
+        }
+
+        return signedCms;
+    }
+
     private static DateTimeOffset? TryReadFirstSigningTime(SignedCms signedCms)
     {
         foreach (SignerInfo signerInfo in signedCms.SignerInfos)
@@ -837,9 +879,13 @@ public sealed class PdfDocument
             chain.ChainPolicy.VerificationTime = verificationMoment.UtcDateTime;
             chain.ChainPolicy.RevocationFlag = X509RevocationFlag.EntireChain;
             chain.ChainPolicy.RevocationMode = options.RequireRevocationStatus
-                ? X509RevocationMode.Offline
+                ? options.RevocationCheckMode switch
+                {
+                    PdfRevocationCheckMode.Online => X509RevocationMode.Online,
+                    _ => X509RevocationMode.Offline,
+                }
                 : X509RevocationMode.NoCheck;
-            chain.ChainPolicy.DisableCertificateDownloads = true;
+            chain.ChainPolicy.DisableCertificateDownloads = !(options.RequireRevocationStatus && options.RevocationCheckMode == PdfRevocationCheckMode.Online);
 
             if (options.TrustedRoots is { Count: > 0 })
             {
@@ -878,7 +924,9 @@ public sealed class PdfDocument
                 if (!signerRevocationValid)
                 {
                     diagnostics.Add(hasRevocationPointers
-                        ? "Revocation status could not be established for all certificates in the signer chain."
+                        ? options.RevocationCheckMode == PdfRevocationCheckMode.Online
+                            ? "Revocation status could not be established for all certificates in the signer chain using online OCSP/CRL retrieval."
+                            : "Revocation status could not be established for all certificates in the signer chain."
                         : "Revocation status validation requires CRL or AIA certificate extensions.");
                 }
             }
@@ -975,9 +1023,9 @@ public sealed class PdfDocument
         return value is PdfNameObject name ? name.Value : null;
     }
 
-    private static bool IsSupportedDetachedCmsSubFilter(string? subFilter)
+    private static bool IsSupportedCmsSubFilter(string? subFilter)
     {
-        return subFilter is not null && SupportedDetachedCmsSubFilters.Contains(subFilter);
+        return subFilter is not null && SupportedCmsSubFilters.Contains(subFilter);
     }
 
     private static bool TryReadByteRange(
@@ -1044,7 +1092,7 @@ public sealed class PdfDocument
         return true;
     }
 
-    private static bool TryReadDetachedCmsBytes(PdfDictionaryObject dictionary, out byte[]? cmsBytes, out string? error)
+    private static bool TryReadCmsBytes(PdfDictionaryObject dictionary, out byte[]? cmsBytes, out string? error)
     {
         cmsBytes = null;
         if (!TryGetDictionaryEntry(dictionary, "Contents", out PdfObject? contentsObject) || contentsObject is not PdfByteStringObject byteString)
@@ -3705,6 +3753,16 @@ public sealed class PdfDocument
                     throw new ArgumentException($"FallbackTrueTypeFontPaths[{index}] cannot be blank.", nameof(options));
                 }
             }
+        }
+    }
+
+    private static void ValidateSignatureValidationOptions(PdfDetachedSignatureValidationOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (!Enum.IsDefined(options.RevocationCheckMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Signature validation RevocationCheckMode contains an unsupported value.");
         }
     }
 

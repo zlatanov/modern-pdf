@@ -139,7 +139,8 @@ IReadOnlyList<PdfDetachedSignatureValidationResult> results =
         {
             VerifyCertificateChain = true,
             RequireSigningTime = true,
-            RequireRevocationStatus = false,
+            RequireRevocationStatus = true,
+            RevocationCheckMode = PdfRevocationCheckMode.Online,
             RequiredCertificatePolicyOids = ["1.2.3.4.5"],
             ValidationTime = DateTimeOffset.UtcNow,
         });
@@ -171,6 +172,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 ## Current limitations
 
-- signature validation currently supports detached CMS subfilters `/adbe.pkcs7.detached` and `/ETSI.CAdES.detached`
-- trust validation is deterministic/offline-only by design (`RequireRevocationStatus` uses offline chain status and does not fetch OCSP/CRLs)
+- signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, and `/adbe.pkcs7.sha1`
+- revocation validation can use online retrieval via `RevocationCheckMode = PdfRevocationCheckMode.Online`, but deterministic/offline behavior remains the default (`Offline`)
 - security support is intentionally limited to Standard handler `V=1 / R=2`
