@@ -3,6 +3,7 @@ using ModernPDF.Fonts;
 using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
+using ModernPDF.Images;
 using ModernPDF.Primitives;
 using ModernPDF.Security;
 using ModernPDF.Text;
@@ -175,6 +176,36 @@ public sealed class PdfDocument
         int pageIndex = AddPage(pageOptions);
         ReplacePageRichText(pageIndex, spans, textOptions);
         return pageIndex;
+    }
+
+    public int AddImagePage(byte[] imageBytes, PdfPageOptions? pageOptions = null, PdfImageOptions? imageOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(imageBytes);
+
+        PdfRasterImage image = PdfImageParser.Parse(imageBytes);
+        PdfPageOptions effectivePageOptions = pageOptions ?? new PdfPageOptions
+        {
+            Width = image.Width,
+            Height = image.Height,
+        };
+
+        int pageIndex = AddPage(effectivePageOptions);
+        PdfImageOptions effectiveImageOptions = imageOptions ?? new PdfImageOptions
+        {
+            X = 0,
+            Y = 0,
+            Width = effectivePageOptions.Width,
+            Height = effectivePageOptions.Height,
+            PreserveAspectRatio = true,
+        };
+        ReplacePageImage(pageIndex, imageBytes, effectiveImageOptions);
+        return pageIndex;
+    }
+
+    public int AddImagePage(string imagePath, PdfPageOptions? pageOptions = null, PdfImageOptions? imageOptions = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
+        return AddImagePage(File.ReadAllBytes(imagePath), pageOptions, imageOptions);
     }
 
     public string ExtractText()
@@ -2324,6 +2355,12 @@ public sealed class PdfDocument
         return true;
     }
 
+    private readonly record struct PdfImagePlacement(
+        double X,
+        double Y,
+        double Width,
+        double Height);
+
     private readonly record struct DssValidationEvidence(
         IReadOnlyList<X509Certificate2> Certificates,
         IReadOnlyList<CrlEvidence> Crls,
@@ -2797,6 +2834,91 @@ public sealed class PdfDocument
         MarkDirty(page.ObjectId);
     }
 
+    public void ReplacePageImage(int pageIndex, byte[] imageBytes, PdfImageOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(imageBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+
+        PdfRasterImage image = PdfImageParser.Parse(imageBytes);
+        PdfPageModel page = _model.Pages[pageIndex];
+        if (page.Contents is not PdfReferenceObject contentsReference)
+        {
+            throw new NotSupportedException("Only page /Contents references are supported for replacement.");
+        }
+
+        PdfRectangle pageBounds = page.MediaBox ?? throw new NotSupportedException("Page /MediaBox is required for image placement.");
+        PdfImageOptions effectiveOptions = options ?? new PdfImageOptions
+        {
+            X = pageBounds.Left,
+            Y = pageBounds.Bottom,
+            Width = pageBounds.Width,
+            Height = pageBounds.Height,
+            PreserveAspectRatio = true,
+        };
+        ValidateImageOptions(effectiveOptions);
+        PdfImagePlacement placement = ResolveImagePlacement(image, effectiveOptions);
+
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        int nextObjectNumber = GetNextObjectNumber(objects);
+        PdfObjectId imageId = new(nextObjectNumber++, 0);
+        PdfObjectId resourcesId = new(nextObjectNumber++, 0);
+
+        PdfDictionaryObject imageDictionary = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("XObject")),
+            new PdfDictionaryEntry("Subtype", new PdfNameObject("Image")),
+            new PdfDictionaryEntry("Width", new PdfNumberObject(image.Width, isInteger: true)),
+            new PdfDictionaryEntry("Height", new PdfNumberObject(image.Height, isInteger: true)),
+            new PdfDictionaryEntry("ColorSpace", new PdfNameObject(image.ColorSpace)),
+            new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(image.BitsPerComponent, isInteger: true)),
+            new PdfDictionaryEntry("Filter", new PdfNameObject(image.Filter)),
+        ]);
+        PdfDictionaryObject resourcesDictionary = new(
+        [
+            new PdfDictionaryEntry(
+                "XObject",
+                new PdfDictionaryObject(
+                [
+                    new PdfDictionaryEntry("Im1", new PdfReferenceObject(imageId)),
+                ])),
+        ]);
+
+        objects.Add(new PdfIndirectObject(imageId, new PdfStreamObject(imageDictionary, image.EncodedBytes)));
+        objects.Add(new PdfIndirectObject(resourcesId, resourcesDictionary));
+
+        string imageContent = BuildImageContentStream(placement);
+        PdfStreamObject existingStream = RequireStreamObject(contentsReference.ObjectId, "Page contents");
+        PdfStreamObject updatedStream = new(existingStream.Dictionary, Encoding.ASCII.GetBytes(imageContent));
+        ReplaceObject(objects, contentsReference.ObjectId, updatedStream);
+
+        PdfDictionaryObject pageDictionary = RequireDictionaryObject(page.ObjectId, "Page");
+        PdfDictionaryObject updatedPage = ReplaceDictionaryEntries(
+            pageDictionary,
+            new PdfDictionaryEntry("Resources", new PdfReferenceObject(resourcesId)));
+        ReplaceObject(objects, page.ObjectId, updatedPage);
+
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
+        _model = PdfDocumentModelBuilder.Build(_file);
+
+        MarkDirty(page.ObjectId);
+        MarkDirty(contentsReference.ObjectId);
+        MarkDirty(imageId);
+        MarkDirty(resourcesId);
+    }
+
+    public void ReplacePageImage(int pageIndex, string imagePath, PdfImageOptions? options = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
+        ReplacePageImage(pageIndex, File.ReadAllBytes(imagePath), options);
+    }
+
     public void ReplacePageText(int pageIndex, string text, PdfTextOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -3176,6 +3298,68 @@ public sealed class PdfDocument
         PdfTextOptions effectiveOptions = options ?? _defaultTextOptions;
         ValidateTextOptions(effectiveOptions);
         return effectiveOptions;
+    }
+
+    private static PdfImagePlacement ResolveImagePlacement(PdfRasterImage image, PdfImageOptions options)
+    {
+        double imageWidth = image.Width;
+        double imageHeight = image.Height;
+        double targetWidth;
+        double targetHeight;
+
+        if (options.Width is null && options.Height is null)
+        {
+            targetWidth = imageWidth;
+            targetHeight = imageHeight;
+        }
+        else if (options.Width is double width && options.Height is null)
+        {
+            targetWidth = width;
+            targetHeight = width * (imageHeight / imageWidth);
+        }
+        else if (options.Width is null && options.Height is double height)
+        {
+            targetHeight = height;
+            targetWidth = height * (imageWidth / imageHeight);
+        }
+        else
+        {
+            targetWidth = options.Width!.Value;
+            targetHeight = options.Height!.Value;
+            if (options.PreserveAspectRatio)
+            {
+                double widthScale = targetWidth / imageWidth;
+                double heightScale = targetHeight / imageHeight;
+                double scale = Math.Min(widthScale, heightScale);
+                targetWidth = imageWidth * scale;
+                targetHeight = imageHeight * scale;
+            }
+        }
+
+        double x = options.X;
+        double y = options.Y;
+        if (options.PreserveAspectRatio && options.Width is not null && options.Height is not null)
+        {
+            x += (options.Width.Value - targetWidth) / 2;
+            y += (options.Height.Value - targetHeight) / 2;
+        }
+
+        return new PdfImagePlacement(x, y, targetWidth, targetHeight);
+    }
+
+    private static string BuildImageContentStream(PdfImagePlacement placement)
+    {
+        StringBuilder builder = new();
+        builder.Append("q ");
+        builder.Append(placement.Width.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.Append(" 0 0 ");
+        builder.Append(placement.Height.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.Append(' ');
+        builder.Append(placement.X.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.Append(' ');
+        builder.Append(placement.Y.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.Append(" cm /Im1 Do Q");
+        return builder.ToString();
     }
 
     private static string ResolveEmbeddedFontPath(string text, PdfTextOptions options)
@@ -5218,6 +5402,29 @@ public sealed class PdfDocument
         if (!double.IsFinite(options.Height) || options.Height <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Page height must be a positive finite number.");
+        }
+    }
+
+    private static void ValidateImageOptions(PdfImageOptions options)
+    {
+        if (!double.IsFinite(options.X))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Image X position must be finite.");
+        }
+
+        if (!double.IsFinite(options.Y))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Image Y position must be finite.");
+        }
+
+        if (options.Width is double width && (!double.IsFinite(width) || width <= 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Image Width must be a positive finite number when provided.");
+        }
+
+        if (options.Height is double height && (!double.IsFinite(height) || height <= 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Image Height must be a positive finite number when provided.");
         }
     }
 

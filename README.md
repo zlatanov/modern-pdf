@@ -7,6 +7,7 @@ Current implemented scope includes:
 - create/open/save PDF documents
 - text extraction
 - page/content editing
+- JPEG image page authoring and replacement
 - destructive text redaction
 - password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, `V=4 / R=4 / 128-bit AES`, and `V=5 / R=6 / 256-bit AES`
 - detached digital signatures (callback-based CMS embedding with ByteRange patching)
@@ -92,6 +93,16 @@ textOptions: new PdfTextOptions
     TrueTypeFontPath = @"C:\fonts\MyFont.ttf",
     FallbackTrueTypeFontPaths = [@"C:\fonts\Fallback.ttf"],
 });
+```
+
+## Image pages (JPEG)
+
+You can add a JPEG image as a page or replace an existing page with a JPEG image:
+
+```csharp
+PdfDocument document = PdfDocument.Create();
+document.AddImagePage(@"C:\images\cover.jpg");
+document.ReplacePageImage(0, @"C:\images\updated-cover.jpg");
 ```
 
 ## Save cross-reference style
@@ -193,5 +204,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, `/adbe.pkcs7.sha1`, and `/ETSI.RFC3161`
 - revocation validation supports online retrieval (`RevocationCheckMode = PdfRevocationCheckMode.Online`) and offline DSS OCSP/CRL evidence when embedded in `/DSS`; offline OCSP validation includes delegated responders when `id-kp-OCSPSigning` is present and the responder certificate chains to the OCSP certificate issuer, and enforces signature-scoped `/DSS /VRI` evidence matching; deterministic offline mode remains the default (`Offline`)
+- image APIs currently support JPEG input only
 - security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, `V=4 / R=4`, and `V=5 / R=6`
 - explicit `PdfSaveOptions.Security` with `PdfSaveMode.Incremental` is supported only for documents opened from encrypted PDFs, and must match the opened security context (password/profile/permissions)
