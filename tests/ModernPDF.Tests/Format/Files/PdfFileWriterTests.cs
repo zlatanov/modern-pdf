@@ -1,4 +1,5 @@
 using System.Text;
+using ModernPDF.Format;
 using ModernPDF.Format.Files;
 using ModernPDF.Format.Objects;
 using ModernPDF.Primitives;
@@ -133,6 +134,39 @@ public sealed class PdfFileWriterTests
         byte[] incrementalBytes = PdfFileWriter.WriteIncremental(file, [new PdfObjectId(1, 0)]);
 
         Assert.Equal(fullBytes, incrementalBytes);
+    }
+
+    [Fact]
+    public void WriteIncrementalFallsBackToFullWhenXrefMetadataIsOutOfRange()
+    {
+        PdfFile original = CreateMinimalFile();
+        byte[] fullBytes = PdfFileWriter.Write(original);
+        PdfFile parsed = PdfFileReader.Read(fullBytes);
+        Dictionary<int, PdfXrefEntry> invalidEntries = new(parsed.XrefEntries)
+        {
+            [1] = new PdfXrefEntry(999_999, 0),
+        };
+
+        PdfFile invalidMetadataFile = new(
+            parsed.Version,
+            parsed.Objects,
+            parsed.Trailer,
+            parsed.SourceBytes,
+            parsed.StartXrefOffset,
+            invalidEntries);
+
+        byte[] incrementalBytes = PdfFileWriter.WriteIncremental(invalidMetadataFile, [new PdfObjectId(1, 0)]);
+        Assert.Equal(fullBytes, incrementalBytes);
+    }
+
+    [Fact]
+    public void WriteIncrementalRejectsDirtyObjectThatDoesNotExistInDocument()
+    {
+        PdfFile original = CreateMinimalFile();
+        byte[] fullBytes = PdfFileWriter.Write(original);
+        PdfFile parsed = PdfFileReader.Read(fullBytes);
+
+        Assert.Throws<PdfFormatException>(() => PdfFileWriter.WriteIncremental(parsed, [new PdfObjectId(999, 0)]));
     }
 
     private static PdfFile CreateMinimalFile()

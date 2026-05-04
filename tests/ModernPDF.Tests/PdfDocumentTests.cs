@@ -118,6 +118,42 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void SaveWithIncrementalModeSupportsMultipleRevisions()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("v0");
+        byte[] baseline = document.Save();
+
+        PdfDocument revision1 = PdfDocument.Open(baseline);
+        revision1.ReplacePageText(0, "v1");
+        byte[] bytesV1 = revision1.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental });
+
+        PdfDocument revision2 = PdfDocument.Open(bytesV1);
+        revision2.ReplacePageText(0, "v2");
+        byte[] bytesV2 = revision2.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental });
+
+        Assert.True(bytesV2.Length > bytesV1.Length);
+        Assert.Equal(bytesV1, bytesV2.Take(bytesV1.Length).ToArray());
+        Assert.Equal(2, Encoding.ASCII.GetString(bytesV2).Split("/Prev", StringSplitOptions.None).Length - 1);
+        Assert.Equal("v2", PdfDocument.Open(bytesV2).ExtractText());
+    }
+
+    [Fact]
+    public void SaveWithIncrementalModeAndSecurityOptionsIsNotSupported()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("x");
+
+        Assert.Throws<NotSupportedException>(
+            () => document.Save(
+                new PdfSaveOptions
+                {
+                    Mode = PdfSaveMode.Incremental,
+                    Security = new PdfSecurityOptions { UserPassword = "pw" },
+                }));
+    }
+
+    [Fact]
     public void SaveWithSecurityOptionsThrowsUntilImplemented()
     {
         PdfDocument document = PdfDocument.Create();

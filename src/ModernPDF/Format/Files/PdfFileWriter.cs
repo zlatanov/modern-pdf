@@ -47,16 +47,26 @@ internal static class PdfFileWriter
         ArgumentNullException.ThrowIfNull(file);
         ArgumentNullException.ThrowIfNull(dirtyObjectIds);
 
-        if (file.SourceBytes is null
-            || !file.StartXrefOffset.HasValue
-            || file.XrefEntries.Count == 0)
+        if (!HasUsableIncrementalMetadata(file))
         {
             return Write(file);
         }
 
+        byte[] sourceBytes = file.SourceBytes!;
+        int previousXrefOffset = file.StartXrefOffset!.Value;
+
         if (dirtyObjectIds.Count == 0)
         {
-            return file.SourceBytes.ToArray();
+            return sourceBytes.ToArray();
+        }
+
+        HashSet<PdfObjectId> currentObjectIds = [.. file.Objects.Select(static objectItem => objectItem.ObjectId)];
+        foreach (PdfObjectId dirtyObjectId in dirtyObjectIds)
+        {
+            if (!currentObjectIds.Contains(dirtyObjectId))
+            {
+                throw new PdfFormatException($"Dirty object {dirtyObjectId} is not present in the current document object set.");
+            }
         }
 
         HashSet<PdfObjectId> dirtyIds = [.. dirtyObjectIds];
@@ -66,14 +76,14 @@ internal static class PdfFileWriter
             .ToList();
         if (objectsToRewrite.Count == 0)
         {
-            return file.SourceBytes.ToArray();
+            return sourceBytes.ToArray();
         }
 
         ByteBufferWriter writer = new();
-        writer.Write(file.SourceBytes.AsSpan());
-        if (file.SourceBytes.Length > 0)
+        writer.Write(sourceBytes.AsSpan());
+        if (sourceBytes.Length > 0)
         {
-            byte lastByte = file.SourceBytes[^1];
+            byte lastByte = sourceBytes[^1];
             if (lastByte is not (byte)'\n' and not (byte)'\r')
             {
                 WriteAscii(writer, "\n");
@@ -103,13 +113,19 @@ internal static class PdfFileWriter
         PdfDictionaryObject trailer = BuildIncrementalTrailer(
             file.Trailer,
             mergedEntries,
-            file.StartXrefOffset.Value);
+            previousXrefOffset);
         WriteAscii(writer, "trailer\n");
         writer.Write(PdfObjectWriter.Write(trailer));
         WriteAscii(writer, "\nstartxref\n");
         WriteAscii(writer, xrefOffset.ToString(CultureInfo.InvariantCulture));
         WriteAscii(writer, "\n%%EOF\n");
-        return writer.ToArray();
+        byte[] output = writer.ToArray();
+        if (!output.AsSpan(0, sourceBytes.Length).SequenceEqual(sourceBytes))
+        {
+            throw new PdfFormatException("Incremental writer modified bytes prior to append boundary.");
+        }
+
+        return output;
     }
 
     private static void WriteIndirectObjectValue(ByteBufferWriter writer, PdfObject value)
@@ -236,5 +252,33 @@ internal static class PdfFileWriter
     private static void WriteAscii(ByteBufferWriter writer, string value)
     {
         writer.Write(Encoding.ASCII.GetBytes(value));
+    }
+
+    private static bool HasUsableIncrementalMetadata(PdfFile file)
+    {
+        if (file.SourceBytes is null
+            || !file.StartXrefOffset.HasValue
+            || file.XrefEntries.Count == 0)
+        {
+            return false;
+        }
+
+        if (file.StartXrefOffset.Value < 0 || file.StartXrefOffset.Value >= file.SourceBytes.Length)
+        {
+            return false;
+        }
+
+        foreach ((int objectNumber, PdfXrefEntry entry) in file.XrefEntries)
+        {
+            if (objectNumber <= 0
+                || entry.Offset < 0
+                || entry.Offset >= file.SourceBytes.Length
+                || entry.Generation < 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

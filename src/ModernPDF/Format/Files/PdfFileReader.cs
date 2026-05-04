@@ -18,8 +18,8 @@ internal static class PdfFileReader
         string version = ParseVersion(text);
         int startXrefOffset = ParseStartXrefOffset(text);
 
-        Dictionary<int, PdfXrefEntry> xrefEntries = ParseCrossReferenceEntries(bytes, startXrefOffset);
-        PdfDictionaryObject trailer = ParseTrailer(bytes, startXrefOffset);
+        (Dictionary<int, PdfXrefEntry> xrefEntries, PdfDictionaryObject trailer) =
+            ParseCrossReferenceChain(bytes, startXrefOffset);
         List<PdfIndirectObject> objects = ParseIndirectObjects(bytes, xrefEntries);
 
         return new PdfFile(
@@ -29,6 +29,54 @@ internal static class PdfFileReader
             sourceBytes: bytes.ToArray(),
             startXrefOffset: startXrefOffset,
             xrefEntries: xrefEntries);
+    }
+
+    private static (Dictionary<int, PdfXrefEntry> Entries, PdfDictionaryObject Trailer) ParseCrossReferenceChain(
+        ReadOnlySpan<byte> bytes,
+        int startXrefOffset)
+    {
+        HashSet<int> visitedOffsets = [];
+        List<(Dictionary<int, PdfXrefEntry> Entries, PdfDictionaryObject Trailer)> sections = [];
+
+        int currentOffset = startXrefOffset;
+        while (true)
+        {
+            if (currentOffset < 0 || currentOffset >= bytes.Length)
+            {
+                throw new PdfFormatException("Cross-reference offset is outside the PDF byte range.");
+            }
+
+            if (!visitedOffsets.Add(currentOffset))
+            {
+                throw new PdfFormatException("Cycle detected while traversing trailer /Prev chain.");
+            }
+
+            Dictionary<int, PdfXrefEntry> sectionEntries = ParseCrossReferenceEntries(bytes, currentOffset);
+            PdfDictionaryObject sectionTrailer = ParseTrailer(bytes, currentOffset);
+            sections.Add((sectionEntries, sectionTrailer));
+
+            if (!TryGetPrevOffset(sectionTrailer, out int prevOffset))
+            {
+                break;
+            }
+
+            currentOffset = prevOffset;
+        }
+
+        sections.Reverse();
+        Dictionary<int, PdfXrefEntry> mergedEntries = [];
+        PdfDictionaryObject mergedTrailer = new([]);
+        foreach ((Dictionary<int, PdfXrefEntry> sectionEntries, PdfDictionaryObject sectionTrailer) in sections)
+        {
+            foreach ((int objectNumber, PdfXrefEntry entry) in sectionEntries)
+            {
+                mergedEntries[objectNumber] = entry;
+            }
+
+            mergedTrailer = MergeDictionaries(mergedTrailer, sectionTrailer);
+        }
+
+        return (mergedEntries, mergedTrailer);
     }
 
     private static string ParseVersion(string text)
@@ -155,6 +203,44 @@ internal static class PdfFileReader
         PdfObject parsed = PdfObjectParser.ParseAscii(dictionaryText);
         return parsed as PdfDictionaryObject
             ?? throw new PdfFormatException("Trailer did not parse as a dictionary.");
+    }
+
+    private static bool TryGetPrevOffset(PdfDictionaryObject trailer, out int prevOffset)
+    {
+        PdfDictionaryEntry? prevEntry = trailer.Entries.FirstOrDefault(static entry => entry.Key == "Prev");
+        if (prevEntry is null)
+        {
+            prevOffset = 0;
+            return false;
+        }
+
+        if (prevEntry.Value is not PdfNumberObject prevNumber
+            || !prevNumber.IsInteger
+            || !double.IsFinite(prevNumber.Value)
+            || prevNumber.Value < 0)
+        {
+            throw new PdfFormatException("Trailer /Prev must be a non-negative integer.");
+        }
+
+        prevOffset = Convert.ToInt32(prevNumber.Value, CultureInfo.InvariantCulture);
+        return true;
+    }
+
+    private static PdfDictionaryObject MergeDictionaries(PdfDictionaryObject baseDictionary, PdfDictionaryObject overrides)
+    {
+        List<PdfDictionaryEntry> merged = [];
+        HashSet<string> overrideKeys = [.. overrides.Entries.Select(static entry => entry.Key)];
+
+        foreach (PdfDictionaryEntry entry in baseDictionary.Entries)
+        {
+            if (!overrideKeys.Contains(entry.Key))
+            {
+                merged.Add(entry);
+            }
+        }
+
+        merged.AddRange(overrides.Entries);
+        return new PdfDictionaryObject(merged);
     }
 
     private static int FindMatchingDictionaryEnd(string text, int dictionaryStart)

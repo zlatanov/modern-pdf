@@ -302,6 +302,74 @@ public sealed class PdfFileReaderTests
         Assert.Equal("DATA", System.Text.Encoding.ASCII.GetString(stream.Data.Span));
     }
 
+    [Fact]
+    public void ReadMergesHistoricalXrefEntriesViaPrevChain()
+    {
+        byte[] bytes = CreateSparseIncrementalPdf();
+
+        PdfFile parsed = PdfFileReader.Read(bytes);
+
+        Assert.Equal(2, parsed.Objects.Count);
+        Assert.True(parsed.XrefEntries.ContainsKey(1));
+        Assert.True(parsed.XrefEntries.ContainsKey(2));
+        PdfDictionaryEntry rootEntry = Assert.Single(parsed.Trailer.Entries, static entry => entry.Key == "Root");
+        PdfReferenceObject rootReference = Assert.IsType<PdfReferenceObject>(rootEntry.Value);
+        Assert.Equal(1, rootReference.ObjectId.ObjectNumber);
+
+        PdfDictionaryObject pagesDictionary = Assert.IsType<PdfDictionaryObject>(parsed.Objects.Single(static objectItem => objectItem.ObjectId.ObjectNumber == 2).Value);
+        PdfDictionaryEntry countEntry = Assert.Single(pagesDictionary.Entries, static entry => entry.Key == "Count");
+        PdfNumberObject count = Assert.IsType<PdfNumberObject>(countEntry.Value);
+        Assert.Equal(1, count.Value);
+    }
+
+    [Fact]
+    public void ReadRejectsTrailerPrevThatIsNotInteger()
+    {
+        byte[] bytes = CreateSparseIncrementalPdf();
+        string text = System.Text.Encoding.ASCII.GetString(bytes);
+        int prevIndex = text.LastIndexOf("/Prev ", StringComparison.Ordinal);
+        Assert.True(prevIndex >= 0, "Expected /Prev in incremental trailer.");
+        int valueStart = prevIndex + "/Prev ".Length;
+        int valueEnd = valueStart;
+        while (valueEnd < text.Length && char.IsAsciiDigit(text[valueEnd]))
+        {
+            valueEnd++;
+        }
+
+        string tampered = text[..valueStart] + "(bad)" + text[valueEnd..];
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(System.Text.Encoding.ASCII.GetBytes(tampered)));
+    }
+
+    [Fact]
+    public void ReadRejectsPrevCycles()
+    {
+        byte[] bytes = CreateSparseIncrementalPdf();
+        string text = System.Text.Encoding.ASCII.GetString(bytes);
+        const string marker = "startxref\n";
+        int markerIndex = text.LastIndexOf(marker, StringComparison.Ordinal);
+        Assert.True(markerIndex >= 0, "Expected last startxref marker.");
+        int numberStart = markerIndex + marker.Length;
+        int numberEnd = numberStart;
+        while (numberEnd < text.Length && char.IsAsciiDigit(text[numberEnd]))
+        {
+            numberEnd++;
+        }
+
+        string latestStartXref = text[numberStart..numberEnd];
+
+        int prevIndex = text.LastIndexOf("/Prev ", StringComparison.Ordinal);
+        Assert.True(prevIndex >= 0, "Expected /Prev in incremental trailer.");
+        int prevStart = prevIndex + "/Prev ".Length;
+        int prevEnd = prevStart;
+        while (prevEnd < text.Length && char.IsAsciiDigit(text[prevEnd]))
+        {
+            prevEnd++;
+        }
+
+        string tampered = text[..prevStart] + latestStartXref + text[prevEnd..];
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(System.Text.Encoding.ASCII.GetBytes(tampered)));
+    }
+
     private static PdfFile CreateMinimalFile()
     {
         PdfDictionaryObject catalog = new(
@@ -395,6 +463,39 @@ public sealed class PdfFileReaderTests
             + "%%EOF\n";
 
         return System.Text.Encoding.ASCII.GetBytes(prefix + objectSection + xrefSection);
+    }
+
+    private static byte[] CreateSparseIncrementalPdf()
+    {
+        const string header = "%PDF-2.0\n";
+        const string object1 = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+        const string object2V1 = "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n";
+
+        int object1Offset = System.Text.Encoding.ASCII.GetByteCount(header);
+        int object2V1Offset = object1Offset + System.Text.Encoding.ASCII.GetByteCount(object1);
+        int firstXrefOffset = object2V1Offset + System.Text.Encoding.ASCII.GetByteCount(object2V1);
+        string firstRevisionXref =
+            "xref\n0 3\n0000000000 65535 f \n"
+            + $"{object1Offset:D10} 00000 n \n"
+            + $"{object2V1Offset:D10} 00000 n \n"
+            + "trailer\n<< /Root 1 0 R /Size 3 >>\n"
+            + "startxref\n"
+            + $"{firstXrefOffset}\n"
+            + "%%EOF\n";
+
+        string firstRevision = header + object1 + object2V1 + firstRevisionXref;
+        const string object2V2 = "2 0 obj\n<< /Type /Pages /Kids [] /Count 1 >>\nendobj\n";
+        int object2V2Offset = System.Text.Encoding.ASCII.GetByteCount(firstRevision);
+        int secondXrefOffset = object2V2Offset + System.Text.Encoding.ASCII.GetByteCount(object2V2);
+        string secondRevisionXref =
+            "xref\n2 1\n"
+            + $"{object2V2Offset:D10} 00000 n \n"
+            + $"trailer\n<< /Size 3 /Prev {firstXrefOffset} >>\n"
+            + "startxref\n"
+            + $"{secondXrefOffset}\n"
+            + "%%EOF\n";
+
+        return System.Text.Encoding.ASCII.GetBytes(firstRevision + object2V2 + secondRevisionXref);
     }
 
     private static string BuildPdfWithTailOnlyAfterStartXref(string tail)
