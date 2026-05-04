@@ -8,7 +8,7 @@ Current implemented scope includes:
 - text extraction
 - page/content editing
 - JPEG/PNG image page authoring, replacement, and composition
-- shape drawing (line, rectangle, circle, ellipse, polygon, path) with stroke/fill options
+- shape drawing (line, rectangle, rounded rectangle, circle, ellipse, polygon, arc/sector, and path) with stroke/fill, gradients, blending, transforms, clipping, and ID-based replace/remove
 - destructive text redaction
 - password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, `V=4 / R=4 / 128-bit AES`, and `V=5 / R=6 / 256-bit AES`
 - detached digital signatures (callback-based CMS embedding with ByteRange patching)
@@ -144,6 +144,78 @@ document.AddPagePath(
         new PdfPathClosePath(),
     ],
     new PdfShapeOptions { FillColor = new PdfRgbColor(0.9, 0.8, 0.3), StrokeColor = null, FillRule = PdfShapeFillRule.EvenOdd });
+
+// gradients, transparency, and blend mode
+document.AddPageRoundedRectangle(
+    0,
+    24,
+    220,
+    180,
+    80,
+    16,
+    16,
+    new PdfShapeOptions
+    {
+        StrokeOpacity = 0.6,
+        FillOpacity = 0.35,
+        BlendMode = PdfBlendMode.Multiply,
+        FillLinearGradient = new PdfShapeLinearGradient
+        {
+            StartX = 24,
+            StartY = 220,
+            EndX = 204,
+            EndY = 300,
+            StartColor = new PdfRgbColor(1, 0.6, 0.2),
+            EndColor = new PdfRgbColor(0.2, 0.4, 1),
+        },
+    });
+
+// clipping and transforms
+document.AddPagePathTransformed(
+    0,
+    [
+        new PdfPathMoveTo(0, 0),
+        new PdfPathLineTo(40, 0),
+        new PdfPathLineTo(40, 40),
+        new PdfPathClosePath(),
+    ],
+    PdfShapeTransform.RotateAt(25, 120, 120),
+    new PdfShapeOptions { FillColor = new PdfRgbColor(0.2, 0.7, 0.3), StrokeColor = null });
+document.AddPagePathClipped(
+    0,
+    [
+        new PdfPathMoveTo(260, 60),
+        new PdfPathLineTo(340, 60),
+        new PdfPathLineTo(340, 140),
+        new PdfPathLineTo(260, 140),
+        new PdfPathClosePath(),
+    ],
+    [
+        new PdfPathMoveTo(240, 40),
+        new PdfPathLineTo(360, 160),
+    ]);
+
+// shape IDs for select/replace/remove
+document.AddPageSector(
+    0,
+    320,
+    240,
+    36,
+    20,
+    140,
+    new PdfShapeOptions { ShapeId = "badge-sector", FillColor = new PdfRgbColor(0.9, 0.3, 0.3), StrokeColor = null });
+IReadOnlyList<string> shapeIds = document.GetPageShapeIds(0);
+document.ReplacePageShape(
+    0,
+    "badge-sector",
+    [
+        new PdfPathMoveTo(300, 220),
+        new PdfPathLineTo(340, 220),
+        new PdfPathLineTo(340, 260),
+        new PdfPathClosePath(),
+    ],
+    new PdfShapeOptions { FillColor = new PdfRgbColor(0.3, 0.5, 0.9), StrokeColor = null });
+document.RemovePageShape(0, "badge-sector");
 ```
 
 ## Save cross-reference style
@@ -246,6 +318,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, `/adbe.pkcs7.sha1`, and `/ETSI.RFC3161`
 - revocation validation supports online retrieval (`RevocationCheckMode = PdfRevocationCheckMode.Online`) and offline DSS OCSP/CRL evidence when embedded in `/DSS`; offline OCSP validation includes delegated responders when `id-kp-OCSPSigning` is present and the responder certificate chains to the OCSP certificate issuer, and enforces signature-scoped `/DSS /VRI` evidence matching; deterministic offline mode remains the default (`Offline`)
 - image APIs currently support JPEG and PNG input, including alpha-channel PNG via soft masks (indexed-color and interlaced PNG remain unsupported)
-- shape APIs support line/rectangle/circle/ellipse/polygon/path with RGB stroke/fill, line cap/join/miter/dash, and even-odd fill rule; gradients, blend modes, and transparency state controls are not yet exposed
+- shape APIs include gradients, blending, opacity, transforms, clipping, and ID-based replace/remove, but replacement/removal currently targets shapes created with `ShapeId` markers rather than arbitrary pre-existing vector operators
 - security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, `V=4 / R=4`, and `V=5 / R=6`
 - explicit `PdfSaveOptions.Security` with `PdfSaveMode.Incremental` is supported only for documents opened from encrypted PDFs, and must match the opened security context (password/profile/permissions)

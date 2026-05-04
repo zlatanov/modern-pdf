@@ -2361,6 +2361,21 @@ public sealed class PdfDocument
         double Width,
         double Height);
 
+    private readonly record struct PdfShapeResourceNames(
+        string? GraphicsStateName,
+        string? PatternName);
+
+    private readonly record struct PdfPageResourceEntry(
+        string CategoryKey,
+        string ResourceName,
+        PdfObjectId ObjectId);
+
+    private readonly record struct PdfShapeResourceAllocation(
+        PdfShapeResourceNames Names,
+        List<PdfIndirectObject> ObjectsToAdd,
+        List<PdfPageResourceEntry> ResourceEntries,
+        List<PdfObjectId> DirtyObjectIds);
+
     private readonly record struct DssValidationEvidence(
         IReadOnlyList<X509Certificate2> Certificates,
         IReadOnlyList<CrlEvidence> Crls,
@@ -3044,8 +3059,10 @@ public sealed class PdfDocument
         PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
         ValidateShapeOptions(effectiveOptions, requireStroke: true);
 
-        string shapeContent = BuildLineContentStream(startX, startY, endX, endY, effectiveOptions);
-        AddPageRawContent(pageIndex, shapeContent);
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildLineContentStream(startX, startY, endX, endY, effectiveOptions, names));
     }
 
     public void AddPageRectangle(
@@ -3079,8 +3096,10 @@ public sealed class PdfDocument
         PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
         ValidateShapeOptions(effectiveOptions);
 
-        string shapeContent = BuildRectangleContentStream(x, y, width, height, effectiveOptions);
-        AddPageRawContent(pageIndex, shapeContent);
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildRectangleContentStream(x, y, width, height, effectiveOptions, names));
     }
 
     public void AddPageCircle(
@@ -3108,8 +3127,10 @@ public sealed class PdfDocument
         PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
         ValidateShapeOptions(effectiveOptions);
 
-        string shapeContent = BuildCircleContentStream(centerX, centerY, radius, effectiveOptions);
-        AddPageRawContent(pageIndex, shapeContent);
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildCircleContentStream(centerX, centerY, radius, effectiveOptions, names));
     }
 
     public void AddPageEllipse(
@@ -3143,8 +3164,10 @@ public sealed class PdfDocument
         PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
         ValidateShapeOptions(effectiveOptions);
 
-        string shapeContent = BuildEllipseContentStream(centerX, centerY, radiusX, radiusY, effectiveOptions);
-        AddPageRawContent(pageIndex, shapeContent);
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildEllipseContentStream(centerX, centerY, radiusX, radiusY, effectiveOptions, names));
     }
 
     public void AddPagePolygon(
@@ -3162,8 +3185,10 @@ public sealed class PdfDocument
         PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
         ValidateShapeOptions(effectiveOptions);
 
-        string shapeContent = BuildPolygonContentStream(points, closePath, effectiveOptions);
-        AddPageRawContent(pageIndex, shapeContent);
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildPolygonContentStream(points, closePath, effectiveOptions, names));
     }
 
     public void AddPagePath(
@@ -3175,8 +3200,232 @@ public sealed class PdfDocument
         PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
         ValidateShapeOptions(effectiveOptions);
 
-        string shapeContent = BuildPathContentStream(commands, effectiveOptions);
-        AddPageRawContent(pageIndex, shapeContent);
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildPathContentStream(commands, effectiveOptions, names));
+    }
+
+    public void AddPageRoundedRectangle(
+        int pageIndex,
+        double x,
+        double y,
+        double width,
+        double height,
+        double radiusX,
+        double radiusY,
+        PdfShapeOptions? options = null)
+    {
+        if (!double.IsFinite(x))
+        {
+            throw new ArgumentOutOfRangeException(nameof(x), "Rounded rectangle X must be finite.");
+        }
+
+        if (!double.IsFinite(y))
+        {
+            throw new ArgumentOutOfRangeException(nameof(y), "Rounded rectangle Y must be finite.");
+        }
+
+        if (!double.IsFinite(width) || width <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), "Rounded rectangle width must be a positive finite number.");
+        }
+
+        if (!double.IsFinite(height) || height <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(height), "Rounded rectangle height must be a positive finite number.");
+        }
+
+        if (!double.IsFinite(radiusX) || radiusX < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radiusX), "Rounded rectangle radiusX must be a non-negative finite number.");
+        }
+
+        if (!double.IsFinite(radiusY) || radiusY < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radiusY), "Rounded rectangle radiusY must be a non-negative finite number.");
+        }
+
+        PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
+        ValidateShapeOptions(effectiveOptions);
+
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildRoundedRectangleContentStream(x, y, width, height, radiusX, radiusY, effectiveOptions, names));
+    }
+
+    public void AddPageArc(
+        int pageIndex,
+        double centerX,
+        double centerY,
+        double radius,
+        double startAngleDegrees,
+        double endAngleDegrees,
+        PdfShapeOptions? options = null)
+    {
+        if (!double.IsFinite(centerX))
+        {
+            throw new ArgumentOutOfRangeException(nameof(centerX), "Arc center X must be finite.");
+        }
+
+        if (!double.IsFinite(centerY))
+        {
+            throw new ArgumentOutOfRangeException(nameof(centerY), "Arc center Y must be finite.");
+        }
+
+        if (!double.IsFinite(radius) || radius <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radius), "Arc radius must be a positive finite number.");
+        }
+
+        if (!double.IsFinite(startAngleDegrees))
+        {
+            throw new ArgumentOutOfRangeException(nameof(startAngleDegrees), "Arc start angle must be finite.");
+        }
+
+        if (!double.IsFinite(endAngleDegrees))
+        {
+            throw new ArgumentOutOfRangeException(nameof(endAngleDegrees), "Arc end angle must be finite.");
+        }
+
+        PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
+        if (effectiveOptions.FillColor is not null || effectiveOptions.FillLinearGradient is not null)
+        {
+            throw new ArgumentException("Arc is an open path and does not support fill styles.", nameof(options));
+        }
+
+        ValidateShapeOptions(effectiveOptions, requireStroke: true);
+        List<PdfPathCommand> commands = BuildArcPathCommands(centerX, centerY, radius, radius, startAngleDegrees, endAngleDegrees);
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildPathContentStream(commands, effectiveOptions, names));
+    }
+
+    public void AddPageSector(
+        int pageIndex,
+        double centerX,
+        double centerY,
+        double radius,
+        double startAngleDegrees,
+        double endAngleDegrees,
+        PdfShapeOptions? options = null)
+    {
+        if (!double.IsFinite(centerX))
+        {
+            throw new ArgumentOutOfRangeException(nameof(centerX), "Sector center X must be finite.");
+        }
+
+        if (!double.IsFinite(centerY))
+        {
+            throw new ArgumentOutOfRangeException(nameof(centerY), "Sector center Y must be finite.");
+        }
+
+        if (!double.IsFinite(radius) || radius <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radius), "Sector radius must be a positive finite number.");
+        }
+
+        if (!double.IsFinite(startAngleDegrees))
+        {
+            throw new ArgumentOutOfRangeException(nameof(startAngleDegrees), "Sector start angle must be finite.");
+        }
+
+        if (!double.IsFinite(endAngleDegrees))
+        {
+            throw new ArgumentOutOfRangeException(nameof(endAngleDegrees), "Sector end angle must be finite.");
+        }
+
+        PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
+        ValidateShapeOptions(effectiveOptions);
+
+        List<PdfPathCommand> commands = BuildArcPathCommands(centerX, centerY, radius, radius, startAngleDegrees, endAngleDegrees);
+        commands.Add(new PdfPathLineTo(centerX, centerY));
+        commands.Add(new PdfPathClosePath());
+
+        AddPageShape(
+            pageIndex,
+            effectiveOptions,
+            names => BuildPathContentStream(commands, effectiveOptions, names));
+    }
+
+    public void AddPagePathTransformed(
+        int pageIndex,
+        IReadOnlyList<PdfPathCommand> commands,
+        PdfShapeTransform transform,
+        PdfShapeOptions? options = null)
+    {
+        PdfShapeOptions mergedOptions = CloneShapeOptions(options ?? new PdfShapeOptions(), transform: transform);
+        AddPagePath(pageIndex, commands, mergedOptions);
+    }
+
+    public void AddPagePathClipped(
+        int pageIndex,
+        IReadOnlyList<PdfPathCommand> clipPath,
+        IReadOnlyList<PdfPathCommand> commands,
+        PdfShapeOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(clipPath);
+        PdfShapeOptions mergedOptions = CloneShapeOptions(options ?? new PdfShapeOptions(), clipPath: clipPath);
+        AddPagePath(pageIndex, commands, mergedOptions);
+    }
+
+    public IReadOnlyList<string> GetPageShapeIds(int pageIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+
+        PdfPageModel page = _model.Pages[pageIndex];
+        HashSet<string> seen = [];
+        List<string> ids = [];
+        foreach (PdfObjectId contentId in EnumerateContentStreamReferences(page.Contents))
+        {
+            PdfStreamObject stream = RequireStreamObject(contentId, "Page contents");
+            string contentText = Encoding.ASCII.GetString(stream.Data.Span);
+            foreach (string shapeId in EnumerateShapeMarkers(contentText))
+            {
+                if (seen.Add(shapeId))
+                {
+                    ids.Add(shapeId);
+                }
+            }
+        }
+
+        return ids;
+    }
+
+    public void RemovePageShape(int pageIndex, string shapeId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(shapeId);
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+
+        PdfPageModel page = _model.Pages[pageIndex];
+        PdfObjectId contentId = FindShapeContentStreamId(page, shapeId);
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        PdfStreamObject existingStream = RequireStreamObject(contentId, "Page shape contents");
+        ReplaceObject(objects, contentId, new PdfStreamObject(existingStream.Dictionary, ReadOnlyMemory<byte>.Empty));
+
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
+        _model = PdfDocumentModelBuilder.Build(_file);
+
+        MarkDirty(contentId);
+        MarkDirty(page.ObjectId);
+    }
+
+    public void ReplacePageShape(int pageIndex, string shapeId, IReadOnlyList<PdfPathCommand> commands, PdfShapeOptions? options = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(shapeId);
+        RemovePageShape(pageIndex, shapeId);
+        PdfShapeOptions mergedOptions = CloneShapeOptions(options ?? new PdfShapeOptions(), shapeId: shapeId);
+        AddPagePath(pageIndex, commands, mergedOptions);
     }
 
     public void ReplacePageText(int pageIndex, string text, PdfTextOptions? options = null)
@@ -3629,20 +3878,19 @@ public sealed class PdfDocument
         double startY,
         double endX,
         double endY,
-        PdfShapeOptions options)
+        PdfShapeOptions options,
+        PdfShapeResourceNames resourceNames)
     {
-        StringBuilder builder = new();
-        builder.Append("q ");
-        AppendShapeGraphicsState(builder, options);
-        AppendPdfNumber(builder, startX);
-        builder.Append(' ');
-        AppendPdfNumber(builder, startY);
-        builder.Append(" m ");
-        AppendPdfNumber(builder, endX);
-        builder.Append(' ');
-        AppendPdfNumber(builder, endY);
-        builder.Append(" l S Q");
-        return builder.ToString();
+        StringBuilder pathBuilder = new();
+        AppendPdfNumber(pathBuilder, startX);
+        pathBuilder.Append(' ');
+        AppendPdfNumber(pathBuilder, startY);
+        pathBuilder.Append(" m ");
+        AppendPdfNumber(pathBuilder, endX);
+        pathBuilder.Append(' ');
+        AppendPdfNumber(pathBuilder, endY);
+        pathBuilder.Append(" l");
+        return BuildShapeContentStream(pathBuilder.ToString(), options, resourceNames);
     }
 
     private static string BuildRectangleContentStream(
@@ -3650,31 +3898,29 @@ public sealed class PdfDocument
         double y,
         double width,
         double height,
-        PdfShapeOptions options)
+        PdfShapeOptions options,
+        PdfShapeResourceNames resourceNames)
     {
-        StringBuilder builder = new();
-        builder.Append("q ");
-        AppendShapeGraphicsState(builder, options);
-        AppendPdfNumber(builder, x);
-        builder.Append(' ');
-        AppendPdfNumber(builder, y);
-        builder.Append(' ');
-        AppendPdfNumber(builder, width);
-        builder.Append(' ');
-        AppendPdfNumber(builder, height);
-        builder.Append(" re ");
-        builder.Append(ResolveShapePaintOperator(options));
-        builder.Append(" Q");
-        return builder.ToString();
+        StringBuilder pathBuilder = new();
+        AppendPdfNumber(pathBuilder, x);
+        pathBuilder.Append(' ');
+        AppendPdfNumber(pathBuilder, y);
+        pathBuilder.Append(' ');
+        AppendPdfNumber(pathBuilder, width);
+        pathBuilder.Append(' ');
+        AppendPdfNumber(pathBuilder, height);
+        pathBuilder.Append(" re");
+        return BuildShapeContentStream(pathBuilder.ToString(), options, resourceNames);
     }
 
     private static string BuildCircleContentStream(
         double centerX,
         double centerY,
         double radius,
-        PdfShapeOptions options)
+        PdfShapeOptions options,
+        PdfShapeResourceNames resourceNames)
     {
-        return BuildEllipseContentStream(centerX, centerY, radius, radius, options);
+        return BuildEllipseContentStream(centerX, centerY, radius, radius, options, resourceNames);
     }
 
     private static string BuildEllipseContentStream(
@@ -3682,56 +3928,107 @@ public sealed class PdfDocument
         double centerY,
         double radiusX,
         double radiusY,
-        PdfShapeOptions options)
+        PdfShapeOptions options,
+        PdfShapeResourceNames resourceNames)
     {
-        StringBuilder builder = new();
-        builder.Append("q ");
-        AppendShapeGraphicsState(builder, options);
-        AppendEllipsePath(builder, centerX, centerY, radiusX, radiusY);
-        builder.Append(ResolveShapePaintOperator(options));
-        builder.Append(" Q");
-        return builder.ToString();
+        StringBuilder pathBuilder = new();
+        AppendEllipsePath(pathBuilder, centerX, centerY, radiusX, radiusY);
+        return BuildShapeContentStream(pathBuilder.ToString(), options, resourceNames);
     }
 
     private static string BuildPolygonContentStream(
         IReadOnlyList<PdfShapePoint> points,
         bool closePath,
-        PdfShapeOptions options)
+        PdfShapeOptions options,
+        PdfShapeResourceNames resourceNames)
     {
-        StringBuilder builder = new();
-        builder.Append("q ");
-        AppendShapeGraphicsState(builder, options);
-        AppendPdfNumber(builder, points[0].X);
-        builder.Append(' ');
-        AppendPdfNumber(builder, points[0].Y);
-        builder.Append(" m ");
+        StringBuilder pathBuilder = new();
+        AppendPdfNumber(pathBuilder, points[0].X);
+        pathBuilder.Append(' ');
+        AppendPdfNumber(pathBuilder, points[0].Y);
+        pathBuilder.Append(" m ");
         for (int index = 1; index < points.Count; index++)
         {
             PdfShapePoint point = points[index];
-            AppendPdfNumber(builder, point.X);
-            builder.Append(' ');
-            AppendPdfNumber(builder, point.Y);
-            builder.Append(" l ");
+            AppendPdfNumber(pathBuilder, point.X);
+            pathBuilder.Append(' ');
+            AppendPdfNumber(pathBuilder, point.Y);
+            pathBuilder.Append(" l ");
         }
 
         if (closePath)
         {
-            builder.Append("h ");
+            pathBuilder.Append('h');
+        }
+        else if (pathBuilder.Length > 0 && pathBuilder[pathBuilder.Length - 1] == ' ')
+        {
+            pathBuilder.Length--;
         }
 
+        return BuildShapeContentStream(pathBuilder.ToString(), options, resourceNames);
+    }
+
+    private static string BuildPathContentStream(
+        IReadOnlyList<PdfPathCommand> commands,
+        PdfShapeOptions options,
+        PdfShapeResourceNames resourceNames)
+    {
+        return BuildShapeContentStream(BuildPathCommandString(commands), options, resourceNames);
+    }
+
+    private static string BuildRoundedRectangleContentStream(
+        double x,
+        double y,
+        double width,
+        double height,
+        double radiusX,
+        double radiusY,
+        PdfShapeOptions options,
+        PdfShapeResourceNames resourceNames)
+    {
+        StringBuilder pathBuilder = new();
+        AppendRoundedRectanglePath(pathBuilder, x, y, width, height, radiusX, radiusY);
+        return BuildShapeContentStream(pathBuilder.ToString(), options, resourceNames);
+    }
+
+    private static string BuildShapeContentStream(string pathCommands, PdfShapeOptions options, PdfShapeResourceNames resourceNames)
+    {
+        StringBuilder builder = new();
+        builder.Append("q ");
+
+        if (!options.Transform.Equals(PdfShapeTransform.Identity))
+        {
+            AppendPdfNumber(builder, options.Transform.A);
+            builder.Append(' ');
+            AppendPdfNumber(builder, options.Transform.B);
+            builder.Append(' ');
+            AppendPdfNumber(builder, options.Transform.C);
+            builder.Append(' ');
+            AppendPdfNumber(builder, options.Transform.D);
+            builder.Append(' ');
+            AppendPdfNumber(builder, options.Transform.E);
+            builder.Append(' ');
+            AppendPdfNumber(builder, options.Transform.F);
+            builder.Append(" cm ");
+        }
+
+        if (options.ClipPath is { Count: > 0 } clipPath)
+        {
+            builder.Append(BuildPathCommandString(clipPath));
+            builder.Append(" W n ");
+        }
+
+        AppendShapeGraphicsState(builder, options, resourceNames);
+        builder.Append(pathCommands.TrimEnd());
+        builder.Append(' ');
         builder.Append(ResolveShapePaintOperator(options));
         builder.Append(" Q");
         return builder.ToString();
     }
 
-    private static string BuildPathContentStream(
-        IReadOnlyList<PdfPathCommand> commands,
-        PdfShapeOptions options)
+    private static string BuildPathCommandString(IReadOnlyList<PdfPathCommand> commands)
     {
         StringBuilder builder = new();
-        builder.Append("q ");
-        AppendShapeGraphicsState(builder, options);
-
         bool subpathStarted = false;
         for (int index = 0; index < commands.Count; index++)
         {
@@ -3788,8 +4085,11 @@ public sealed class PdfDocument
             }
         }
 
-        builder.Append(ResolveShapePaintOperator(options));
-        builder.Append(" Q");
+        if (builder.Length > 0 && builder[builder.Length - 1] == ' ')
+        {
+            builder.Length--;
+        }
+
         return builder.ToString();
     }
 
@@ -3861,7 +4161,93 @@ public sealed class PdfDocument
         builder.Append(" c h ");
     }
 
-    private static void AppendShapeGraphicsState(StringBuilder builder, PdfShapeOptions options)
+    private static void AppendRoundedRectanglePath(StringBuilder builder, double x, double y, double width, double height, double radiusX, double radiusY)
+    {
+        const double BezierControlRatio = 0.5522847498307936d;
+        double rx = Math.Min(radiusX, width / 2d);
+        double ry = Math.Min(radiusY, height / 2d);
+        double kx = rx * BezierControlRatio;
+        double ky = ry * BezierControlRatio;
+
+        AppendPdfNumber(builder, x + rx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y);
+        builder.Append(" m ");
+
+        AppendPdfNumber(builder, x + width - rx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y);
+        builder.Append(" l ");
+
+        AppendPdfNumber(builder, x + width - rx + kx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y);
+        builder.Append(' ');
+        AppendPdfNumber(builder, x + width);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + ry - ky);
+        builder.Append(' ');
+        AppendPdfNumber(builder, x + width);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + ry);
+        builder.Append(" c ");
+
+        AppendPdfNumber(builder, x + width);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + height - ry);
+        builder.Append(" l ");
+
+        AppendPdfNumber(builder, x + width);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + height - ry + ky);
+        builder.Append(' ');
+        AppendPdfNumber(builder, x + width - rx + kx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + height);
+        builder.Append(' ');
+        AppendPdfNumber(builder, x + width - rx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + height);
+        builder.Append(" c ");
+
+        AppendPdfNumber(builder, x + rx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + height);
+        builder.Append(" l ");
+
+        AppendPdfNumber(builder, x + rx - kx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + height);
+        builder.Append(' ');
+        AppendPdfNumber(builder, x);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + height - ry + ky);
+        builder.Append(' ');
+        AppendPdfNumber(builder, x);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + height - ry);
+        builder.Append(" c ");
+
+        AppendPdfNumber(builder, x);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + ry);
+        builder.Append(" l ");
+
+        AppendPdfNumber(builder, x);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y + ry - ky);
+        builder.Append(' ');
+        AppendPdfNumber(builder, x + rx - kx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y);
+        builder.Append(' ');
+        AppendPdfNumber(builder, x + rx);
+        builder.Append(' ');
+        AppendPdfNumber(builder, y);
+        builder.Append(" c h");
+    }
+
+    private static void AppendShapeGraphicsState(StringBuilder builder, PdfShapeOptions options, PdfShapeResourceNames resourceNames)
     {
         if (options.StrokeColor is PdfRgbColor strokeColor)
         {
@@ -3894,7 +4280,20 @@ public sealed class PdfDocument
             }
         }
 
-        if (options.FillColor is PdfRgbColor fillColor)
+        if (resourceNames.GraphicsStateName is string graphicsStateName)
+        {
+            builder.Append('/');
+            builder.Append(graphicsStateName);
+            builder.Append(" gs ");
+        }
+
+        if (resourceNames.PatternName is string patternName && options.FillLinearGradient is not null)
+        {
+            builder.Append("/Pattern cs /");
+            builder.Append(patternName);
+            builder.Append(" scn ");
+        }
+        else if (options.FillColor is PdfRgbColor fillColor)
         {
             AppendRgbColor(builder, fillColor);
             builder.Append(" rg ");
@@ -3918,7 +4317,7 @@ public sealed class PdfDocument
     private static string ResolveShapePaintOperator(PdfShapeOptions options)
     {
         bool stroke = options.StrokeColor is not null;
-        bool fill = options.FillColor is not null;
+        bool fill = options.FillColor is not null || options.FillLinearGradient is not null;
         return stroke
             ? fill
                 ? options.FillRule == PdfShapeFillRule.EvenOdd ? "B*" : "B"
@@ -4008,15 +4407,28 @@ public sealed class PdfDocument
 
     private string AllocateImageResourceName(PdfDictionaryObject resourcesDictionary)
     {
+        return AllocateResourceName(resourcesDictionary, "XObject", "Im");
+    }
+
+    private PdfDictionaryObject BuildResourcesDictionaryWithImage(PdfDictionaryObject resourcesDictionary, string imageResourceName, PdfObjectId imageId)
+    {
+        return BuildResourcesDictionaryWithEntries(
+            resourcesDictionary,
+            [new PdfPageResourceEntry("XObject", imageResourceName, imageId)],
+            "image composition");
+    }
+
+    private string AllocateResourceName(PdfDictionaryObject resourcesDictionary, string categoryKey, string prefix)
+    {
         HashSet<string> usedNames = [];
-        if (TryGetDictionaryEntry(resourcesDictionary, "XObject", out PdfObject? xObjectValue))
+        if (TryGetDictionaryEntry(resourcesDictionary, categoryKey, out PdfObject? categoryValue))
         {
-            if (!TryResolveDictionaryObject(xObjectValue!, out PdfDictionaryObject? xObjectDictionary))
+            if (!TryResolveDictionaryObject(categoryValue!, out PdfDictionaryObject? categoryDictionary))
             {
-                throw new NotSupportedException("Page /Resources /XObject must be a dictionary or dictionary reference for image composition.");
+                throw new NotSupportedException($"Page /Resources /{categoryKey} must be a dictionary or dictionary reference for resource composition.");
             }
 
-            foreach (PdfDictionaryEntry entry in xObjectDictionary!.Entries)
+            foreach (PdfDictionaryEntry entry in categoryDictionary!.Entries)
             {
                 usedNames.Add(entry.Key);
             }
@@ -4025,7 +4437,7 @@ public sealed class PdfDocument
         int index = 1;
         while (true)
         {
-            string candidate = $"Im{index.ToString(CultureInfo.InvariantCulture)}";
+            string candidate = $"{prefix}{index.ToString(CultureInfo.InvariantCulture)}";
             if (!usedNames.Contains(candidate))
             {
                 return candidate;
@@ -4035,26 +4447,317 @@ public sealed class PdfDocument
         }
     }
 
-    private PdfDictionaryObject BuildResourcesDictionaryWithImage(PdfDictionaryObject resourcesDictionary, string imageResourceName, PdfObjectId imageId)
+    private PdfDictionaryObject BuildResourcesDictionaryWithEntries(
+        PdfDictionaryObject resourcesDictionary,
+        IReadOnlyList<PdfPageResourceEntry> entriesToAdd,
+        string operationContext)
     {
-        List<PdfDictionaryEntry> xObjectEntries = [];
-        if (TryGetDictionaryEntry(resourcesDictionary, "XObject", out PdfObject? xObjectValue))
+        if (entriesToAdd.Count == 0)
         {
-            if (!TryResolveDictionaryObject(xObjectValue!, out PdfDictionaryObject? xObjectDictionary))
-            {
-                throw new NotSupportedException("Page /Resources /XObject must be a dictionary or dictionary reference for image composition.");
-            }
-
-            xObjectEntries.AddRange(xObjectDictionary!.Entries);
+            return resourcesDictionary;
         }
 
-        xObjectEntries.Add(new PdfDictionaryEntry(imageResourceName, new PdfReferenceObject(imageId)));
-        return ReplaceDictionaryEntries(
-            resourcesDictionary,
-            new PdfDictionaryEntry("XObject", new PdfDictionaryObject(xObjectEntries)));
+        PdfDictionaryObject updatedResources = resourcesDictionary;
+        foreach (IGrouping<string, PdfPageResourceEntry> categoryGroup in entriesToAdd.GroupBy(static entry => entry.CategoryKey, StringComparer.Ordinal))
+        {
+            List<PdfDictionaryEntry> categoryEntries = [];
+            if (TryGetDictionaryEntry(updatedResources, categoryGroup.Key, out PdfObject? categoryValue))
+            {
+                if (!TryResolveDictionaryObject(categoryValue!, out PdfDictionaryObject? categoryDictionary))
+                {
+                    throw new NotSupportedException($"Page /Resources /{categoryGroup.Key} must be a dictionary or dictionary reference for {operationContext}.");
+                }
+
+                categoryEntries.AddRange(categoryDictionary!.Entries);
+            }
+
+            foreach (PdfPageResourceEntry resourceEntry in categoryGroup)
+            {
+                categoryEntries.RemoveAll(existing => string.Equals(existing.Key, resourceEntry.ResourceName, StringComparison.Ordinal));
+                categoryEntries.Add(new PdfDictionaryEntry(resourceEntry.ResourceName, new PdfReferenceObject(resourceEntry.ObjectId)));
+            }
+
+            updatedResources = ReplaceDictionaryEntries(
+                updatedResources,
+                new PdfDictionaryEntry(categoryGroup.Key, new PdfDictionaryObject(categoryEntries)));
+        }
+
+        return updatedResources;
     }
 
-    private void AddPageRawContent(int pageIndex, string rawContentStream)
+    private void AddPageShape(int pageIndex, PdfShapeOptions options, Func<PdfShapeResourceNames, string> buildContent)
+    {
+        ArgumentNullException.ThrowIfNull(buildContent);
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+        PdfPageModel page = _model.Pages[pageIndex];
+        PdfShapeResourceAllocation resourceAllocation = CreateShapeResourceAllocation(page, options);
+        string shapeContent = buildContent(resourceAllocation.Names);
+        string wrappedContent = WrapShapeContentWithMarker(shapeContent, options.ShapeId);
+        AddPageRawContent(
+            pageIndex,
+            wrappedContent,
+            resourceAllocation.ObjectsToAdd,
+            resourceAllocation.ResourceEntries,
+            resourceAllocation.DirtyObjectIds);
+    }
+
+    private PdfShapeResourceAllocation CreateShapeResourceAllocation(PdfPageModel page, PdfShapeOptions options)
+    {
+        List<PdfIndirectObject> objectsToAdd = [];
+        List<PdfPageResourceEntry> resourceEntries = [];
+        List<PdfObjectId> dirtyObjectIds = [];
+
+        PdfDictionaryObject effectiveResources = ResolveEffectiveResourcesDictionary(page);
+        int nextObjectNumber = GetNextObjectNumber(_file.Objects);
+
+        string? graphicsStateName = null;
+        if (options.StrokeOpacity is not null || options.FillOpacity is not null || options.BlendMode != PdfBlendMode.Normal)
+        {
+            PdfObjectId graphicsStateId = new(nextObjectNumber++, 0);
+            graphicsStateName = AllocateResourceName(effectiveResources, "ExtGState", "GS");
+            PdfDictionaryObject graphicsStateDictionary = CreateShapeGraphicsStateDictionary(options);
+            objectsToAdd.Add(new PdfIndirectObject(graphicsStateId, graphicsStateDictionary));
+            resourceEntries.Add(new PdfPageResourceEntry("ExtGState", graphicsStateName, graphicsStateId));
+            dirtyObjectIds.Add(graphicsStateId);
+        }
+
+        string? patternName = null;
+        if (options.FillLinearGradient is PdfShapeLinearGradient gradient)
+        {
+            PdfObjectId patternId = new(nextObjectNumber++, 0);
+            patternName = AllocateResourceName(effectiveResources, "Pattern", "Pt");
+            PdfDictionaryObject patternDictionary = CreateLinearGradientPatternDictionary(gradient);
+            objectsToAdd.Add(new PdfIndirectObject(patternId, patternDictionary));
+            resourceEntries.Add(new PdfPageResourceEntry("Pattern", patternName, patternId));
+            dirtyObjectIds.Add(patternId);
+        }
+
+        return new PdfShapeResourceAllocation(
+            new PdfShapeResourceNames(graphicsStateName, patternName),
+            objectsToAdd,
+            resourceEntries,
+            dirtyObjectIds);
+    }
+
+    private static PdfDictionaryObject CreateShapeGraphicsStateDictionary(PdfShapeOptions options)
+    {
+        List<PdfDictionaryEntry> entries = [];
+        if (options.StrokeOpacity is double strokeOpacity)
+        {
+            entries.Add(new PdfDictionaryEntry("CA", new PdfNumberObject(strokeOpacity, isInteger: false)));
+        }
+
+        if (options.FillOpacity is double fillOpacity)
+        {
+            entries.Add(new PdfDictionaryEntry("ca", new PdfNumberObject(fillOpacity, isInteger: false)));
+        }
+
+        if (options.BlendMode != PdfBlendMode.Normal)
+        {
+            entries.Add(new PdfDictionaryEntry("BM", new PdfNameObject(MapBlendModeName(options.BlendMode))));
+        }
+
+        return new PdfDictionaryObject(entries);
+    }
+
+    private static PdfDictionaryObject CreateLinearGradientPatternDictionary(PdfShapeLinearGradient gradient)
+    {
+        PdfDictionaryObject interpolationFunction = new(
+        [
+            new PdfDictionaryEntry("FunctionType", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("Domain", new PdfArrayObject([new PdfNumberObject(0, isInteger: true), new PdfNumberObject(1, isInteger: true)])),
+            new PdfDictionaryEntry("C0", new PdfArrayObject([new PdfNumberObject(gradient.StartColor.Red, isInteger: false), new PdfNumberObject(gradient.StartColor.Green, isInteger: false), new PdfNumberObject(gradient.StartColor.Blue, isInteger: false)])),
+            new PdfDictionaryEntry("C1", new PdfArrayObject([new PdfNumberObject(gradient.EndColor.Red, isInteger: false), new PdfNumberObject(gradient.EndColor.Green, isInteger: false), new PdfNumberObject(gradient.EndColor.Blue, isInteger: false)])),
+            new PdfDictionaryEntry("N", new PdfNumberObject(1, isInteger: true)),
+        ]);
+
+        PdfDictionaryObject shading = new(
+        [
+            new PdfDictionaryEntry("ShadingType", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("ColorSpace", new PdfNameObject("DeviceRGB")),
+            new PdfDictionaryEntry(
+                "Coords",
+                new PdfArrayObject(
+                [
+                    new PdfNumberObject(gradient.StartX, isInteger: false),
+                    new PdfNumberObject(gradient.StartY, isInteger: false),
+                    new PdfNumberObject(gradient.EndX, isInteger: false),
+                    new PdfNumberObject(gradient.EndY, isInteger: false),
+                ])),
+            new PdfDictionaryEntry("Function", interpolationFunction),
+            new PdfDictionaryEntry("Extend", new PdfArrayObject([new PdfBooleanObject(true), new PdfBooleanObject(true)])),
+        ]);
+
+        return new PdfDictionaryObject(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Pattern")),
+            new PdfDictionaryEntry("PatternType", new PdfNumberObject(2, isInteger: true)),
+            new PdfDictionaryEntry("Shading", shading),
+        ]);
+    }
+
+    private static string MapBlendModeName(PdfBlendMode blendMode)
+    {
+        return blendMode switch
+        {
+            PdfBlendMode.Normal => "Normal",
+            PdfBlendMode.Multiply => "Multiply",
+            PdfBlendMode.Screen => "Screen",
+            PdfBlendMode.Overlay => "Overlay",
+            PdfBlendMode.Darken => "Darken",
+            PdfBlendMode.Lighten => "Lighten",
+            PdfBlendMode.ColorDodge => "ColorDodge",
+            PdfBlendMode.ColorBurn => "ColorBurn",
+            PdfBlendMode.HardLight => "HardLight",
+            PdfBlendMode.SoftLight => "SoftLight",
+            PdfBlendMode.Difference => "Difference",
+            PdfBlendMode.Exclusion => "Exclusion",
+            _ => throw new ArgumentOutOfRangeException(nameof(blendMode), "BlendMode contains an unsupported value."),
+        };
+    }
+
+    private static string WrapShapeContentWithMarker(string content, string? shapeId)
+    {
+        if (string.IsNullOrWhiteSpace(shapeId))
+        {
+            return content;
+        }
+
+        return $"%MP_SHAPE_BEGIN:{shapeId}\n{content}\n%MP_SHAPE_END:{shapeId}\n";
+    }
+
+    private PdfObjectId FindShapeContentStreamId(PdfPageModel page, string shapeId)
+    {
+        foreach (PdfObjectId contentId in EnumerateContentStreamReferences(page.Contents))
+        {
+            PdfStreamObject stream = RequireStreamObject(contentId, "Page contents");
+            string contentText = Encoding.ASCII.GetString(stream.Data.Span);
+            if (contentText.Contains($"%MP_SHAPE_BEGIN:{shapeId}", StringComparison.Ordinal))
+            {
+                return contentId;
+            }
+        }
+
+        throw new InvalidOperationException($"Shape '{shapeId}' was not found on page.");
+    }
+
+    private static IEnumerable<string> EnumerateShapeMarkers(string content)
+    {
+        const string token = "%MP_SHAPE_BEGIN:";
+        int index = 0;
+        while (index < content.Length)
+        {
+            int markerIndex = content.IndexOf(token, index, StringComparison.Ordinal);
+            if (markerIndex < 0)
+            {
+                yield break;
+            }
+
+            int valueStart = markerIndex + token.Length;
+            int valueEnd = content.IndexOf('\n', valueStart);
+            if (valueEnd < 0)
+            {
+                valueEnd = content.Length;
+            }
+
+            if (valueEnd > valueStart)
+            {
+                yield return content[valueStart..valueEnd].TrimEnd('\r');
+            }
+
+            index = valueEnd;
+        }
+    }
+
+    private static PdfShapeOptions CloneShapeOptions(
+        PdfShapeOptions source,
+        string? shapeId = null,
+        PdfShapeTransform? transform = null,
+        IReadOnlyList<PdfPathCommand>? clipPath = null)
+    {
+        return new PdfShapeOptions
+        {
+            StrokeColor = source.StrokeColor,
+            FillColor = source.FillColor,
+            StrokeWidth = source.StrokeWidth,
+            StrokeLineCap = source.StrokeLineCap,
+            StrokeLineJoin = source.StrokeLineJoin,
+            StrokeMiterLimit = source.StrokeMiterLimit,
+            StrokeDashPattern = source.StrokeDashPattern,
+            FillRule = source.FillRule,
+            StrokeOpacity = source.StrokeOpacity,
+            FillOpacity = source.FillOpacity,
+            BlendMode = source.BlendMode,
+            FillLinearGradient = source.FillLinearGradient,
+            Transform = transform ?? source.Transform,
+            ClipPath = clipPath ?? source.ClipPath,
+            ShapeId = shapeId ?? source.ShapeId,
+        };
+    }
+
+    private static List<PdfPathCommand> BuildArcPathCommands(
+        double centerX,
+        double centerY,
+        double radiusX,
+        double radiusY,
+        double startAngleDegrees,
+        double endAngleDegrees)
+    {
+        double sweepDegrees = endAngleDegrees - startAngleDegrees;
+        if (Math.Abs(sweepDegrees) < 0.0001d)
+        {
+            throw new ArgumentException("Arc span must be non-zero.", nameof(endAngleDegrees));
+        }
+
+        if (Math.Abs(sweepDegrees) > 360d)
+        {
+            sweepDegrees = Math.Sign(sweepDegrees) * 360d;
+        }
+
+        int segmentCount = (int)Math.Ceiling(Math.Abs(sweepDegrees) / 90d);
+        double segmentSweep = sweepDegrees / segmentCount;
+
+        List<PdfPathCommand> commands = [];
+        for (int segmentIndex = 0; segmentIndex < segmentCount; segmentIndex++)
+        {
+            double a0Degrees = startAngleDegrees + (segmentSweep * segmentIndex);
+            double a1Degrees = a0Degrees + segmentSweep;
+            double a0 = a0Degrees * Math.PI / 180d;
+            double a1 = a1Degrees * Math.PI / 180d;
+            double k = (4d / 3d) * Math.Tan((a1 - a0) / 4d);
+
+            double cos0 = Math.Cos(a0);
+            double sin0 = Math.Sin(a0);
+            double cos1 = Math.Cos(a1);
+            double sin1 = Math.Sin(a1);
+
+            double p0x = centerX + (radiusX * cos0);
+            double p0y = centerY + (radiusY * sin0);
+            double p3x = centerX + (radiusX * cos1);
+            double p3y = centerY + (radiusY * sin1);
+            double c1x = p0x - (k * radiusX * sin0);
+            double c1y = p0y + (k * radiusY * cos0);
+            double c2x = p3x + (k * radiusX * sin1);
+            double c2y = p3y - (k * radiusY * cos1);
+
+            if (segmentIndex == 0)
+            {
+                commands.Add(new PdfPathMoveTo(p0x, p0y));
+            }
+
+            commands.Add(new PdfPathCurveTo(c1x, c1y, c2x, c2y, p3x, p3y));
+        }
+
+        return commands;
+    }
+
+    private void AddPageRawContent(
+        int pageIndex,
+        string rawContentStream,
+        IReadOnlyList<PdfIndirectObject>? objectsToAdd = null,
+        IReadOnlyList<PdfPageResourceEntry>? resourceEntries = null,
+        IReadOnlyList<PdfObjectId>? additionalDirtyObjectIds = null)
     {
         ArgumentNullException.ThrowIfNull(rawContentStream);
         ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
@@ -4064,13 +4767,34 @@ public sealed class PdfDocument
         PdfDictionaryObject pageDictionary = RequireDictionaryObject(page.ObjectId, "Page");
 
         List<PdfIndirectObject> objects = [.. _file.Objects];
+        if (objectsToAdd is { Count: > 0 })
+        {
+            objects.AddRange(objectsToAdd);
+        }
+
+        PdfObject? resourcesReplacement = null;
+        PdfObjectId? resourcesId = null;
+        if (resourceEntries is { Count: > 0 })
+        {
+            PdfDictionaryObject effectiveResources = ResolveEffectiveResourcesDictionary(page);
+            PdfDictionaryObject mergedResources = BuildResourcesDictionaryWithEntries(effectiveResources, resourceEntries, "content composition");
+            resourcesId = new PdfObjectId(GetNextObjectNumber(objects), 0);
+            objects.Add(new PdfIndirectObject(resourcesId.Value, mergedResources));
+            resourcesReplacement = new PdfReferenceObject(resourcesId.Value);
+        }
+
         PdfObjectId appendedContentId = new(GetNextObjectNumber(objects), 0);
         objects.Add(new PdfIndirectObject(appendedContentId, new PdfStreamObject(new PdfDictionaryObject([]), Encoding.ASCII.GetBytes(rawContentStream))));
 
         PdfObject updatedContents = ComposeAppendedContentsValue(page.Contents, new PdfReferenceObject(appendedContentId));
-        PdfDictionaryObject updatedPage = ReplaceDictionaryEntries(
-            pageDictionary,
-            new PdfDictionaryEntry("Contents", updatedContents));
+        PdfDictionaryObject updatedPage = resourcesReplacement is null
+            ? ReplaceDictionaryEntries(
+                pageDictionary,
+                new PdfDictionaryEntry("Contents", updatedContents))
+            : ReplaceDictionaryEntries(
+                pageDictionary,
+                new PdfDictionaryEntry("Contents", updatedContents),
+                new PdfDictionaryEntry("Resources", resourcesReplacement));
         ReplaceObject(objects, page.ObjectId, updatedPage);
 
         _file = new PdfFile(
@@ -4084,6 +4808,18 @@ public sealed class PdfDocument
 
         MarkDirty(page.ObjectId);
         MarkDirty(appendedContentId);
+        if (resourcesId is PdfObjectId dirtyResourcesId)
+        {
+            MarkDirty(dirtyResourcesId);
+        }
+
+        if (additionalDirtyObjectIds is not null)
+        {
+            foreach (PdfObjectId objectId in additionalDirtyObjectIds)
+            {
+                MarkDirty(objectId);
+            }
+        }
     }
 
     private static PdfObject ComposeAppendedContentsValue(PdfObject? existingContents, PdfReferenceObject appendedContentReference)
@@ -6166,9 +6902,9 @@ public sealed class PdfDocument
     private static void ValidateShapeOptions(PdfShapeOptions options, bool requireStroke = false)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (options.StrokeColor is null && options.FillColor is null)
+        if (options.StrokeColor is null && options.FillColor is null && options.FillLinearGradient is null)
         {
-            throw new ArgumentException("At least one of StrokeColor or FillColor must be set.", nameof(options));
+            throw new ArgumentException("At least one of StrokeColor, FillColor, or FillLinearGradient must be set.", nameof(options));
         }
 
         if (requireStroke && options.StrokeColor is null)
@@ -6196,9 +6932,63 @@ public sealed class PdfDocument
             throw new ArgumentOutOfRangeException(nameof(options), "Shape FillRule contains an unsupported value.");
         }
 
+        if (!Enum.IsDefined(options.BlendMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Shape BlendMode contains an unsupported value.");
+        }
+
         if (options.StrokeColor is not null && (!double.IsFinite(options.StrokeMiterLimit) || options.StrokeMiterLimit <= 0))
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeMiterLimit must be a positive finite number when stroke is enabled.");
+        }
+
+        if (options.FillColor is not null && options.FillLinearGradient is not null)
+        {
+            throw new ArgumentException("Shape fill cannot define both FillColor and FillLinearGradient.", nameof(options));
+        }
+
+        if (options.StrokeOpacity is double strokeOpacity && (!double.IsFinite(strokeOpacity) || strokeOpacity < 0 || strokeOpacity > 1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeOpacity must be a finite number in the range [0, 1].");
+        }
+
+        if (options.FillOpacity is double fillOpacity && (!double.IsFinite(fillOpacity) || fillOpacity < 0 || fillOpacity > 1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Shape FillOpacity must be a finite number in the range [0, 1].");
+        }
+
+        if (options.FillLinearGradient is PdfShapeLinearGradient gradient)
+        {
+            if (!double.IsFinite(gradient.StartX)
+                || !double.IsFinite(gradient.StartY)
+                || !double.IsFinite(gradient.EndX)
+                || !double.IsFinite(gradient.EndY))
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), "Shape FillLinearGradient coordinates must be finite.");
+            }
+
+            if (gradient.StartX == gradient.EndX && gradient.StartY == gradient.EndY)
+            {
+                throw new ArgumentException("Shape FillLinearGradient start and end points must differ.", nameof(options));
+            }
+        }
+
+        if (options.ClipPath is { Count: > 0 } clipPath)
+        {
+            ValidatePathCommands(clipPath);
+        }
+
+        if (options.ShapeId is string shapeId)
+        {
+            if (string.IsNullOrWhiteSpace(shapeId))
+            {
+                throw new ArgumentException("ShapeId cannot be blank when provided.", nameof(options));
+            }
+
+            if (shapeId.Contains('\n', StringComparison.Ordinal) || shapeId.Contains('\r', StringComparison.Ordinal))
+            {
+                throw new ArgumentException("ShapeId cannot contain newline characters.", nameof(options));
+            }
         }
 
         if (options.StrokeColor is not null && options.StrokeDashPattern is PdfShapeDashPattern dashPattern)

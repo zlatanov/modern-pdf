@@ -17,4 +17,18 @@ public sealed class PdfShapeOptions
     public PdfShapeDashPattern? StrokeDashPattern { get; init; }
 
     public PdfShapeFillRule FillRule { get; init; } = PdfShapeFillRule.NonZero;
+
+    public double? StrokeOpacity { get; init; }
+
+    public double? FillOpacity { get; init; }
+
+    public PdfBlendMode BlendMode { get; init; } = PdfBlendMode.Normal;
+
+    public PdfShapeLinearGradient? FillLinearGradient { get; init; }
+
+    public PdfShapeTransform Transform { get; init; } = PdfShapeTransform.Identity;
+
+    public IReadOnlyList<PdfPathCommand>? ClipPath { get; init; }
+
+    public string? ShapeId { get; init; }
 }
