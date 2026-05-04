@@ -22,6 +22,7 @@ public sealed class PdfDocument
         "adbe.pkcs7.detached",
         "ETSI.CAdES.detached",
         "adbe.pkcs7.sha1",
+        "ETSI.RFC3161",
     ];
 
     private PdfFile _file;
@@ -647,7 +648,7 @@ public sealed class PdfDocument
                 signatureObjectNumber,
                 filter,
                 subFilter,
-                "Only CMS signatures with /SubFilter /adbe.pkcs7.detached, /ETSI.CAdES.detached, or /adbe.pkcs7.sha1 are currently supported.");
+                "Only CMS signatures with /SubFilter /adbe.pkcs7.detached, /ETSI.CAdES.detached, /adbe.pkcs7.sha1, or /ETSI.RFC3161 are currently supported.");
         }
 
         if (_file.SourceBytes is null)
@@ -676,7 +677,7 @@ public sealed class PdfDocument
 
         try
         {
-            SignedCms signedCms = ValidateCmsSignature(cmsSignatureBytes, signedPayload, subFilter!);
+            SignedCms signedCms = ValidateCmsSignature(cmsSignatureBytes, signedPayload, subFilter!, out DateTimeOffset? timestampSigningTime);
 
             if (signedCms.SignerInfos.Count == 0)
             {
@@ -688,7 +689,7 @@ public sealed class PdfDocument
             }
 
             List<string> diagnostics = [];
-            DateTimeOffset? signingTime = TryReadFirstSigningTime(signedCms);
+            DateTimeOffset? signingTime = timestampSigningTime ?? TryReadFirstSigningTime(signedCms);
             bool? signingTimeValid = null;
             bool? certificateChainValid = null;
             bool? revocationValid = null;
@@ -782,11 +783,13 @@ public sealed class PdfDocument
             diagnostics: reason is null ? null : [reason]);
     }
 
-    private static SignedCms ValidateCmsSignature(byte[] cmsSignatureBytes, byte[] signedPayload, string subFilter)
+    private static SignedCms ValidateCmsSignature(byte[] cmsSignatureBytes, byte[] signedPayload, string subFilter, out DateTimeOffset? timestampSigningTime)
     {
+        timestampSigningTime = null;
         return subFilter switch
         {
             "adbe.pkcs7.sha1" => ValidatePkcs7Sha1Signature(cmsSignatureBytes, signedPayload),
+            "ETSI.RFC3161" => ValidateRfc3161TimestampSignature(cmsSignatureBytes, signedPayload, out timestampSigningTime),
             _ => ValidateDetachedCmsSignature(cmsSignatureBytes, signedPayload),
         };
     }
@@ -822,6 +825,94 @@ public sealed class PdfDocument
         }
 
         return signedCms;
+    }
+
+    private static SignedCms ValidateRfc3161TimestampSignature(byte[] cmsSignatureBytes, byte[] signedPayload, out DateTimeOffset? timestampSigningTime)
+    {
+        SignedCms signedCms = new();
+        signedCms.Decode(cmsSignatureBytes);
+        if (signedCms.Detached)
+        {
+            throw new CryptographicException("RFC3161 timestamp CMS must include embedded TSTInfo content.");
+        }
+
+        signedCms.CheckSignature(verifySignatureOnly: true);
+        if (!string.Equals(signedCms.ContentInfo.ContentType.Value, "1.2.840.113549.1.9.16.1.4", StringComparison.Ordinal))
+        {
+            throw new CryptographicException("RFC3161 timestamp CMS content type must be id-ct-TSTInfo.");
+        }
+
+        byte[] tstInfoBytes = signedCms.ContentInfo.Content;
+        if (!TryReadRfc3161MessageImprint(tstInfoBytes, out string? hashAlgorithmOid, out byte[]? messageImprint, out DateTimeOffset generatedTime, out string? parseError))
+        {
+            throw new CryptographicException(parseError ?? "RFC3161 timestamp token TSTInfo payload is malformed.");
+        }
+
+        byte[] payloadDigest = ComputeDigestForOid(hashAlgorithmOid!, signedPayload);
+        if (!CryptographicOperations.FixedTimeEquals(payloadDigest, messageImprint!))
+        {
+            throw new CryptographicException("RFC3161 message imprint digest does not match the signed /ByteRange content.");
+        }
+
+        timestampSigningTime = generatedTime;
+        return signedCms;
+    }
+
+    private static bool TryReadRfc3161MessageImprint(
+        ReadOnlySpan<byte> tstInfoBytes,
+        out string? hashAlgorithmOid,
+        out byte[]? messageImprint,
+        out DateTimeOffset generatedTime,
+        out string? error)
+    {
+        hashAlgorithmOid = null;
+        messageImprint = null;
+        generatedTime = default;
+        error = null;
+
+        try
+        {
+            AsnReader reader = new(tstInfoBytes.ToArray(), AsnEncodingRules.DER);
+            AsnReader tstInfo = reader.ReadSequence();
+            _ = tstInfo.ReadInteger();
+            _ = tstInfo.ReadObjectIdentifier();
+
+            AsnReader messageImprintReader = tstInfo.ReadSequence();
+            AsnReader algorithmIdentifier = messageImprintReader.ReadSequence();
+            hashAlgorithmOid = algorithmIdentifier.ReadObjectIdentifier();
+            while (algorithmIdentifier.HasData)
+            {
+                _ = algorithmIdentifier.ReadEncodedValue();
+            }
+
+            messageImprint = messageImprintReader.ReadOctetString();
+            messageImprintReader.ThrowIfNotEmpty();
+
+            _ = tstInfo.ReadInteger();
+            generatedTime = tstInfo.ReadGeneralizedTime();
+
+            reader.ThrowIfNotEmpty();
+            return true;
+        }
+        catch (AsnContentException)
+        {
+            error = "RFC3161 timestamp token TSTInfo payload is malformed.";
+            return false;
+        }
+    }
+
+    private static byte[] ComputeDigestForOid(string hashAlgorithmOid, ReadOnlySpan<byte> payload)
+    {
+        return hashAlgorithmOid switch
+        {
+            "2.16.840.1.101.3.4.2.1" => SHA256.HashData(payload),
+            "2.16.840.1.101.3.4.2.2" => SHA384.HashData(payload),
+            "2.16.840.1.101.3.4.2.3" => SHA512.HashData(payload),
+#pragma warning disable CA5350 // RFC3161 compatibility may require SHA-1 message imprint verification
+            "1.3.14.3.2.26" => SHA1.HashData(payload),
+#pragma warning restore CA5350
+            _ => throw new CryptographicException($"RFC3161 timestamp token uses unsupported message imprint algorithm OID '{hashAlgorithmOid}'."),
+        };
     }
 
     private static DateTimeOffset? TryReadFirstSigningTime(SignedCms signedCms)

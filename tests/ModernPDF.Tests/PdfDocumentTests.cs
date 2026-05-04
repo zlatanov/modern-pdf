@@ -575,6 +575,71 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void ValidateDetachedSignaturesSupportsEtsiRfc3161SubFilter()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using X509Certificate2 certificate = CreateTestSigningCertificate(now.AddDays(-2), now.AddDays(2));
+
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("rfc3161-token");
+
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateRfc3161TimestampToken(payload.Span, certificate, now),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+                SubFilter = "ETSI.RFC3161",
+            });
+
+        PdfDetachedSignatureValidationResult result = Assert.Single(
+            PdfDocument.Open(signedBytes).ValidateDetachedSignatures(
+                new PdfDetachedSignatureValidationOptions
+                {
+                    VerifyCertificateChain = true,
+                    TrustedRoots = [certificate],
+                    RequireSigningTime = true,
+                }));
+
+        Assert.True(result.IsValid);
+        Assert.True(result.CryptographicallyValid);
+        Assert.True(result.TrustChecksPassed);
+        Assert.Equal(1, result.SignerCount);
+        Assert.Equal("ETSI.RFC3161", result.SubFilter);
+        Assert.True(result.SigningTimeValid);
+        Assert.NotNull(result.SigningTime);
+    }
+
+    [Fact]
+    public void ValidateDetachedSignaturesRejectsRfc3161MessageImprintMismatch()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using X509Certificate2 certificate = CreateTestSigningCertificate(now.AddDays(-2), now.AddDays(2));
+
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("rfc3161-mismatch");
+
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload =>
+            {
+                byte[] wrongPayload = payload.Span.ToArray();
+                wrongPayload[0] ^= 0x5A;
+                return CreateRfc3161TimestampToken(wrongPayload, certificate, now);
+            },
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+                SubFilter = "ETSI.RFC3161",
+            });
+
+        PdfDetachedSignatureValidationResult result = Assert.Single(PdfDocument.Open(signedBytes).ValidateDetachedSignatures());
+
+        Assert.False(result.IsValid);
+        Assert.False(result.CryptographicallyValid);
+        Assert.NotNull(result.FailureReason);
+        Assert.Contains("message imprint", result.FailureReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ValidateDetachedSignaturesRejectsInvalidPkcs7Sha1DigestPayload()
     {
         PdfDocument document = PdfDocument.Create();
@@ -2155,6 +2220,39 @@ public sealed class PdfDocumentTests
         };
         cms.ComputeSignature(signer);
         return cms.Encode();
+    }
+
+    private static byte[] CreateRfc3161TimestampToken(ReadOnlySpan<byte> payload, X509Certificate2 certificate, DateTimeOffset generatedTime)
+    {
+        byte[] tstInfo = BuildRfc3161TstInfo(payload, generatedTime);
+        SignedCms cms = new(new ContentInfo(new Oid("1.2.840.113549.1.9.16.1.4"), tstInfo), detached: false);
+        CmsSigner signer = new(SubjectIdentifierType.IssuerAndSerialNumber, certificate)
+        {
+            IncludeOption = X509IncludeOption.EndCertOnly,
+            DigestAlgorithm = new Oid("2.16.840.1.101.3.4.2.1"),
+        };
+        cms.ComputeSignature(signer);
+        return cms.Encode();
+    }
+
+    private static byte[] BuildRfc3161TstInfo(ReadOnlySpan<byte> payload, DateTimeOffset generatedTime)
+    {
+        byte[] imprint = SHA256.HashData(payload);
+        AsnWriter writer = new(AsnEncodingRules.DER);
+        writer.PushSequence();
+        writer.WriteInteger(1);
+        writer.WriteObjectIdentifier("1.2.3.4.1");
+        writer.PushSequence();
+        writer.PushSequence();
+        writer.WriteObjectIdentifier("2.16.840.1.101.3.4.2.1");
+        writer.WriteNull();
+        writer.PopSequence();
+        writer.WriteOctetString(imprint);
+        writer.PopSequence();
+        writer.WriteInteger(1);
+        writer.WriteGeneralizedTime(generatedTime);
+        writer.PopSequence();
+        return writer.Encode();
     }
 
     private static X509Certificate2 CreateTestSigningCertificate(
