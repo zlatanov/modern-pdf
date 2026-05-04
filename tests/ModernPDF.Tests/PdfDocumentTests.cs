@@ -106,7 +106,7 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
-    public void SaveWithIncrementalModeFallsBackToEncryptedFullSaveForOpenedEncryptedDocument()
+    public void SaveWithIncrementalModeAppendsEncryptedRevisionForOpenedEncryptedDocument()
     {
         PdfDocument document = PdfDocument.Create();
         document.AddTextPage("secret");
@@ -122,11 +122,46 @@ public sealed class PdfDocumentTests
         opened.ReplacePageText(0, "secret-updated");
         byte[] saved = opened.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental });
 
+        Assert.True(saved.Length > encrypted.Length);
+        Assert.Equal(encrypted, saved.Take(encrypted.Length).ToArray());
+        Assert.Contains("/Prev", Encoding.ASCII.GetString(saved), StringComparison.Ordinal);
+
         PdfEncryptionInfo? info = PdfDocument.InspectEncryption(saved);
         Assert.NotNull(info);
         Assert.Equal("Standard", info.Filter);
         Assert.Equal("secret-updated", PdfDocument.Open(saved, "pw").ExtractText());
         Assert.Throws<UnauthorizedAccessException>(() => PdfDocument.Open(saved));
+    }
+
+    [Fact]
+    public void SaveWithIncrementalModeSupportsMultipleEncryptedRevisions()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("v0");
+        byte[] encryptedV0 = document.Save(
+            new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    Profile = PdfSecurityProfile.Standard128BitAes,
+                },
+            });
+
+        PdfDocument revision1 = PdfDocument.Open(encryptedV0, "pw");
+        revision1.ReplacePageText(0, "v1");
+        byte[] encryptedV1 = revision1.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental });
+
+        PdfDocument revision2 = PdfDocument.Open(encryptedV1, "pw");
+        revision2.ReplacePageText(0, "v2");
+        byte[] encryptedV2 = revision2.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental });
+
+        Assert.True(encryptedV1.Length > encryptedV0.Length);
+        Assert.Equal(encryptedV0, encryptedV1.Take(encryptedV0.Length).ToArray());
+        Assert.True(encryptedV2.Length > encryptedV1.Length);
+        Assert.Equal(encryptedV1, encryptedV2.Take(encryptedV1.Length).ToArray());
+        Assert.Contains("/Prev", Encoding.ASCII.GetString(encryptedV2), StringComparison.Ordinal);
+        Assert.Equal("v2", PdfDocument.Open(encryptedV2, "pw").ExtractText());
     }
 
     [Fact]

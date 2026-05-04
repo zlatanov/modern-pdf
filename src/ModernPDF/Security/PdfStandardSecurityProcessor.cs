@@ -122,6 +122,78 @@ internal static class PdfStandardSecurityProcessor
         return IsSupportedDescriptor(descriptor);
     }
 
+    public static PdfFile PrepareIncrementalEncryptedFile(
+        PdfFile encryptedBaseFile,
+        PdfFile decryptedCurrentFile,
+        IReadOnlyCollection<PdfObjectId> dirtyObjectIds,
+        string password)
+    {
+        ArgumentNullException.ThrowIfNull(encryptedBaseFile);
+        ArgumentNullException.ThrowIfNull(decryptedCurrentFile);
+        ArgumentNullException.ThrowIfNull(dirtyObjectIds);
+        ArgumentNullException.ThrowIfNull(password);
+
+        if (!TryReadDescriptor(encryptedBaseFile, out EncryptionDescriptor descriptor))
+        {
+            throw new PdfFormatException("Encrypted PDF descriptor was not found.");
+        }
+
+        if (!TryResolveFileKey(descriptor, password, out byte[]? fileKey) || fileKey is null)
+        {
+            throw new UnauthorizedAccessException("Invalid PDF password.");
+        }
+
+        Dictionary<PdfObjectId, PdfObject> encryptedValues = encryptedBaseFile.Objects
+            .ToDictionary(static item => item.ObjectId, static item => item.Value);
+        HashSet<int> existingObjectNumbers = [.. encryptedBaseFile.XrefEntries.Keys];
+        HashSet<PdfObjectId> dirtyIds = [.. dirtyObjectIds];
+
+        foreach (PdfIndirectObject currentObject in decryptedCurrentFile.Objects)
+        {
+            bool isNewObject = !existingObjectNumbers.Contains(currentObject.ObjectId.ObjectNumber);
+            bool mustRewrite = dirtyIds.Contains(currentObject.ObjectId) || isNewObject || !encryptedValues.ContainsKey(currentObject.ObjectId);
+            if (mustRewrite)
+            {
+                encryptedValues[currentObject.ObjectId] = EncryptObject(
+                    currentObject.Value,
+                    currentObject.ObjectId,
+                    fileKey,
+                    descriptor.StringCipher,
+                    descriptor.StreamCipher);
+            }
+        }
+
+        List<PdfIndirectObject> mergedObjects = [];
+        HashSet<PdfObjectId> currentIds = [];
+        foreach (PdfIndirectObject currentObject in decryptedCurrentFile.Objects)
+        {
+            if (!encryptedValues.TryGetValue(currentObject.ObjectId, out PdfObject? encryptedValue))
+            {
+                throw new PdfFormatException($"Encrypted object state is missing object {currentObject.ObjectId}.");
+            }
+
+            mergedObjects.Add(new PdfIndirectObject(currentObject.ObjectId, encryptedValue));
+            currentIds.Add(currentObject.ObjectId);
+        }
+
+        foreach (PdfIndirectObject encryptedObject in encryptedBaseFile.Objects)
+        {
+            if (!currentIds.Contains(encryptedObject.ObjectId))
+            {
+                mergedObjects.Add(encryptedObject);
+            }
+        }
+
+        PdfDictionaryObject trailer = MergeIncrementalEncryptedTrailer(decryptedCurrentFile.Trailer, encryptedBaseFile.Trailer);
+        return new PdfFile(
+            decryptedCurrentFile.Version,
+            mergedObjects,
+            trailer,
+            encryptedBaseFile.SourceBytes,
+            encryptedBaseFile.StartXrefOffset,
+            encryptedBaseFile.XrefEntries);
+    }
+
     private static EncryptionMaterial CreateEncryptionMaterial(PdfSecurityOptions options)
     {
         SecurityProfileDefinition profile = ResolveSecurityProfile(options.Profile);
@@ -256,6 +328,31 @@ internal static class PdfStandardSecurityProcessor
 
         entries.Add(new PdfDictionaryEntry("Encrypt", new PdfReferenceObject(encryptObjectId)));
         entries.Add(new PdfDictionaryEntry("ID", idArray));
+        return new PdfDictionaryObject(entries);
+    }
+
+    private static PdfDictionaryObject MergeIncrementalEncryptedTrailer(PdfDictionaryObject currentTrailer, PdfDictionaryObject encryptedBaseTrailer)
+    {
+        List<PdfDictionaryEntry> entries = [];
+        foreach (PdfDictionaryEntry entry in currentTrailer.Entries)
+        {
+            if (!string.Equals(entry.Key, "Encrypt", StringComparison.Ordinal)
+                && !string.Equals(entry.Key, "ID", StringComparison.Ordinal))
+            {
+                entries.Add(entry);
+            }
+        }
+
+        if (TryGetDictionaryEntry(encryptedBaseTrailer, "Encrypt", out PdfObject? encryptEntry))
+        {
+            entries.Add(new PdfDictionaryEntry("Encrypt", encryptEntry!));
+        }
+
+        if (TryGetDictionaryEntry(encryptedBaseTrailer, "ID", out PdfObject? idEntry))
+        {
+            entries.Add(new PdfDictionaryEntry("ID", idEntry!));
+        }
+
         return new PdfDictionaryObject(entries);
     }
 

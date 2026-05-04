@@ -221,6 +221,66 @@ public sealed class PdfStandardSecurityProcessorTests
     }
 
     [Fact]
+    public void PrepareIncrementalEncryptedFileAppendsEncryptedRevision()
+    {
+        PdfFile plain = CreatePlainFileWithStringObject("before");
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(
+            plain,
+            new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+                Profile = PdfSecurityProfile.Standard128BitAes,
+            });
+        byte[] encryptedBytes = PdfFileWriter.Write(encrypted);
+        PdfFile encryptedWithSource = PdfFileReader.Read(encryptedBytes);
+
+        PdfFile decrypted = PdfStandardSecurityProcessor.Decrypt(encryptedWithSource, "pw");
+        List<PdfIndirectObject> updatedObjects = decrypted.Objects
+            .Select(objectItem => objectItem.ObjectId.ObjectNumber == 3
+                ? new PdfIndirectObject(objectItem.ObjectId, new PdfStringObject("after"))
+                : objectItem)
+            .ToList();
+        PdfFile updatedDecrypted = new(decrypted.Version, updatedObjects, decrypted.Trailer);
+        PdfObjectId changedObject = new(3, 0);
+
+        PdfFile prepared = PdfStandardSecurityProcessor.PrepareIncrementalEncryptedFile(
+            encryptedWithSource,
+            updatedDecrypted,
+            [changedObject],
+            "pw");
+        byte[] incrementalBytes = PdfFileWriter.WriteIncremental(prepared, [changedObject]);
+
+        Assert.True(incrementalBytes.Length > encryptedBytes.Length);
+        Assert.Equal(encryptedBytes, incrementalBytes.Take(encryptedBytes.Length).ToArray());
+
+        PdfFile decryptedIncremental = PdfStandardSecurityProcessor.Decrypt(PdfFileReader.Read(incrementalBytes), "pw");
+        PdfStringObject text = Assert.IsType<PdfStringObject>(Assert.Single(decryptedIncremental.Objects, x => x.ObjectId.ObjectNumber == 3).Value);
+        Assert.Equal("after", text.Value);
+    }
+
+    [Fact]
+    public void PrepareIncrementalEncryptedFileThrowsForWrongPassword()
+    {
+        PdfFile plain = CreatePlainFileWithStringObject("before");
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(
+            plain,
+            new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+            });
+        PdfFile encryptedWithSource = PdfFileReader.Read(PdfFileWriter.Write(encrypted));
+
+        PdfFile decrypted = PdfStandardSecurityProcessor.Decrypt(encryptedWithSource, "pw");
+
+        Assert.Throws<UnauthorizedAccessException>(
+            () => PdfStandardSecurityProcessor.PrepareIncrementalEncryptedFile(
+                encryptedWithSource,
+                decrypted,
+                [new PdfObjectId(3, 0)],
+                "wrong"));
+    }
+
+    [Fact]
     public void EncryptAndDecryptHandlePrimitiveAndCompositeObjects()
     {
         PdfFile file = new(
