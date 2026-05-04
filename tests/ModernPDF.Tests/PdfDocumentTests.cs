@@ -70,11 +70,51 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
-    public void SaveWithIncrementalModeThrowsUntilImplemented()
+    public void SaveWithIncrementalModeAppendsChangedObjectsForOpenedDocument()
     {
         PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("before");
+        byte[] fullBytes = document.Save();
 
-        Assert.Throws<NotSupportedException>(() => document.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental }));
+        PdfDocument opened = PdfDocument.Open(fullBytes);
+        opened.ReplacePageText(0, "after");
+
+        byte[] incrementalBytes = opened.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental });
+
+        Assert.True(incrementalBytes.Length > fullBytes.Length);
+        Assert.Equal(fullBytes, incrementalBytes.Take(fullBytes.Length).ToArray());
+        Assert.Contains("/Prev", Encoding.ASCII.GetString(incrementalBytes), StringComparison.Ordinal);
+        Assert.Equal("after", PdfDocument.Open(incrementalBytes).ExtractText());
+    }
+
+    [Fact]
+    public void SaveWithIncrementalModeWithoutChangesReturnsOriginalBytes()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("stable");
+        byte[] fullBytes = document.Save();
+
+        PdfDocument opened = PdfDocument.Open(fullBytes);
+        byte[] incrementalBytes = opened.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental });
+
+        Assert.Equal(fullBytes, incrementalBytes);
+    }
+
+    [Fact]
+    public void SaveWithIncrementalModeRejectsEncryptedOpenDocument()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("secret");
+        byte[] encrypted = document.Save(new PdfSaveOptions
+        {
+            Security = new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+            },
+        });
+
+        PdfDocument opened = PdfDocument.Open(encrypted, "pw");
+        Assert.Throws<NotSupportedException>(() => opened.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental }));
     }
 
     [Fact]

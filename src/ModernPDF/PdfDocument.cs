@@ -16,18 +16,21 @@ public sealed class PdfDocument
     private PdfFile _file;
     private PdfDocumentModel _model;
     private PdfTextOptions _defaultTextOptions = new();
+    private readonly HashSet<PdfObjectId> _dirtyObjectIds = [];
+    private bool _openedEncrypted;
 
-    private PdfDocument(PdfFile file, PdfDocumentModel model)
+    private PdfDocument(PdfFile file, PdfDocumentModel model, bool openedEncrypted)
     {
         _file = file ?? throw new ArgumentNullException(nameof(file));
         _model = model ?? throw new ArgumentNullException(nameof(model));
+        _openedEncrypted = openedEncrypted;
     }
 
     public static PdfDocument Create()
     {
         PdfFile file = CreateEmptyFile();
         PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
-        return new PdfDocument(file, model);
+        return new PdfDocument(file, model, openedEncrypted: false);
     }
 
     public static PdfDocument Open(byte[] data)
@@ -51,7 +54,8 @@ public sealed class PdfDocument
     public static PdfDocument Open(ReadOnlySpan<byte> data, string? password)
     {
         PdfFile file = PdfFileReader.Read(data);
-        if (PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out _))
+        bool openedEncrypted = PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out _);
+        if (openedEncrypted)
         {
             if (!PdfStandardSecurityProcessor.IsSupportedStandardHandler(file))
             {
@@ -67,7 +71,7 @@ public sealed class PdfDocument
         }
 
         PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
-        return new PdfDocument(file, model);
+        return new PdfDocument(file, model, openedEncrypted);
     }
 
     public static PdfDocument Open(string path)
@@ -156,25 +160,54 @@ public sealed class PdfDocument
     public byte[] Save(PdfSaveOptions? options = null)
     {
         PdfSaveOptions effectiveOptions = options ?? new PdfSaveOptions();
-        if (effectiveOptions.Mode == PdfSaveMode.Incremental)
+        if (effectiveOptions.Mode == PdfSaveMode.Incremental && effectiveOptions.Security is not null)
         {
-            throw new NotSupportedException("Incremental save is not supported yet.");
+            throw new NotSupportedException("Incremental save with security options is not currently supported.");
         }
 
-        PdfFile outputFile = _file;
         if (effectiveOptions.Security is not null)
         {
             ValidateSecurityOptions(effectiveOptions.Security);
-            outputFile = PdfStandardSecurityProcessor.Encrypt(_file, effectiveOptions.Security);
+            PdfFile encryptedFile = PdfStandardSecurityProcessor.Encrypt(_file, effectiveOptions.Security);
+            return PdfFileWriter.Write(encryptedFile);
         }
 
-        return PdfFileWriter.Write(outputFile);
+        if (effectiveOptions.Mode == PdfSaveMode.Incremental)
+        {
+            if (_openedEncrypted)
+            {
+                throw new NotSupportedException("Incremental save is not supported for documents opened from encrypted PDFs.");
+            }
+
+            byte[] incrementalBytes = PdfFileWriter.WriteIncremental(_file, _dirtyObjectIds);
+            RebaseFromSavedBytes(incrementalBytes);
+            return incrementalBytes;
+        }
+
+        byte[] fullBytes = PdfFileWriter.Write(_file);
+        RebaseFromSavedBytes(fullBytes);
+        return fullBytes;
     }
 
     public void Save(string path, PdfSaveOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         File.WriteAllBytes(path, Save(options));
+    }
+
+    private void RebaseFromSavedBytes(byte[] savedBytes)
+    {
+        PdfFile rebasedFile = PdfFileReader.Read(savedBytes);
+        _file = rebasedFile;
+        _model = PdfDocumentModelBuilder.Build(rebasedFile);
+        _dirtyObjectIds.Clear();
+        _openedEncrypted = false;
+    }
+
+    private void MarkDirty(PdfObjectId objectId)
+    {
+        _dirtyObjectIds.Add(objectId);
+        _model.Mutations.MarkDirty(objectId);
     }
 
     public void ReplacePageContents(int pageIndex, string rawContentStream)
@@ -195,10 +228,16 @@ public sealed class PdfDocument
         List<PdfIndirectObject> objects = [.. _file.Objects];
         ReplaceObject(objects, contentsReference.ObjectId, updatedStream);
 
-        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
         _model = PdfDocumentModelBuilder.Build(_file);
-        _model.Mutations.MarkDirty(contentsReference.ObjectId);
-        _model.Mutations.MarkDirty(page.ObjectId);
+        MarkDirty(contentsReference.ObjectId);
+        MarkDirty(page.ObjectId);
     }
 
     public void ReplacePageText(int pageIndex, string text, PdfTextOptions? options = null)
@@ -241,14 +280,20 @@ public sealed class PdfDocument
             new PdfDictionaryEntry("Resources", new PdfReferenceObject(embeddedPlan.ResourcesObjectId)));
         ReplaceObject(objects, page.ObjectId, updatedPage);
 
-        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
         _model = PdfDocumentModelBuilder.Build(_file);
 
-        _model.Mutations.MarkDirty(page.ObjectId);
-        _model.Mutations.MarkDirty(contentsReference.ObjectId);
+        MarkDirty(page.ObjectId);
+        MarkDirty(contentsReference.ObjectId);
         foreach (PdfObjectId objectId in embeddedPlan.DirtyObjectIds)
         {
-            _model.Mutations.MarkDirty(objectId);
+            MarkDirty(objectId);
         }
     }
 
@@ -323,13 +368,19 @@ public sealed class PdfDocument
             new PdfDictionaryEntry("Resources", new PdfReferenceObject(resourcesId)));
         ReplaceObject(objects, page.ObjectId, updatedPage);
 
-        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
         _model = PdfDocumentModelBuilder.Build(_file);
-        _model.Mutations.MarkDirty(page.ObjectId);
-        _model.Mutations.MarkDirty(contentsReference.ObjectId);
+        MarkDirty(page.ObjectId);
+        MarkDirty(contentsReference.ObjectId);
         foreach (PdfObjectId objectId in dirtyObjectIds)
         {
-            _model.Mutations.MarkDirty(objectId);
+            MarkDirty(objectId);
         }
     }
 
@@ -364,15 +415,27 @@ public sealed class PdfDocument
                 _file.Trailer,
                 new PdfDictionaryEntry("Info", new PdfReferenceObject(infoId)));
 
-            _file = new PdfFile(_file.Version, objects, updatedTrailer);
+            _file = new PdfFile(
+                _file.Version,
+                objects,
+                updatedTrailer,
+                _file.SourceBytes,
+                _file.StartXrefOffset,
+                _file.XrefEntries);
             _model = PdfDocumentModelBuilder.Build(_file);
-            _model.Mutations.MarkDirty(infoId);
+            MarkDirty(infoId);
             return;
         }
 
-        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
         _model = PdfDocumentModelBuilder.Build(_file);
-        _model.Mutations.MarkDirty(infoId);
+        MarkDirty(infoId);
     }
 
     public string? GetInfoProducer()
@@ -436,12 +499,18 @@ public sealed class PdfDocument
             return 0;
         }
 
-        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
         _model = PdfDocumentModelBuilder.Build(_file);
 
         foreach (PdfObjectId streamId in changedStreamIds)
         {
-            _model.Mutations.MarkDirty(streamId);
+            MarkDirty(streamId);
         }
 
         return totalRedactions;
@@ -527,13 +596,19 @@ public sealed class PdfDocument
             new PdfDictionaryEntry("Count", new PdfNumberObject(_model.Pages.Count + 1, isInteger: true)));
 
         ReplaceObject(objects, _model.PagesRootObjectId, updatedPagesRoot);
-        _file = new PdfFile(_file.Version, objects, _file.Trailer);
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
         _model = PdfDocumentModelBuilder.Build(_file);
 
-        _model.Mutations.MarkDirty(_model.PagesRootObjectId);
+        MarkDirty(_model.PagesRootObjectId);
         foreach (PdfObjectId objectId in dirtyObjectIds)
         {
-            _model.Mutations.MarkDirty(objectId);
+            MarkDirty(objectId);
         }
 
         return _model.Pages.Count - 1;

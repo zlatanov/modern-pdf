@@ -265,6 +265,21 @@ public sealed class PdfFileReaderTests
     }
 
     [Fact]
+    public void ReadCapturesSourceAndXrefMetadata()
+    {
+        PdfFile source = CreateMinimalFile();
+        byte[] bytes = PdfFileWriter.Write(source);
+
+        PdfFile parsed = PdfFileReader.Read(bytes);
+
+        Assert.NotNull(parsed.SourceBytes);
+        Assert.Equal(bytes, parsed.SourceBytes);
+        Assert.True(parsed.StartXrefOffset.HasValue);
+        Assert.NotEmpty(parsed.XrefEntries);
+        Assert.True(parsed.XrefEntries.ContainsKey(1));
+    }
+
+    [Fact]
     public void ReadTreatsNonDelimitedStreamKeywordAsRegularObjectContent()
     {
         byte[] bytes = CreateSingleObjectPdf("<< /Type /streaming >>");

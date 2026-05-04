@@ -18,11 +18,17 @@ internal static class PdfFileReader
         string version = ParseVersion(text);
         int startXrefOffset = ParseStartXrefOffset(text);
 
-        Dictionary<int, XrefEntry> xrefEntries = ParseCrossReferenceEntries(bytes, startXrefOffset);
+        Dictionary<int, PdfXrefEntry> xrefEntries = ParseCrossReferenceEntries(bytes, startXrefOffset);
         PdfDictionaryObject trailer = ParseTrailer(bytes, startXrefOffset);
         List<PdfIndirectObject> objects = ParseIndirectObjects(bytes, xrefEntries);
 
-        return new PdfFile(version, objects, trailer);
+        return new PdfFile(
+            version,
+            objects,
+            trailer,
+            sourceBytes: bytes.ToArray(),
+            startXrefOffset: startXrefOffset,
+            xrefEntries: xrefEntries);
     }
 
     private static string ParseVersion(string text)
@@ -77,7 +83,7 @@ internal static class PdfFileReader
         return startXrefOffset;
     }
 
-    private static Dictionary<int, XrefEntry> ParseCrossReferenceEntries(ReadOnlySpan<byte> bytes, int startXrefOffset)
+    private static Dictionary<int, PdfXrefEntry> ParseCrossReferenceEntries(ReadOnlySpan<byte> bytes, int startXrefOffset)
     {
         string tail = Encoding.ASCII.GetString(bytes[startXrefOffset..]);
         int cursor = 0;
@@ -90,7 +96,7 @@ internal static class PdfFileReader
         cursor += "xref".Length;
         SkipWhitespace(tail, ref cursor);
 
-        Dictionary<int, XrefEntry> entries = [];
+        Dictionary<int, PdfXrefEntry> entries = [];
 
         while (cursor < tail.Length && !tail.AsSpan(cursor).StartsWith("trailer".AsSpan(), StringComparison.Ordinal))
         {
@@ -118,7 +124,7 @@ internal static class PdfFileReader
                 if (inUse == 'n')
                 {
                     int objectNumber = firstObject + index;
-                    entries[objectNumber] = new XrefEntry(offset, generation);
+                    entries[objectNumber] = new PdfXrefEntry(offset, generation);
                 }
             }
 
@@ -178,11 +184,11 @@ internal static class PdfFileReader
         throw new PdfFormatException("Could not find dictionary terminator.");
     }
 
-    private static List<PdfIndirectObject> ParseIndirectObjects(ReadOnlySpan<byte> bytes, IReadOnlyDictionary<int, XrefEntry> xrefEntries)
+    private static List<PdfIndirectObject> ParseIndirectObjects(ReadOnlySpan<byte> bytes, IReadOnlyDictionary<int, PdfXrefEntry> xrefEntries)
     {
         List<PdfIndirectObject> objects = [];
 
-        foreach ((int objectNumber, XrefEntry entry) in xrefEntries.OrderBy(pair => pair.Key))
+        foreach ((int objectNumber, PdfXrefEntry entry) in xrefEntries.OrderBy(pair => pair.Key))
         {
             if (entry.Offset < 0 || entry.Offset >= bytes.Length)
             {
@@ -354,6 +360,4 @@ internal static class PdfFileReader
             cursor++;
         }
     }
-
-    private readonly record struct XrefEntry(int Offset, int Generation);
 }
