@@ -2864,16 +2864,7 @@ public sealed class PdfDocument
         PdfObjectId imageId = new(nextObjectNumber++, 0);
         PdfObjectId resourcesId = new(nextObjectNumber++, 0);
 
-        PdfDictionaryObject imageDictionary = new(
-        [
-            new PdfDictionaryEntry("Type", new PdfNameObject("XObject")),
-            new PdfDictionaryEntry("Subtype", new PdfNameObject("Image")),
-            new PdfDictionaryEntry("Width", new PdfNumberObject(image.Width, isInteger: true)),
-            new PdfDictionaryEntry("Height", new PdfNumberObject(image.Height, isInteger: true)),
-            new PdfDictionaryEntry("ColorSpace", new PdfNameObject(image.ColorSpace)),
-            new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(image.BitsPerComponent, isInteger: true)),
-            new PdfDictionaryEntry("Filter", new PdfNameObject(image.Filter)),
-        ]);
+        PdfDictionaryObject imageDictionary = CreateImageXObjectDictionary(image);
         PdfDictionaryObject resourcesDictionary = new(
         [
             new PdfDictionaryEntry(
@@ -2950,16 +2941,7 @@ public sealed class PdfDocument
         string imageResourceName = AllocateImageResourceName(effectiveResources);
         PdfDictionaryObject mergedResources = BuildResourcesDictionaryWithImage(effectiveResources, imageResourceName, imageId);
 
-        PdfDictionaryObject imageDictionary = new(
-        [
-            new PdfDictionaryEntry("Type", new PdfNameObject("XObject")),
-            new PdfDictionaryEntry("Subtype", new PdfNameObject("Image")),
-            new PdfDictionaryEntry("Width", new PdfNumberObject(image.Width, isInteger: true)),
-            new PdfDictionaryEntry("Height", new PdfNumberObject(image.Height, isInteger: true)),
-            new PdfDictionaryEntry("ColorSpace", new PdfNameObject(image.ColorSpace)),
-            new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(image.BitsPerComponent, isInteger: true)),
-            new PdfDictionaryEntry("Filter", new PdfNameObject(image.Filter)),
-        ]);
+        PdfDictionaryObject imageDictionary = CreateImageXObjectDictionary(image);
         objects.Add(new PdfIndirectObject(imageId, new PdfStreamObject(imageDictionary, image.EncodedBytes)));
         objects.Add(new PdfIndirectObject(resourcesId, mergedResources));
 
@@ -3438,6 +3420,36 @@ public sealed class PdfDocument
         builder.Append(imageResourceName);
         builder.Append(" Do Q");
         return builder.ToString();
+    }
+
+    private static PdfDictionaryObject CreateImageXObjectDictionary(PdfRasterImage image)
+    {
+        List<PdfDictionaryEntry> entries =
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("XObject")),
+            new PdfDictionaryEntry("Subtype", new PdfNameObject("Image")),
+            new PdfDictionaryEntry("Width", new PdfNumberObject(image.Width, isInteger: true)),
+            new PdfDictionaryEntry("Height", new PdfNumberObject(image.Height, isInteger: true)),
+            new PdfDictionaryEntry("ColorSpace", new PdfNameObject(image.ColorSpace)),
+            new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(image.BitsPerComponent, isInteger: true)),
+            new PdfDictionaryEntry("Filter", new PdfNameObject(image.Filter)),
+        ];
+
+        if (image.Predictor is int predictor && image.Colors is int colors && image.Columns is int columns)
+        {
+            entries.Add(
+                new PdfDictionaryEntry(
+                    "DecodeParms",
+                    new PdfDictionaryObject(
+                    [
+                        new PdfDictionaryEntry("Predictor", new PdfNumberObject(predictor, isInteger: true)),
+                        new PdfDictionaryEntry("Colors", new PdfNumberObject(colors, isInteger: true)),
+                        new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(image.BitsPerComponent, isInteger: true)),
+                        new PdfDictionaryEntry("Columns", new PdfNumberObject(columns, isInteger: true)),
+                    ])));
+        }
+
+        return new PdfDictionaryObject(entries);
     }
 
     private PdfDictionaryObject ResolveEffectiveResourcesDictionary(PdfPageModel page)

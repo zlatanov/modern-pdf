@@ -22,6 +22,23 @@ public sealed class PdfDocumentImageSupportTests
     }
 
     [Fact]
+    public void AddImagePageEmbedsPngImageXObject()
+    {
+        PdfDocument document = PdfDocument.Create();
+        int pageIndex = document.AddImagePage(GetSamplePngBytes());
+
+        byte[] saved = document.Save();
+        string text = Encoding.ASCII.GetString(saved);
+
+        Assert.Equal(0, pageIndex);
+        Assert.Equal(1, document.PageCount);
+        Assert.Contains("/Subtype /Image", text, StringComparison.Ordinal);
+        Assert.Contains("/Filter /FlateDecode", text, StringComparison.Ordinal);
+        Assert.Contains("/Predictor 15", text, StringComparison.Ordinal);
+        Assert.Contains("/Im1 Do", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ReplacePageImageReplacesExistingPageContent()
     {
         PdfDocument document = PdfDocument.Create();
@@ -68,6 +85,15 @@ public sealed class PdfDocumentImageSupportTests
 
         NotSupportedException exception = Assert.Throws<NotSupportedException>(() => document.AddImagePage([0x00, 0x01, 0x02, 0x03]));
         Assert.Contains("JPEG", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddImagePageThrowsForPngWithAlpha()
+    {
+        PdfDocument document = PdfDocument.Create();
+
+        NotSupportedException exception = Assert.Throws<NotSupportedException>(() => document.AddImagePage(GetSamplePngWithAlphaBytes()));
+        Assert.Contains("alpha", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -145,5 +171,17 @@ public sealed class PdfDocumentImageSupportTests
     {
         return Convert.FromBase64String(
             "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAAQABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAVEAEBAAAAAAAAAAAAAAAAAAABAP/aAAwDAQACEAMQAAAAhA//xAAVEAEBAAAAAAAAAAAAAAAAAAABAP/aAAgBAQABBQJf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyFf/9k=");
+    }
+
+    private static byte[] GetSamplePngBytes()
+    {
+        return Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mP8z/C/HwAFgwJ/lvIprwAAAABJRU5ErkJggg==");
+    }
+
+    private static byte[] GetSamplePngWithAlphaBytes()
+    {
+        return Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAF/gL+qM9sWQAAAABJRU5ErkJggg==");
     }
 }

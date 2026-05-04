@@ -6,4 +6,7 @@ internal readonly record struct PdfRasterImage(
     int BitsPerComponent,
     string ColorSpace,
     string Filter,
-    byte[] EncodedBytes);
+    byte[] EncodedBytes,
+    int? Predictor = null,
+    int? Colors = null,
+    int? Columns = null);

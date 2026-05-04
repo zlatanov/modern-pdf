@@ -7,7 +7,7 @@ Current implemented scope includes:
 - create/open/save PDF documents
 - text extraction
 - page/content editing
-- JPEG image page authoring, replacement, and composition
+- JPEG/PNG image page authoring, replacement, and composition
 - destructive text redaction
 - password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, `V=4 / R=4 / 128-bit AES`, and `V=5 / R=6 / 256-bit AES`
 - detached digital signatures (callback-based CMS embedding with ByteRange patching)
@@ -95,9 +95,9 @@ textOptions: new PdfTextOptions
 });
 ```
 
-## Image pages (JPEG)
+## Image pages (JPEG/PNG)
 
-You can add a JPEG image as a page, replace a page with an image, or append multiple images onto a page:
+You can add a JPEG or PNG image as a page, replace a page with an image, or append multiple images onto a page:
 
 ```csharp
 PdfDocument document = PdfDocument.Create();
@@ -207,6 +207,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, `/adbe.pkcs7.sha1`, and `/ETSI.RFC3161`
 - revocation validation supports online retrieval (`RevocationCheckMode = PdfRevocationCheckMode.Online`) and offline DSS OCSP/CRL evidence when embedded in `/DSS`; offline OCSP validation includes delegated responders when `id-kp-OCSPSigning` is present and the responder certificate chains to the OCSP certificate issuer, and enforces signature-scoped `/DSS /VRI` evidence matching; deterministic offline mode remains the default (`Offline`)
-- image APIs currently support JPEG input only
+- image APIs currently support JPEG and non-alpha PNG input
 - security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, `V=4 / R=4`, and `V=5 / R=6`
 - explicit `PdfSaveOptions.Security` with `PdfSaveMode.Incremental` is supported only for documents opened from encrypted PDFs, and must match the opened security context (password/profile/permissions)
