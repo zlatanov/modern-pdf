@@ -54,6 +54,11 @@ internal static class PdfStandardSecurityProcessor
 
     public static PdfFile Decrypt(PdfFile file, string password)
     {
+        return Decrypt(file, password, out _);
+    }
+
+    public static PdfFile Decrypt(PdfFile file, string password, out PdfSecurityOptions securityOptions)
+    {
         ArgumentNullException.ThrowIfNull(file);
         ArgumentNullException.ThrowIfNull(password);
 
@@ -66,6 +71,7 @@ internal static class PdfStandardSecurityProcessor
         {
             throw new UnauthorizedAccessException("Invalid PDF password.");
         }
+        securityOptions = CreateSecurityOptionsFromDescriptor(descriptor, password);
 
         List<PdfIndirectObject> decryptedObjects = [];
         foreach (PdfIndirectObject item in file.Objects)
@@ -477,6 +483,77 @@ internal static class PdfStandardSecurityProcessor
             (4, 4, 128, EncryptionCipher.AesV2, EncryptionCipher.AesV2) => true,
             _ => false,
         };
+    }
+
+    private static PdfSecurityOptions CreateSecurityOptionsFromDescriptor(EncryptionDescriptor descriptor, string password)
+    {
+        return new PdfSecurityOptions
+        {
+            UserPassword = password,
+            Profile = ResolveProfileFromDescriptor(descriptor),
+            Permissions = ExtractPermissions(descriptor.Permissions, descriptor.R),
+        };
+    }
+
+    private static PdfSecurityProfile ResolveProfileFromDescriptor(EncryptionDescriptor descriptor)
+    {
+        return (descriptor.V, descriptor.R, descriptor.LengthBits, descriptor.StringCipher, descriptor.StreamCipher) switch
+        {
+            (1, 2, 40, EncryptionCipher.Rc4, EncryptionCipher.Rc4) => PdfSecurityProfile.Standard40BitRc4,
+            (2, 3, 128, EncryptionCipher.Rc4, EncryptionCipher.Rc4) => PdfSecurityProfile.Standard128BitRc4,
+            (4, 4, 128, EncryptionCipher.AesV2, EncryptionCipher.AesV2) => PdfSecurityProfile.Standard128BitAes,
+            _ => throw new NotSupportedException(SupportedProfilesMessage),
+        };
+    }
+
+    private static PdfPermissions ExtractPermissions(int permissionsValue, int revision)
+    {
+        PdfPermissions permissions = PdfPermissions.None;
+
+        if ((permissionsValue & (1 << 2)) != 0)
+        {
+            permissions |= PdfPermissions.Print;
+        }
+
+        if ((permissionsValue & (1 << 3)) != 0)
+        {
+            permissions |= PdfPermissions.Modify;
+        }
+
+        if ((permissionsValue & (1 << 4)) != 0)
+        {
+            permissions |= PdfPermissions.Copy;
+        }
+
+        if ((permissionsValue & (1 << 5)) != 0)
+        {
+            permissions |= PdfPermissions.Annotate;
+        }
+
+        if (revision >= 3)
+        {
+            if ((permissionsValue & (1 << 8)) != 0)
+            {
+                permissions |= PdfPermissions.FillForms;
+            }
+
+            if ((permissionsValue & (1 << 9)) != 0)
+            {
+                permissions |= PdfPermissions.Accessibility;
+            }
+
+            if ((permissionsValue & (1 << 10)) != 0)
+            {
+                permissions |= PdfPermissions.AssembleDocument;
+            }
+
+            if ((permissionsValue & (1 << 11)) != 0)
+            {
+                permissions |= PdfPermissions.HighQualityPrint;
+            }
+        }
+
+        return permissions;
     }
 
     private static bool TryResolveFileKey(EncryptionDescriptor descriptor, string password, out byte[]? fileKey)

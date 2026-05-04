@@ -200,6 +200,27 @@ public sealed class PdfStandardSecurityProcessorTests
     }
 
     [Fact]
+    public void DecryptReturnsSecurityOptionsForReEncryptionDefaults()
+    {
+        PdfFile plain = CreatePlainFileWithStringObject("security-context");
+        PdfFile encrypted = PdfStandardSecurityProcessor.Encrypt(
+            plain,
+            new PdfSecurityOptions
+            {
+                UserPassword = "pw",
+                Profile = PdfSecurityProfile.Standard128BitRc4,
+                Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+            });
+
+        PdfFile decrypted = PdfStandardSecurityProcessor.Decrypt(encrypted, "pw", out PdfSecurityOptions securityOptions);
+
+        Assert.Equal(PdfSecurityProfile.Standard128BitRc4, securityOptions.Profile);
+        Assert.Equal(PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms, securityOptions.Permissions);
+        Assert.Equal("pw", securityOptions.UserPassword);
+        Assert.Equal("security-context", Assert.IsType<PdfStringObject>(Assert.Single(decrypted.Objects, x => x.ObjectId.ObjectNumber == 3).Value).Value);
+    }
+
+    [Fact]
     public void EncryptAndDecryptHandlePrimitiveAndCompositeObjects()
     {
         PdfFile file = new(

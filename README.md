@@ -123,6 +123,8 @@ byte[] encryptedPdf = document.Save(
     });
 ```
 
+When you open an encrypted PDF with a password, subsequent `Save()` calls preserve encryption automatically. If `Mode = PdfSaveMode.Incremental` is requested on an opened encrypted document, ModernPDF currently performs a full encrypted save (append-only encrypted incremental output is not yet implemented).
+
 ## Detached signatures (MVP)
 
 The signature API is callback-based: ModernPDF computes and patches `/ByteRange`, provides the exact signed payload bytes, and embeds returned CMS bytes into `/Contents`.
@@ -192,3 +194,4 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, and `/adbe.pkcs7.sha1`
 - revocation validation can use online retrieval via `RevocationCheckMode = PdfRevocationCheckMode.Online`, but deterministic/offline behavior remains the default (`Offline`)
 - security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, and `V=4 / R=4`
+- opened encrypted documents currently use full encrypted rewrite when `PdfSaveMode.Incremental` is requested

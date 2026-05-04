@@ -29,19 +29,21 @@ public sealed class PdfDocument
     private PdfTextOptions _defaultTextOptions = new();
     private readonly HashSet<PdfObjectId> _dirtyObjectIds = [];
     private bool _openedEncrypted;
+    private PdfSecurityOptions? _openedSecurityOptions;
 
-    private PdfDocument(PdfFile file, PdfDocumentModel model, bool openedEncrypted)
+    private PdfDocument(PdfFile file, PdfDocumentModel model, bool openedEncrypted, PdfSecurityOptions? openedSecurityOptions)
     {
         _file = file ?? throw new ArgumentNullException(nameof(file));
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _openedEncrypted = openedEncrypted;
+        _openedSecurityOptions = openedSecurityOptions;
     }
 
     public static PdfDocument Create()
     {
         PdfFile file = CreateEmptyFile();
         PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
-        return new PdfDocument(file, model, openedEncrypted: false);
+        return new PdfDocument(file, model, openedEncrypted: false, openedSecurityOptions: null);
     }
 
     public static PdfDocument Open(byte[] data)
@@ -66,6 +68,7 @@ public sealed class PdfDocument
     {
         PdfFile file = PdfFileReader.Read(data);
         bool openedEncrypted = PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out _);
+        PdfSecurityOptions? openedSecurityOptions = null;
         if (openedEncrypted)
         {
             if (!PdfStandardSecurityProcessor.IsSupportedStandardHandler(file))
@@ -78,11 +81,12 @@ public sealed class PdfDocument
                 throw new UnauthorizedAccessException("Password is required to open encrypted PDFs.");
             }
 
-            file = PdfStandardSecurityProcessor.Decrypt(file, password);
+            file = PdfStandardSecurityProcessor.Decrypt(file, password, out PdfSecurityOptions reopenedSecurity);
+            openedSecurityOptions = reopenedSecurity;
         }
 
         PdfDocumentModel model = PdfDocumentModelBuilder.Build(file);
-        return new PdfDocument(file, model, openedEncrypted);
+        return new PdfDocument(file, model, openedEncrypted, openedSecurityOptions);
     }
 
     public static PdfDocument Open(string path)
@@ -186,11 +190,19 @@ public sealed class PdfDocument
             throw new NotSupportedException("Incremental save with security options is not currently supported.");
         }
 
-        if (effectiveOptions.Security is not null)
+        PdfSecurityOptions? securityToApply = effectiveOptions.Security;
+        if (securityToApply is null && _openedEncrypted)
         {
-            ValidateSecurityOptions(effectiveOptions.Security);
-            PdfFile encryptedFile = PdfStandardSecurityProcessor.Encrypt(_file, effectiveOptions.Security);
-            return PdfFileWriter.Write(encryptedFile, effectiveOptions.CrossReferenceStyle);
+            securityToApply = _openedSecurityOptions ?? throw new InvalidOperationException("Encrypted document cannot be saved because original security settings are unavailable.");
+        }
+
+        if (securityToApply is not null)
+        {
+            ValidateSecurityOptions(securityToApply);
+            PdfFile encryptedFile = PdfStandardSecurityProcessor.Encrypt(_file, securityToApply);
+            byte[] encryptedBytes = PdfFileWriter.Write(encryptedFile, effectiveOptions.CrossReferenceStyle);
+            _dirtyObjectIds.Clear();
+            return encryptedBytes;
         }
 
         if (effectiveOptions.Mode == PdfSaveMode.Incremental)
@@ -1234,6 +1246,7 @@ public sealed class PdfDocument
         _model = PdfDocumentModelBuilder.Build(rebasedFile);
         _dirtyObjectIds.Clear();
         _openedEncrypted = false;
+        _openedSecurityOptions = null;
     }
 
     private void MarkDirty(PdfObjectId objectId)

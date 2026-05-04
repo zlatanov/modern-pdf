@@ -106,7 +106,7 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
-    public void SaveWithIncrementalModeRejectsEncryptedOpenDocument()
+    public void SaveWithIncrementalModeFallsBackToEncryptedFullSaveForOpenedEncryptedDocument()
     {
         PdfDocument document = PdfDocument.Create();
         document.AddTextPage("secret");
@@ -119,7 +119,14 @@ public sealed class PdfDocumentTests
         });
 
         PdfDocument opened = PdfDocument.Open(encrypted, "pw");
-        Assert.Throws<NotSupportedException>(() => opened.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental }));
+        opened.ReplacePageText(0, "secret-updated");
+        byte[] saved = opened.Save(new PdfSaveOptions { Mode = PdfSaveMode.Incremental });
+
+        PdfEncryptionInfo? info = PdfDocument.InspectEncryption(saved);
+        Assert.NotNull(info);
+        Assert.Equal("Standard", info.Filter);
+        Assert.Equal("secret-updated", PdfDocument.Open(saved, "pw").ExtractText());
+        Assert.Throws<UnauthorizedAccessException>(() => PdfDocument.Open(saved));
     }
 
     [Fact]
@@ -810,6 +817,36 @@ public sealed class PdfDocumentTests
 
         PdfDocument opened = PdfDocument.Open(encryptedBytes, "pw");
         Assert.Equal("secure-128-aes", opened.ExtractText());
+    }
+
+    [Fact]
+    public void SaveWithoutSecurityOptionsPreservesEncryptionForOpenedEncryptedDocument()
+    {
+        PdfDocument original = PdfDocument.Create();
+        original.AddTextPage("preserve-encryption");
+        byte[] encrypted = original.Save(
+            new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions
+                {
+                    UserPassword = "pw",
+                    Profile = PdfSecurityProfile.Standard128BitAes,
+                    Permissions = PdfPermissions.Print | PdfPermissions.Copy | PdfPermissions.FillForms,
+                },
+            });
+
+        PdfDocument opened = PdfDocument.Open(encrypted, "pw");
+        opened.ReplacePageText(0, "preserve-encryption-updated");
+
+        byte[] saved = opened.Save();
+        PdfEncryptionInfo? info = PdfDocument.InspectEncryption(saved);
+
+        Assert.NotNull(info);
+        Assert.Equal("Standard", info.Filter);
+        Assert.Equal(4, info.AlgorithmVersion);
+        Assert.Equal(128, info.KeyLengthBits);
+        Assert.Equal("preserve-encryption-updated", PdfDocument.Open(saved, "pw").ExtractText());
+        Assert.Throws<UnauthorizedAccessException>(() => PdfDocument.Open(saved));
     }
 
     [Fact]
