@@ -2887,7 +2887,7 @@ public sealed class PdfDocument
         objects.Add(new PdfIndirectObject(imageId, new PdfStreamObject(imageDictionary, image.EncodedBytes)));
         objects.Add(new PdfIndirectObject(resourcesId, resourcesDictionary));
 
-        string imageContent = BuildImageContentStream(placement);
+        string imageContent = BuildImageContentStream(placement, "Im1");
         PdfStreamObject existingStream = RequireStreamObject(contentsReference.ObjectId, "Page contents");
         PdfStreamObject updatedStream = new(existingStream.Dictionary, Encoding.ASCII.GetBytes(imageContent));
         ReplaceObject(objects, contentsReference.ObjectId, updatedStream);
@@ -2917,6 +2917,82 @@ public sealed class PdfDocument
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
         ReplacePageImage(pageIndex, File.ReadAllBytes(imagePath), options);
+    }
+
+    public void AddPageImage(int pageIndex, byte[] imageBytes, PdfImageOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(imageBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+
+        PdfRasterImage image = PdfImageParser.Parse(imageBytes);
+        PdfPageModel page = _model.Pages[pageIndex];
+        PdfRectangle pageBounds = page.MediaBox ?? throw new NotSupportedException("Page /MediaBox is required for image placement.");
+        PdfImageOptions effectiveOptions = options ?? new PdfImageOptions
+        {
+            X = pageBounds.Left,
+            Y = pageBounds.Bottom,
+            Width = image.Width,
+            Height = image.Height,
+            PreserveAspectRatio = true,
+        };
+        ValidateImageOptions(effectiveOptions);
+        PdfImagePlacement placement = ResolveImagePlacement(image, effectiveOptions);
+
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        int nextObjectNumber = GetNextObjectNumber(objects);
+        PdfObjectId imageId = new(nextObjectNumber++, 0);
+        PdfObjectId resourcesId = new(nextObjectNumber++, 0);
+        PdfObjectId appendedContentId = new(nextObjectNumber++, 0);
+
+        PdfDictionaryObject pageDictionary = RequireDictionaryObject(page.ObjectId, "Page");
+        PdfDictionaryObject effectiveResources = ResolveEffectiveResourcesDictionary(page);
+        string imageResourceName = AllocateImageResourceName(effectiveResources);
+        PdfDictionaryObject mergedResources = BuildResourcesDictionaryWithImage(effectiveResources, imageResourceName, imageId);
+
+        PdfDictionaryObject imageDictionary = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("XObject")),
+            new PdfDictionaryEntry("Subtype", new PdfNameObject("Image")),
+            new PdfDictionaryEntry("Width", new PdfNumberObject(image.Width, isInteger: true)),
+            new PdfDictionaryEntry("Height", new PdfNumberObject(image.Height, isInteger: true)),
+            new PdfDictionaryEntry("ColorSpace", new PdfNameObject(image.ColorSpace)),
+            new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(image.BitsPerComponent, isInteger: true)),
+            new PdfDictionaryEntry("Filter", new PdfNameObject(image.Filter)),
+        ]);
+        objects.Add(new PdfIndirectObject(imageId, new PdfStreamObject(imageDictionary, image.EncodedBytes)));
+        objects.Add(new PdfIndirectObject(resourcesId, mergedResources));
+
+        string imageContent = BuildImageContentStream(placement, imageResourceName);
+        PdfStreamObject appendedImageStream = new(new PdfDictionaryObject([]), Encoding.ASCII.GetBytes(imageContent));
+        objects.Add(new PdfIndirectObject(appendedContentId, appendedImageStream));
+
+        PdfObject updatedContents = ComposeAppendedContentsValue(page.Contents, new PdfReferenceObject(appendedContentId));
+        PdfDictionaryObject updatedPage = ReplaceDictionaryEntries(
+            pageDictionary,
+            new PdfDictionaryEntry("Resources", new PdfReferenceObject(resourcesId)),
+            new PdfDictionaryEntry("Contents", updatedContents));
+        ReplaceObject(objects, page.ObjectId, updatedPage);
+
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
+        _model = PdfDocumentModelBuilder.Build(_file);
+
+        MarkDirty(page.ObjectId);
+        MarkDirty(imageId);
+        MarkDirty(resourcesId);
+        MarkDirty(appendedContentId);
+    }
+
+    public void AddPageImage(int pageIndex, string imagePath, PdfImageOptions? options = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
+        AddPageImage(pageIndex, File.ReadAllBytes(imagePath), options);
     }
 
     public void ReplacePageText(int pageIndex, string text, PdfTextOptions? options = null)
@@ -3347,7 +3423,7 @@ public sealed class PdfDocument
         return new PdfImagePlacement(x, y, targetWidth, targetHeight);
     }
 
-    private static string BuildImageContentStream(PdfImagePlacement placement)
+    private static string BuildImageContentStream(PdfImagePlacement placement, string imageResourceName)
     {
         StringBuilder builder = new();
         builder.Append("q ");
@@ -3358,8 +3434,84 @@ public sealed class PdfDocument
         builder.Append(placement.X.ToString("0.###", CultureInfo.InvariantCulture));
         builder.Append(' ');
         builder.Append(placement.Y.ToString("0.###", CultureInfo.InvariantCulture));
-        builder.Append(" cm /Im1 Do Q");
+        builder.Append(" cm /");
+        builder.Append(imageResourceName);
+        builder.Append(" Do Q");
         return builder.ToString();
+    }
+
+    private PdfDictionaryObject ResolveEffectiveResourcesDictionary(PdfPageModel page)
+    {
+        if (page.Resources is null)
+        {
+            return new PdfDictionaryObject([]);
+        }
+
+        if (!TryResolveDictionaryObject(page.Resources, out PdfDictionaryObject? resourcesDictionary))
+        {
+            throw new NotSupportedException("Page /Resources must be a dictionary or dictionary reference for image composition.");
+        }
+
+        return resourcesDictionary!;
+    }
+
+    private string AllocateImageResourceName(PdfDictionaryObject resourcesDictionary)
+    {
+        HashSet<string> usedNames = [];
+        if (TryGetDictionaryEntry(resourcesDictionary, "XObject", out PdfObject? xObjectValue))
+        {
+            if (!TryResolveDictionaryObject(xObjectValue!, out PdfDictionaryObject? xObjectDictionary))
+            {
+                throw new NotSupportedException("Page /Resources /XObject must be a dictionary or dictionary reference for image composition.");
+            }
+
+            foreach (PdfDictionaryEntry entry in xObjectDictionary!.Entries)
+            {
+                usedNames.Add(entry.Key);
+            }
+        }
+
+        int index = 1;
+        while (true)
+        {
+            string candidate = $"Im{index.ToString(CultureInfo.InvariantCulture)}";
+            if (!usedNames.Contains(candidate))
+            {
+                return candidate;
+            }
+
+            index++;
+        }
+    }
+
+    private PdfDictionaryObject BuildResourcesDictionaryWithImage(PdfDictionaryObject resourcesDictionary, string imageResourceName, PdfObjectId imageId)
+    {
+        List<PdfDictionaryEntry> xObjectEntries = [];
+        if (TryGetDictionaryEntry(resourcesDictionary, "XObject", out PdfObject? xObjectValue))
+        {
+            if (!TryResolveDictionaryObject(xObjectValue!, out PdfDictionaryObject? xObjectDictionary))
+            {
+                throw new NotSupportedException("Page /Resources /XObject must be a dictionary or dictionary reference for image composition.");
+            }
+
+            xObjectEntries.AddRange(xObjectDictionary!.Entries);
+        }
+
+        xObjectEntries.Add(new PdfDictionaryEntry(imageResourceName, new PdfReferenceObject(imageId)));
+        return ReplaceDictionaryEntries(
+            resourcesDictionary,
+            new PdfDictionaryEntry("XObject", new PdfDictionaryObject(xObjectEntries)));
+    }
+
+    private static PdfObject ComposeAppendedContentsValue(PdfObject? existingContents, PdfReferenceObject appendedContentReference)
+    {
+        return existingContents switch
+        {
+            null => appendedContentReference,
+            PdfReferenceObject contentReference => new PdfArrayObject([contentReference, appendedContentReference]),
+            PdfArrayObject contentArray => new PdfArrayObject([.. contentArray.Items, appendedContentReference]),
+            _ => throw new NotSupportedException("Page /Contents must be a reference or array for image composition."),
+        };
     }
 
     private static string ResolveEmbeddedFontPath(string text, PdfTextOptions options)

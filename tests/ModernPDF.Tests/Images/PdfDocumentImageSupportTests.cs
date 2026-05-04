@@ -47,6 +47,7 @@ public sealed class PdfDocumentImageSupportTests
 
             int pageIndex = document.AddImagePage(path);
             document.ReplacePageImage(pageIndex, path);
+            document.AddPageImage(pageIndex, path, new PdfImageOptions { X = 8, Y = 8 });
 
             byte[] saved = document.Save();
             Assert.Equal(1, PdfDocument.Open(saved).PageCount);
@@ -89,6 +90,55 @@ public sealed class PdfDocumentImageSupportTests
         byte[] saved = document.Save();
         string text = Encoding.ASCII.GetString(saved);
         Assert.Contains("100 0 0 100 50 0 cm /Im1 Do", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddPageImagePreservesExistingPageText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("before");
+        document.AddPageImage(0, GetSampleJpegBytes(), new PdfImageOptions { X = 10, Y = 10 });
+
+        byte[] saved = document.Save();
+        string text = Encoding.ASCII.GetString(saved);
+
+        Assert.Equal("before", PdfDocument.Open(saved).ExtractText());
+        Assert.Contains("/Im1 Do", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddPageImageSupportsMultipleImagesOnOnePage()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddPage(new PdfPageOptions { Width = 240, Height = 160 });
+        byte[] sampleJpeg = GetSampleJpegBytes();
+
+        document.AddPageImage(0, sampleJpeg, new PdfImageOptions { X = 0, Y = 0, Width = 80, Height = 80 });
+        document.AddPageImage(0, sampleJpeg, new PdfImageOptions { X = 120, Y = 40, Width = 80, Height = 80 });
+
+        byte[] saved = document.Save();
+        string text = Encoding.ASCII.GetString(saved);
+
+        Assert.Equal(2, CountOccurrences(text, "/Subtype /Image"));
+        Assert.Contains("/Im1 Do", text, StringComparison.Ordinal);
+        Assert.Contains("/Im2 Do", text, StringComparison.Ordinal);
+    }
+
+    private static int CountOccurrences(string source, string token)
+    {
+        int count = 0;
+        int index = 0;
+        while (true)
+        {
+            int found = source.IndexOf(token, index, StringComparison.Ordinal);
+            if (found < 0)
+            {
+                return count;
+            }
+
+            count++;
+            index = found + token.Length;
+        }
     }
 
     private static byte[] GetSampleJpegBytes()

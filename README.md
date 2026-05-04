@@ -7,7 +7,7 @@ Current implemented scope includes:
 - create/open/save PDF documents
 - text extraction
 - page/content editing
-- JPEG image page authoring and replacement
+- JPEG image page authoring, replacement, and composition
 - destructive text redaction
 - password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, `V=4 / R=4 / 128-bit AES`, and `V=5 / R=6 / 256-bit AES`
 - detached digital signatures (callback-based CMS embedding with ByteRange patching)
@@ -97,13 +97,16 @@ textOptions: new PdfTextOptions
 
 ## Image pages (JPEG)
 
-You can add a JPEG image as a page or replace an existing page with a JPEG image:
+You can add a JPEG image as a page, replace a page with an image, or append multiple images onto a page:
 
 ```csharp
 PdfDocument document = PdfDocument.Create();
 document.AddImagePage(@"C:\images\cover.jpg");
 document.ReplacePageImage(0, @"C:\images\updated-cover.jpg");
+document.AddPageImage(0, @"C:\images\badge.jpg", new PdfImageOptions { X = 24, Y = 24, Width = 64, Height = 64 });
 ```
+
+`AddImagePage(...)` creates an image-only page. Use `AddPageImage(...)` to compose multiple images on a page while preserving existing content.
 
 ## Save cross-reference style
 
