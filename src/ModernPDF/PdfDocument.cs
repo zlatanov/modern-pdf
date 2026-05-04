@@ -284,7 +284,7 @@ public sealed class PdfDocument
         PdfDetachedSignatureValidationOptions effectiveOptions = options ?? new PdfDetachedSignatureValidationOptions();
         ValidateSignatureValidationOptions(effectiveOptions);
         List<PdfDetachedSignatureValidationResult> results = [];
-        (List<X509Certificate2> dssCertificates, string? dssDiagnostic) = TryReadDssCertificates();
+        DssValidationEvidence dssEvidence = ReadDssValidationEvidence();
         try
         {
             foreach (PdfIndirectObject indirectObject in _file.Objects.OrderBy(static objectItem => objectItem.ObjectId.ObjectNumber))
@@ -294,12 +294,12 @@ public sealed class PdfDocument
                     continue;
                 }
 
-                results.Add(ValidateDetachedSignature(indirectObject.ObjectId.ObjectNumber, dictionary, effectiveOptions, dssCertificates, dssDiagnostic));
+                results.Add(ValidateDetachedSignature(indirectObject.ObjectId.ObjectNumber, dictionary, effectiveOptions, dssEvidence));
             }
         }
         finally
         {
-            foreach (X509Certificate2 certificate in dssCertificates)
+            foreach (X509Certificate2 certificate in dssEvidence.Certificates)
             {
                 certificate.Dispose();
             }
@@ -650,8 +650,7 @@ public sealed class PdfDocument
         int signatureObjectNumber,
         PdfDictionaryObject dictionary,
         PdfDetachedSignatureValidationOptions options,
-        IReadOnlyList<X509Certificate2> dssCertificates,
-        string? dssDiagnostic)
+        DssValidationEvidence dssEvidence)
     {
         string? filter = TryReadNameEntry(dictionary, "Filter");
         string? subFilter = TryReadNameEntry(dictionary, "SubFilter");
@@ -702,9 +701,9 @@ public sealed class PdfDocument
             }
 
             List<string> diagnostics = [];
-            if (!string.IsNullOrWhiteSpace(dssDiagnostic))
+            if (!string.IsNullOrWhiteSpace(dssEvidence.Diagnostic))
             {
-                diagnostics.Add(dssDiagnostic);
+                diagnostics.Add(dssEvidence.Diagnostic);
             }
             DateTimeOffset? signingTime = timestampSigningTime ?? TryReadFirstSigningTime(signedCms);
             bool? signingTimeValid = null;
@@ -735,7 +734,7 @@ public sealed class PdfDocument
             bool checkChain = options.VerifyCertificateChain || options.RequireRevocationStatus;
             if (checkChain)
             {
-                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(signedCms, options, signingTime, dssCertificates);
+                (bool chainIsValid, bool revocationIsValid, List<string> chainDiagnostics) = EvaluateSignerChains(signedCms, options, signingTime, dssEvidence.Certificates, dssEvidence.Crls);
                 diagnostics.AddRange(chainDiagnostics);
                 certificateChainValid = chainIsValid;
                 revocationValid = options.RequireRevocationStatus ? revocationIsValid : null;
@@ -995,7 +994,8 @@ public sealed class PdfDocument
         SignedCms signedCms,
         PdfDetachedSignatureValidationOptions options,
         DateTimeOffset? signingTime,
-        IReadOnlyList<X509Certificate2> dssCertificates)
+        IReadOnlyList<X509Certificate2> dssCertificates,
+        IReadOnlyList<CrlEvidence> dssCrls)
     {
         bool chainValid = true;
         bool revocationValid = true;
@@ -1050,32 +1050,48 @@ public sealed class PdfDocument
             }
 
             bool signerChainValid = chain.Build(certificate);
-            chainValid &= signerChainValid;
-            if (!signerChainValid)
+            List<string> nonRevocationDiagnostics = chain.ChainStatus
+                .Where(static status => status.Status != X509ChainStatusFlags.NoError && !IsRevocationChainStatus(status.Status))
+                .Select(static status => $"Certificate chain status: {status.Status} ({status.StatusInformation.Trim()})")
+                .ToList();
+            bool signerChainValidIgnoringRevocation = nonRevocationDiagnostics.Count == 0;
+            chainValid &= signerChainValidIgnoringRevocation;
+            if (!signerChainValidIgnoringRevocation)
             {
-                diagnostics.AddRange(chain.ChainStatus.Select(static status => $"Certificate chain status: {status.Status} ({status.StatusInformation.Trim()})"));
+                diagnostics.AddRange(nonRevocationDiagnostics);
             }
 
             if (options.RequireRevocationStatus)
             {
                 bool hasRevocationPointers = certificate.Extensions["2.5.29.31"] is not null
                     || certificate.Extensions["1.3.6.1.5.5.7.1.1"] is not null;
-                bool signerRevocationValid = signerChainValid
-                    && hasRevocationPointers
-                    && !chain.ChainStatus.Any(static status =>
-                        status.Status is X509ChainStatusFlags.Revoked
-                            or X509ChainStatusFlags.RevocationStatusUnknown
-                            or X509ChainStatusFlags.OfflineRevocation
-                            or X509ChainStatusFlags.NoIssuanceChainPolicy);
+                bool hasRevocationChainFailure = chain.ChainStatus.Any(static status => IsRevocationChainStatus(status.Status));
+                bool signerRevocationValid;
+                if (!signerChainValidIgnoringRevocation)
+                {
+                    signerRevocationValid = false;
+                }
+                else if (!hasRevocationChainFailure && hasRevocationPointers)
+                {
+                    signerRevocationValid = true;
+                }
+                else if (options.RevocationCheckMode == PdfRevocationCheckMode.Offline)
+                {
+                    signerRevocationValid = TryValidateRevocationWithOfflineDss(chain, dssCrls, verificationMoment, diagnostics);
+                }
+                else
+                {
+                    signerRevocationValid = false;
+                }
 
                 revocationValid &= signerRevocationValid;
                 if (!signerRevocationValid)
                 {
-                    diagnostics.Add(hasRevocationPointers
-                        ? options.RevocationCheckMode == PdfRevocationCheckMode.Online
+                    diagnostics.Add(options.RevocationCheckMode == PdfRevocationCheckMode.Online
+                        ? hasRevocationPointers
                             ? "Revocation status could not be established for all certificates in the signer chain using online OCSP/CRL retrieval."
-                            : "Revocation status could not be established for all certificates in the signer chain."
-                        : "Revocation status validation requires CRL or AIA certificate extensions.");
+                            : "Revocation status validation requires CRL or AIA certificate extensions."
+                        : "Revocation status could not be established for all certificates in the signer chain using offline evidence.");
                 }
             }
         }
@@ -1083,98 +1099,492 @@ public sealed class PdfDocument
         return (chainValid, revocationValid, diagnostics);
     }
 
-    private (List<X509Certificate2> Certificates, string? Diagnostic) TryReadDssCertificates()
+    private static bool IsRevocationChainStatus(X509ChainStatusFlags status)
     {
+        return status is X509ChainStatusFlags.Revoked
+            or X509ChainStatusFlags.RevocationStatusUnknown
+            or X509ChainStatusFlags.OfflineRevocation
+            or X509ChainStatusFlags.NoIssuanceChainPolicy;
+    }
+
+    private static bool TryValidateRevocationWithOfflineDss(
+        X509Chain chain,
+        IReadOnlyList<CrlEvidence> dssCrls,
+        DateTimeOffset verificationMoment,
+        List<string> diagnostics)
+    {
+        if (dssCrls.Count == 0)
+        {
+            diagnostics.Add("No DSS /CRLs evidence is available for offline revocation validation.");
+            return false;
+        }
+
+        if (chain.ChainElements.Count <= 1)
+        {
+            return true;
+        }
+
+        for (int index = 0; index < chain.ChainElements.Count - 1; index++)
+        {
+            X509Certificate2 certificate = chain.ChainElements[index].Certificate;
+            X509Certificate2 issuerCertificate = chain.ChainElements[index + 1].Certificate;
+            if (!TryFindValidCrlForCertificate(
+                certificate,
+                issuerCertificate,
+                verificationMoment,
+                dssCrls,
+                out CrlEvidence crlEvidence,
+                out string? crlError))
+            {
+                diagnostics.Add(crlError ?? $"No applicable DSS CRL was found for certificate '{certificate.Subject}'.");
+                return false;
+            }
+
+            string certificateSerial = NormalizeSerialHex(certificate.GetSerialNumber().Reverse().ToArray());
+            if (crlEvidence.RevokedSerialNumbers.Contains(certificateSerial))
+            {
+                diagnostics.Add($"Certificate '{certificate.Subject}' is revoked according to embedded DSS CRL evidence.");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryFindValidCrlForCertificate(
+        X509Certificate2 certificate,
+        X509Certificate2 issuerCertificate,
+        DateTimeOffset verificationMoment,
+        IReadOnlyList<CrlEvidence> dssCrls,
+        out CrlEvidence crlEvidence,
+        out string? error)
+    {
+        crlEvidence = default;
+        error = null;
+        byte[] expectedIssuerName = certificate.IssuerName.RawData;
+
+        List<CrlEvidence> candidates = dssCrls
+            .Where(candidate => candidate.IssuerNameRaw.AsSpan().SequenceEqual(expectedIssuerName))
+            .OrderByDescending(static candidate => candidate.ThisUpdate)
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            error = $"No DSS CRL was found for issuer '{certificate.Issuer}'.";
+            return false;
+        }
+
+        foreach (CrlEvidence candidate in candidates)
+        {
+            if (candidate.ThisUpdate > verificationMoment)
+            {
+                continue;
+            }
+
+            if (candidate.NextUpdate is DateTimeOffset nextUpdate && nextUpdate < verificationMoment)
+            {
+                continue;
+            }
+
+            if (!VerifyCrlSignature(candidate, issuerCertificate, out string? signatureError))
+            {
+                error = signatureError ?? $"DSS CRL signature verification failed for issuer '{issuerCertificate.Subject}'.";
+                continue;
+            }
+
+            crlEvidence = candidate;
+            return true;
+        }
+
+        error ??= $"No fresh, verifiable DSS CRL was found for issuer '{certificate.Issuer}'.";
+        return false;
+    }
+
+    private static bool VerifyCrlSignature(CrlEvidence crlEvidence, X509Certificate2 issuerCertificate, out string? error)
+    {
+        error = null;
+        if (!crlEvidence.IssuerNameRaw.AsSpan().SequenceEqual(issuerCertificate.SubjectName.RawData))
+        {
+            error = $"DSS CRL issuer does not match certificate issuer '{issuerCertificate.Subject}'.";
+            return false;
+        }
+
+        if (!TryResolveCrlSignatureAlgorithm(crlEvidence.SignatureAlgorithmOid, out HashAlgorithmName hashAlgorithm, out bool useRsa))
+        {
+            error = $"DSS CRL uses unsupported signature algorithm OID '{crlEvidence.SignatureAlgorithmOid}'.";
+            return false;
+        }
+
+        bool isValid;
+        if (useRsa)
+        {
+            using RSA? rsa = issuerCertificate.GetRSAPublicKey();
+            if (rsa is null)
+            {
+                error = $"Issuer certificate '{issuerCertificate.Subject}' does not expose an RSA public key required for CRL validation.";
+                return false;
+            }
+
+            isValid = rsa.VerifyData(crlEvidence.TbsCertList, crlEvidence.SignatureValue, hashAlgorithm, RSASignaturePadding.Pkcs1);
+        }
+        else
+        {
+            using ECDsa? ecdsa = issuerCertificate.GetECDsaPublicKey();
+            if (ecdsa is null)
+            {
+                error = $"Issuer certificate '{issuerCertificate.Subject}' does not expose an ECDSA public key required for CRL validation.";
+                return false;
+            }
+
+            isValid = ecdsa.VerifyData(crlEvidence.TbsCertList, crlEvidence.SignatureValue, hashAlgorithm);
+        }
+
+        if (!isValid)
+        {
+            error = $"DSS CRL signature could not be verified for issuer '{issuerCertificate.Subject}'.";
+        }
+
+        return isValid;
+    }
+
+    private static bool TryResolveCrlSignatureAlgorithm(string signatureAlgorithmOid, out HashAlgorithmName hashAlgorithm, out bool useRsa)
+    {
+        useRsa = true;
+        switch (signatureAlgorithmOid)
+        {
+#pragma warning disable CA5350 // CRL signature compatibility may require SHA-1 verification
+            case "1.2.840.113549.1.1.5":
+                hashAlgorithm = HashAlgorithmName.SHA1;
+                return true;
+#pragma warning restore CA5350
+            case "1.2.840.113549.1.1.11":
+                hashAlgorithm = HashAlgorithmName.SHA256;
+                return true;
+            case "1.2.840.113549.1.1.12":
+                hashAlgorithm = HashAlgorithmName.SHA384;
+                return true;
+            case "1.2.840.113549.1.1.13":
+                hashAlgorithm = HashAlgorithmName.SHA512;
+                return true;
+#pragma warning disable CA5350 // CRL signature compatibility may require SHA-1 verification
+            case "1.2.840.10045.4.1":
+                hashAlgorithm = HashAlgorithmName.SHA1;
+                useRsa = false;
+                return true;
+#pragma warning restore CA5350
+            case "1.2.840.10045.4.3.2":
+                hashAlgorithm = HashAlgorithmName.SHA256;
+                useRsa = false;
+                return true;
+            case "1.2.840.10045.4.3.3":
+                hashAlgorithm = HashAlgorithmName.SHA384;
+                useRsa = false;
+                return true;
+            case "1.2.840.10045.4.3.4":
+                hashAlgorithm = HashAlgorithmName.SHA512;
+                useRsa = false;
+                return true;
+            default:
+                hashAlgorithm = default;
+                return false;
+        }
+    }
+
+    private static string NormalizeSerialHex(ReadOnlySpan<byte> serialBytes)
+    {
+        int index = 0;
+        while (index < serialBytes.Length - 1 && serialBytes[index] == 0)
+        {
+            index++;
+        }
+
+        return Convert.ToHexString(serialBytes[index..]);
+    }
+
+    private DssValidationEvidence ReadDssValidationEvidence()
+    {
+        if (!TryReadDssDictionary(out PdfDictionaryObject? dssDictionary, out string? dssDictionaryError))
+        {
+            return new DssValidationEvidence([], [], dssDictionaryError);
+        }
+
+        PdfDictionaryObject resolvedDssDictionary = dssDictionary!;
+        List<X509Certificate2> certificates = [];
+        List<CrlEvidence> crls = [];
+        List<string> diagnostics = [];
+        if (!string.IsNullOrWhiteSpace(dssDictionaryError))
+        {
+            diagnostics.Add(dssDictionaryError);
+        }
+
+        List<byte[]> certificatePayloads = [];
+        TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "Certs", "DSS /Certs", certificatePayloads, diagnostics);
+        for (int index = 0; index < certificatePayloads.Count; index++)
+        {
+            try
+            {
+                certificates.Add(X509CertificateLoader.LoadCertificate(certificatePayloads[index]));
+            }
+            catch (CryptographicException exception)
+            {
+                diagnostics.Add($"DSS certificate at index {index} is invalid: {exception.Message}");
+            }
+        }
+
+        List<byte[]> crlPayloads = [];
+        TryCollectResolvedBinaryEntriesFromDssArray(resolvedDssDictionary, "CRLs", "DSS /CRLs", crlPayloads, diagnostics);
+
+        if (TryGetDictionaryEntry(resolvedDssDictionary, "VRI", out PdfObject? vriObject))
+        {
+            if (!TryResolveDictionaryObject(vriObject!, out PdfDictionaryObject? vriDictionary))
+            {
+                diagnostics.Add("Document /DSS /VRI entry is not a dictionary; VRI revocation evidence was ignored.");
+            }
+            else
+            {
+                foreach (PdfDictionaryEntry vriEntry in vriDictionary!.Entries)
+                {
+                    if (!TryResolveDictionaryObject(vriEntry.Value, out PdfDictionaryObject? vriItemDictionary))
+                    {
+                        diagnostics.Add($"Document /DSS /VRI '{vriEntry.Key}' is not a dictionary; VRI item was ignored.");
+                        continue;
+                    }
+
+                    TryCollectResolvedBinaryEntriesFromDssArray(vriItemDictionary!, "CRL", $"/DSS /VRI '{vriEntry.Key}' /CRL", crlPayloads, diagnostics);
+                    if (TryGetDictionaryEntry(vriItemDictionary!, "OCSP", out _))
+                    {
+                        diagnostics.Add($"Document /DSS /VRI '{vriEntry.Key}' contains /OCSP evidence, but CRL-based validation is currently used.");
+                    }
+                }
+            }
+        }
+
+        if (TryGetDictionaryEntry(resolvedDssDictionary, "OCSPs", out _))
+        {
+            diagnostics.Add("Document /DSS /OCSPs evidence is present, but CRL-based validation is currently used.");
+        }
+
+        HashSet<string> seenCrlFingerprints = [];
+        foreach (byte[] crlBytes in crlPayloads)
+        {
+            string fingerprint = Convert.ToHexString(SHA256.HashData(crlBytes));
+            if (!seenCrlFingerprints.Add(fingerprint))
+            {
+                continue;
+            }
+
+            if (TryParseCrlEvidence(crlBytes, out CrlEvidence crlEvidence, out string? crlError))
+            {
+                crls.Add(crlEvidence);
+            }
+            else if (!string.IsNullOrWhiteSpace(crlError))
+            {
+                diagnostics.Add(crlError);
+            }
+        }
+
+        string? diagnostic = diagnostics.Count == 0
+            ? null
+            : string.Join(" | ", diagnostics.Distinct(StringComparer.Ordinal));
+        return new DssValidationEvidence(certificates, crls, diagnostic);
+    }
+
+    private bool TryReadDssDictionary(out PdfDictionaryObject? dssDictionary, out string? diagnostic)
+    {
+        dssDictionary = null;
+        diagnostic = null;
         if (!TryGetDictionaryEntry(_file.Trailer, "Root", out PdfObject? rootObject))
         {
-            return ([], "Document trailer is missing /Root entry; DSS certificates could not be loaded.");
+            diagnostic = "Document trailer is missing /Root entry; DSS evidence could not be loaded.";
+            return false;
         }
 
         if (!TryResolveDictionaryObject(rootObject!, out PdfDictionaryObject? catalog))
         {
-            return ([], "Document catalog could not be resolved; DSS certificates could not be loaded.");
+            diagnostic = "Document catalog could not be resolved; DSS evidence could not be loaded.";
+            return false;
         }
 
-        PdfDictionaryObject resolvedCatalog = catalog!;
-        if (!TryGetDictionaryEntry(resolvedCatalog, "DSS", out PdfObject? dssObject))
+        if (!TryGetDictionaryEntry(catalog!, "DSS", out PdfObject? dssObject))
         {
-            return ([], null);
+            return false;
         }
 
-        if (!TryResolveDictionaryObject(dssObject!, out PdfDictionaryObject? dssDictionary))
+        if (!TryResolveDictionaryObject(dssObject!, out PdfDictionaryObject? resolvedDssDictionary))
         {
-            return ([], "Document /DSS entry is not a dictionary; DSS certificates were ignored.");
+            diagnostic = "Document /DSS entry is not a dictionary; DSS evidence was ignored.";
+            return false;
         }
 
-        PdfDictionaryObject resolvedDssDictionary = dssDictionary!;
-        if (!TryGetDictionaryEntry(resolvedDssDictionary, "Certs", out PdfObject? certsObject))
-        {
-            return ([], null);
-        }
-
-        if (!TryResolveArrayObject(certsObject!, out PdfArrayObject? certsArray))
-        {
-            return ([], "Document /DSS /Certs entry is not an array; DSS certificates were ignored.");
-        }
-
-        List<X509Certificate2> certificates = [];
-        List<string> errors = [];
-        PdfArrayObject resolvedCertsArray = certsArray!;
-        for (int index = 0; index < resolvedCertsArray.Items.Count; index++)
-        {
-            if (!TryResolveCertificateBytes(resolvedCertsArray.Items[index], out byte[]? rawCertificate, out string? error))
-            {
-                if (!string.IsNullOrWhiteSpace(error))
-                {
-                    errors.Add(error);
-                }
-
-                continue;
-            }
-
-            try
-            {
-                certificates.Add(X509CertificateLoader.LoadCertificate(rawCertificate!));
-            }
-            catch (CryptographicException exception)
-            {
-                errors.Add($"DSS certificate at index {index} is invalid: {exception.Message}");
-            }
-        }
-
-        string? diagnostic = errors.Count == 0
-            ? null
-            : $"Some DSS certificates could not be loaded: {string.Join(" | ", errors)}";
-        return (certificates, diagnostic);
+        dssDictionary = resolvedDssDictionary!;
+        return true;
     }
 
-    private bool TryResolveCertificateBytes(PdfObject value, out byte[]? rawCertificate, out string? error)
+    private void TryCollectResolvedBinaryEntriesFromDssArray(
+        PdfDictionaryObject dictionary,
+        string key,
+        string context,
+        List<byte[]> target,
+        List<string> diagnostics)
     {
-        rawCertificate = null;
+        if (!TryGetDictionaryEntry(dictionary, key, out PdfObject? value))
+        {
+            return;
+        }
+
+        if (!TryResolveArrayObject(value!, out PdfArrayObject? array))
+        {
+            diagnostics.Add($"{context} must be an array; evidence was ignored.");
+            return;
+        }
+
+        for (int index = 0; index < array!.Items.Count; index++)
+        {
+            if (TryResolveBinaryBytes(array.Items[index], out byte[]? resolvedBytes, out string? error))
+            {
+                target.Add(resolvedBytes!);
+            }
+            else if (!string.IsNullOrWhiteSpace(error))
+            {
+                diagnostics.Add($"{context}[{index}] {error}");
+            }
+        }
+    }
+
+    private bool TryResolveBinaryBytes(PdfObject value, out byte[]? data, out string? error)
+    {
+        data = null;
         error = null;
         if (!TryResolveObject(value, out PdfObject? resolved))
         {
-            error = "A DSS certificate reference could not be resolved.";
+            error = "reference could not be resolved.";
             return false;
         }
 
         switch (resolved)
         {
             case PdfStreamObject stream:
-                rawCertificate = stream.Data.ToArray();
+                data = stream.Data.ToArray();
                 return true;
             case PdfByteStringObject byteString:
-                rawCertificate = byteString.Bytes.ToArray();
+                data = byteString.Bytes.ToArray();
                 return true;
-            case PdfStringObject stringObject:
-                rawCertificate = Encoding.ASCII.GetBytes(stringObject.Value);
+            case PdfStringObject literalString:
+                data = Encoding.ASCII.GetBytes(literalString.Value);
                 return true;
             default:
                 error = resolved is null
-                    ? "Unsupported DSS certificate object type '<null>'."
-                    : $"Unsupported DSS certificate object type '{resolved.GetType().Name}'.";
+                    ? "contains unsupported object type '<null>'."
+                    : $"contains unsupported object type '{resolved.GetType().Name}'.";
                 return false;
         }
+    }
+
+    private static bool TryParseCrlEvidence(byte[] crlBytes, out CrlEvidence evidence, out string? error)
+    {
+        evidence = default;
+        error = null;
+
+        try
+        {
+            AsnReader certificateListReader = new(crlBytes, AsnEncodingRules.DER);
+            AsnReader certificateList = certificateListReader.ReadSequence();
+            ReadOnlyMemory<byte> tbsCertListBytes = certificateList.ReadEncodedValue();
+            AsnReader tbsCertList = new AsnReader(tbsCertListBytes.ToArray(), AsnEncodingRules.DER).ReadSequence();
+
+            Asn1Tag integerTag = new(UniversalTagNumber.Integer);
+            if (tbsCertList.HasData && tbsCertList.PeekTag().HasSameClassAndValue(integerTag))
+            {
+                _ = tbsCertList.ReadInteger();
+            }
+
+            _ = ReadAlgorithmIdentifierOid(tbsCertList);
+            byte[] issuerNameRaw = tbsCertList.ReadEncodedValue().ToArray();
+            DateTimeOffset thisUpdate = ReadAsnTime(tbsCertList);
+            DateTimeOffset? nextUpdate = null;
+            if (tbsCertList.HasData && IsAsnTimeTag(tbsCertList.PeekTag()))
+            {
+                nextUpdate = ReadAsnTime(tbsCertList);
+            }
+
+            HashSet<string> revokedSerialNumbers = [];
+            Asn1Tag sequenceTag = new(UniversalTagNumber.Sequence);
+            if (tbsCertList.HasData && tbsCertList.PeekTag().HasSameClassAndValue(sequenceTag))
+            {
+                AsnReader revokedCertificates = tbsCertList.ReadSequence();
+                while (revokedCertificates.HasData)
+                {
+                    AsnReader revokedCertificate = revokedCertificates.ReadSequence();
+                    byte[] serialNumber = revokedCertificate.ReadIntegerBytes().ToArray();
+                    revokedSerialNumbers.Add(NormalizeSerialHex(serialNumber));
+                    _ = ReadAsnTime(revokedCertificate);
+                    while (revokedCertificate.HasData)
+                    {
+                        _ = revokedCertificate.ReadEncodedValue();
+                    }
+                }
+            }
+
+            while (tbsCertList.HasData)
+            {
+                _ = tbsCertList.ReadEncodedValue();
+            }
+
+            string signatureAlgorithmOid = ReadAlgorithmIdentifierOid(certificateList);
+            byte[] signatureValue = certificateList.ReadBitString(out _);
+            certificateListReader.ThrowIfNotEmpty();
+
+            evidence = new CrlEvidence(
+                tbsCertListBytes.ToArray(),
+                issuerNameRaw,
+                thisUpdate,
+                nextUpdate,
+                revokedSerialNumbers,
+                signatureAlgorithmOid,
+                signatureValue);
+            return true;
+        }
+        catch (AsnContentException)
+        {
+            error = "A DSS CRL payload is malformed and was ignored.";
+            return false;
+        }
+    }
+
+    private static string ReadAlgorithmIdentifierOid(AsnReader reader)
+    {
+        AsnReader algorithmIdentifier = reader.ReadSequence();
+        string oid = algorithmIdentifier.ReadObjectIdentifier();
+        while (algorithmIdentifier.HasData)
+        {
+            _ = algorithmIdentifier.ReadEncodedValue();
+        }
+
+        return oid;
+    }
+
+    private static bool IsAsnTimeTag(Asn1Tag tag)
+    {
+        Asn1Tag utcTag = new(UniversalTagNumber.UtcTime);
+        Asn1Tag generalizedTag = new(UniversalTagNumber.GeneralizedTime);
+        return tag.HasSameClassAndValue(utcTag) || tag.HasSameClassAndValue(generalizedTag);
+    }
+
+    private static DateTimeOffset ReadAsnTime(AsnReader reader)
+    {
+        Asn1Tag tag = reader.PeekTag();
+        Asn1Tag utcTag = new(UniversalTagNumber.UtcTime);
+        if (tag.HasSameClassAndValue(utcTag))
+        {
+            return reader.ReadUtcTime();
+        }
+
+        Asn1Tag generalizedTag = new(UniversalTagNumber.GeneralizedTime);
+        if (tag.HasSameClassAndValue(generalizedTag))
+        {
+            return reader.ReadGeneralizedTime();
+        }
+
+        throw new AsnContentException("Expected ASN.1 time value.");
     }
 
     private bool TryResolveDictionaryObject(PdfObject value, out PdfDictionaryObject? dictionary)
@@ -1221,6 +1631,20 @@ public sealed class PdfDocument
         resolved = value;
         return true;
     }
+
+    private readonly record struct DssValidationEvidence(
+        IReadOnlyList<X509Certificate2> Certificates,
+        IReadOnlyList<CrlEvidence> Crls,
+        string? Diagnostic);
+
+    private readonly record struct CrlEvidence(
+        byte[] TbsCertList,
+        byte[] IssuerNameRaw,
+        DateTimeOffset ThisUpdate,
+        DateTimeOffset? NextUpdate,
+        HashSet<string> RevokedSerialNumbers,
+        string SignatureAlgorithmOid,
+        byte[] SignatureValue);
 
     private static bool EvaluateSignerPolicies(SignedCms signedCms, IReadOnlyList<string> requiredPolicyOids, List<string> diagnostics)
     {
