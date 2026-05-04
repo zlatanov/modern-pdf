@@ -9,6 +9,7 @@ Current implemented scope includes:
 - page/content editing
 - destructive text redaction
 - password security for Standard handler `V=1 / R=2 / 40-bit` (with permission flags)
+- detached digital signatures (callback-based CMS embedding with ByteRange patching)
 - TrueType font embedding for generated/replaced text with automatic subsetting and OpenType shaping
 - corpus-based interoperability/hardening test harness
 
@@ -93,6 +94,27 @@ textOptions: new PdfTextOptions
 });
 ```
 
+## Detached signatures (MVP)
+
+The signature API is callback-based: ModernPDF computes and patches `/ByteRange`, provides the exact signed payload bytes, and embeds returned CMS bytes into `/Contents`.
+
+```csharp
+PdfDocument document = PdfDocument.Create();
+document.AddTextPage("Signed content");
+
+byte[] signedBytes = document.SaveSignedDetached(
+    payloadToSign =>
+    {
+        // Replace with your CMS/PKCS#7 detached signer implementation.
+        return MyCmsSigner.SignDetached(payloadToSign.Span);
+    },
+    new PdfSignatureOptions
+    {
+        ContentsByteLength = 8192,
+        Reason = "Approval",
+    });
+```
+
 ## Corpus tests
 
 Corpus tests are opt-in and use fixtures downloaded from pinned external source commits with SHA-256 verification.
@@ -117,6 +139,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 ## Current limitations
 
-- incremental save is not implemented
-- digital signatures are not implemented
+- xref-stream and object-stream parsing/writing are not implemented
+- signature validation is not implemented (current API focuses on detached signature embedding)
 - security support is intentionally limited to Standard handler `V=1 / R=2`

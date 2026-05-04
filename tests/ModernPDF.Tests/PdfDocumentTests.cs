@@ -1,5 +1,7 @@
 using System.Text;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Globalization;
 using ModernPDF.DocumentModel;
 using ModernPDF.Fonts;
 using ModernPDF.Format;
@@ -151,6 +153,77 @@ public sealed class PdfDocumentTests
                     Mode = PdfSaveMode.Incremental,
                     Security = new PdfSecurityOptions { UserPassword = "pw" },
                 }));
+    }
+
+    [Fact]
+    public void SaveSignedDetachedAddsSignatureDictionaryAndPreservesText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("hello signature");
+
+        bool callbackInvoked = false;
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload =>
+            {
+                callbackInvoked = true;
+                return SHA256.HashData(payload.Span);
+            },
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 512,
+                Reason = "UnitTest",
+            });
+
+        string text = Encoding.ASCII.GetString(signedBytes);
+        Assert.True(callbackInvoked);
+        Assert.Contains("/Type /Sig", text, StringComparison.Ordinal);
+        Assert.Contains("/ByteRange [", text, StringComparison.Ordinal);
+        Assert.Equal("hello signature", PdfDocument.Open(signedBytes).ExtractText());
+
+        (long[] values, int contentsHexLength) = ParseSignatureByteRange(text);
+        Assert.Equal(4, values.Length);
+        Assert.Equal(0, values[0]);
+        Assert.True(values[1] > 0);
+        Assert.True(values[2] > values[1]);
+        Assert.Equal(contentsHexLength + 2, values[2] - values[1]);
+        Assert.Equal(signedBytes.LongLength, values[2] + values[3]);
+    }
+
+    [Fact]
+    public void SaveSignedDetachedThrowsWhenCallbackExceedsPlaceholder()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("x");
+
+        Assert.Throws<ArgumentException>(
+            () => document.SaveSignedDetached(
+                _ => new byte[2048],
+                new PdfSignatureOptions
+                {
+                    ContentsByteLength = 64,
+                }));
+    }
+
+    [Fact]
+    public void SaveSignedDetachedThrowsWhenDocumentHasNoPages()
+    {
+        PdfDocument document = PdfDocument.Create();
+        Assert.Throws<InvalidOperationException>(() => document.SaveSignedDetached(_ => [1, 2, 3]));
+    }
+
+    [Fact]
+    public void SaveSignedDetachedRejectsEncryptedOpenDocument()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("signed");
+        byte[] encrypted = document.Save(
+            new PdfSaveOptions
+            {
+                Security = new PdfSecurityOptions { UserPassword = "pw" },
+            });
+
+        PdfDocument opened = PdfDocument.Open(encrypted, "pw");
+        Assert.Throws<NotSupportedException>(() => opened.SaveSignedDetached(_ => [1, 2, 3]));
     }
 
     [Fact]
@@ -1240,6 +1313,31 @@ public sealed class PdfDocumentTests
                     Permissions = (PdfPermissions)256,
                 },
             }));
+    }
+
+    private static (long[] Values, int ContentsHexLength) ParseSignatureByteRange(string asciiPdf)
+    {
+        int contentsMarker = asciiPdf.LastIndexOf("/Contents <", StringComparison.Ordinal);
+        Assert.True(contentsMarker >= 0, "Expected signature /Contents entry.");
+        int contentsHexStart = contentsMarker + "/Contents <".Length;
+        int contentsHexEnd = asciiPdf.IndexOf('>', contentsHexStart);
+        Assert.True(contentsHexEnd > contentsHexStart, "Expected signature /Contents hex end marker.");
+        int contentsHexLength = contentsHexEnd - contentsHexStart;
+
+        int markerIndex = asciiPdf.LastIndexOf("/ByteRange [", StringComparison.Ordinal);
+        Assert.True(markerIndex >= 0, "Expected signature /ByteRange entry.");
+        int arrayStart = markerIndex + "/ByteRange [".Length;
+        int arrayEnd = asciiPdf.IndexOf(']', arrayStart);
+        Assert.True(arrayEnd > arrayStart, "Expected signature /ByteRange array end marker.");
+
+        string[] parts = asciiPdf[arrayStart..arrayEnd]
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal(4, parts.Length);
+
+        long[] values = parts
+            .Select(static part => long.Parse(part, CultureInfo.InvariantCulture))
+            .ToArray();
+        return (values, contentsHexLength);
     }
 
     private static string GetFixtureFontPath()

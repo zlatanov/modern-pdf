@@ -195,6 +195,429 @@ public sealed class PdfDocument
         File.WriteAllBytes(path, Save(options));
     }
 
+    public byte[] SaveSignedDetached(Func<ReadOnlyMemory<byte>, byte[]> signer, PdfSignatureOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(signer);
+
+        if (_openedEncrypted)
+        {
+            throw new NotSupportedException("Detached signatures are not supported for documents opened from encrypted PDFs.");
+        }
+
+        PdfSignatureOptions effectiveOptions = options ?? new PdfSignatureOptions();
+        ValidateSignatureOptions(effectiveOptions);
+
+        PdfFile unsignedFile = BuildDetachedSignatureFile(effectiveOptions, out HashSet<PdfObjectId> dirtyObjectIds);
+        byte[] unsignedBytes = PdfFileWriter.WriteIncremental(unsignedFile, dirtyObjectIds);
+        byte[] signedBytes = ApplyDetachedSignature(unsignedBytes, signer);
+        RebaseFromSavedBytes(signedBytes);
+        return signedBytes;
+    }
+
+    private PdfFile BuildDetachedSignatureFile(PdfSignatureOptions options, out HashSet<PdfObjectId> dirtyObjectIds)
+    {
+        if (_model.Pages.Count == 0)
+        {
+            throw new InvalidOperationException("At least one page is required before adding a detached signature.");
+        }
+
+        if (options.PageIndex < 0 || options.PageIndex >= _model.Pages.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Signature PageIndex is out of range.");
+        }
+
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        int nextObjectNumber = GetNextObjectNumber(objects);
+        PdfObjectId signatureId = new(nextObjectNumber++, 0);
+        PdfObjectId widgetId = new(nextObjectNumber++, 0);
+        dirtyObjectIds = [signatureId, widgetId];
+
+        DateTimeOffset signingTime = options.SigningTime ?? DateTimeOffset.UtcNow;
+        List<PdfDictionaryEntry> signatureEntries =
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Sig")),
+            new PdfDictionaryEntry("Filter", new PdfNameObject(options.Filter)),
+            new PdfDictionaryEntry("SubFilter", new PdfNameObject(options.SubFilter)),
+            new PdfDictionaryEntry(
+                "ByteRange",
+                new PdfArrayObject(
+                [
+                    CreateByteRangePlaceholderNumber(),
+                    CreateByteRangePlaceholderNumber(),
+                    CreateByteRangePlaceholderNumber(),
+                    CreateByteRangePlaceholderNumber(),
+                ])),
+            new PdfDictionaryEntry("Contents", new PdfByteStringObject(new byte[options.ContentsByteLength])),
+            new PdfDictionaryEntry("M", new PdfStringObject(FormatPdfDate(signingTime))),
+        ];
+
+        AddOptionalSignatureString(signatureEntries, "Name", options.Name);
+        AddOptionalSignatureString(signatureEntries, "Reason", options.Reason);
+        AddOptionalSignatureString(signatureEntries, "Location", options.Location);
+        AddOptionalSignatureString(signatureEntries, "ContactInfo", options.ContactInfo);
+
+        PdfDictionaryObject signatureDictionary = new(signatureEntries);
+        objects.Add(new PdfIndirectObject(signatureId, signatureDictionary));
+
+        PdfPageModel page = _model.Pages[options.PageIndex];
+        PdfDictionaryObject pageDictionary = RequireDictionaryObject(page.ObjectId, "Page");
+        PdfArrayObject rect = new(
+        [
+            new PdfNumberObject(options.X, isInteger: false),
+            new PdfNumberObject(options.Y, isInteger: false),
+            new PdfNumberObject(options.X + options.Width, isInteger: false),
+            new PdfNumberObject(options.Y + options.Height, isInteger: false),
+        ]);
+
+        PdfDictionaryObject widgetDictionary = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Annot")),
+            new PdfDictionaryEntry("Subtype", new PdfNameObject("Widget")),
+            new PdfDictionaryEntry("FT", new PdfNameObject("Sig")),
+            new PdfDictionaryEntry("T", new PdfStringObject(options.FieldName)),
+            new PdfDictionaryEntry("Rect", rect),
+            new PdfDictionaryEntry("V", new PdfReferenceObject(signatureId)),
+            new PdfDictionaryEntry("F", new PdfNumberObject(132, isInteger: true)),
+            new PdfDictionaryEntry("P", new PdfReferenceObject(page.ObjectId)),
+        ]);
+
+        objects.Add(new PdfIndirectObject(widgetId, widgetDictionary));
+        AppendWidgetToPageAnnotations(objects, pageDictionary, page.ObjectId, widgetId, dirtyObjectIds);
+        AttachWidgetToAcroForm(objects, widgetId, ref nextObjectNumber, dirtyObjectIds);
+
+        return new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
+    }
+
+    private static void AddOptionalSignatureString(List<PdfDictionaryEntry> entries, string key, string? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        entries.Add(new PdfDictionaryEntry(key, new PdfStringObject(value)));
+    }
+
+    private static PdfNumberObject CreateByteRangePlaceholderNumber()
+    {
+        return new PdfNumberObject(9999999999, isInteger: true);
+    }
+
+    private void AppendWidgetToPageAnnotations(
+        List<PdfIndirectObject> objects,
+        PdfDictionaryObject pageDictionary,
+        PdfObjectId pageObjectId,
+        PdfObjectId widgetId,
+        HashSet<PdfObjectId> dirtyObjectIds)
+    {
+        PdfReferenceObject widgetReference = new(widgetId);
+        if (TryGetDictionaryEntry(pageDictionary, "Annots", out PdfObject? annotsObject))
+        {
+            switch (annotsObject)
+            {
+                case PdfArrayObject annotsArray:
+                {
+                    PdfArrayObject updatedAnnots = new([.. annotsArray.Items, widgetReference]);
+                    PdfDictionaryObject updatedPage = ReplaceDictionaryEntries(
+                        pageDictionary,
+                        new PdfDictionaryEntry("Annots", updatedAnnots));
+                    ReplaceObject(objects, pageObjectId, updatedPage);
+                    dirtyObjectIds.Add(pageObjectId);
+                    return;
+                }
+                case PdfReferenceObject annotsReference:
+                {
+                    PdfArrayObject annotsArray = RequireArrayObject(annotsReference.ObjectId, "Page annotations");
+                    PdfArrayObject updatedAnnots = new([.. annotsArray.Items, widgetReference]);
+                    ReplaceObject(objects, annotsReference.ObjectId, updatedAnnots);
+                    dirtyObjectIds.Add(annotsReference.ObjectId);
+                    return;
+                }
+                default:
+                    throw new NotSupportedException("Page /Annots must be an array or an array reference.");
+            }
+        }
+
+        PdfDictionaryObject pageWithAnnots = ReplaceDictionaryEntries(
+            pageDictionary,
+            new PdfDictionaryEntry("Annots", new PdfArrayObject([widgetReference])));
+        ReplaceObject(objects, pageObjectId, pageWithAnnots);
+        dirtyObjectIds.Add(pageObjectId);
+    }
+
+    private void AttachWidgetToAcroForm(
+        List<PdfIndirectObject> objects,
+        PdfObjectId widgetId,
+        ref int nextObjectNumber,
+        HashSet<PdfObjectId> dirtyObjectIds)
+    {
+        PdfDictionaryObject catalog = RequireDictionaryObject(_model.CatalogObjectId, "Catalog");
+        PdfReferenceObject widgetReference = new(widgetId);
+        if (!TryGetDictionaryEntry(catalog, "AcroForm", out PdfObject? acroFormObject))
+        {
+            PdfObjectId acroFormId = new(nextObjectNumber++, 0);
+            PdfDictionaryObject acroFormDictionary = new(
+            [
+                new PdfDictionaryEntry("Fields", new PdfArrayObject([widgetReference])),
+                new PdfDictionaryEntry("SigFlags", new PdfNumberObject(3, isInteger: true)),
+            ]);
+            objects.Add(new PdfIndirectObject(acroFormId, acroFormDictionary));
+
+            PdfDictionaryObject updatedCatalog = ReplaceDictionaryEntries(
+                catalog,
+                new PdfDictionaryEntry("AcroForm", new PdfReferenceObject(acroFormId)));
+            ReplaceObject(objects, _model.CatalogObjectId, updatedCatalog);
+            dirtyObjectIds.Add(acroFormId);
+            dirtyObjectIds.Add(_model.CatalogObjectId);
+            return;
+        }
+
+        if (acroFormObject is PdfReferenceObject acroFormReference)
+        {
+            PdfDictionaryObject acroFormDictionary = RequireDictionaryObject(acroFormReference.ObjectId, "AcroForm");
+            PdfDictionaryObject updatedAcroForm = AddWidgetToAcroFormDictionary(
+                acroFormDictionary,
+                widgetReference,
+                objects,
+                dirtyObjectIds);
+            ReplaceObject(objects, acroFormReference.ObjectId, updatedAcroForm);
+            dirtyObjectIds.Add(acroFormReference.ObjectId);
+            return;
+        }
+
+        if (acroFormObject is PdfDictionaryObject directAcroForm)
+        {
+            PdfDictionaryObject updatedAcroForm = AddWidgetToAcroFormDictionary(
+                directAcroForm,
+                widgetReference,
+                objects,
+                dirtyObjectIds);
+            PdfDictionaryObject updatedCatalog = ReplaceDictionaryEntries(
+                catalog,
+                new PdfDictionaryEntry("AcroForm", updatedAcroForm));
+            ReplaceObject(objects, _model.CatalogObjectId, updatedCatalog);
+            dirtyObjectIds.Add(_model.CatalogObjectId);
+            return;
+        }
+
+        throw new NotSupportedException("Catalog /AcroForm must be a dictionary or dictionary reference.");
+    }
+
+    private static PdfDictionaryObject AddWidgetToAcroFormDictionary(
+        PdfDictionaryObject acroFormDictionary,
+        PdfReferenceObject widgetReference,
+        List<PdfIndirectObject> objects,
+        HashSet<PdfObjectId> dirtyObjectIds)
+    {
+        PdfObject fieldsObject;
+        if (TryGetDictionaryEntry(acroFormDictionary, "Fields", out PdfObject? existingFields))
+        {
+            switch (existingFields)
+            {
+                case PdfArrayObject fieldsArray:
+                    fieldsObject = new PdfArrayObject([.. fieldsArray.Items, widgetReference]);
+                    break;
+                case PdfReferenceObject fieldsReference:
+                {
+                    PdfArrayObject fieldsArray = RequireArrayObjectFromList(objects, fieldsReference.ObjectId, "AcroForm fields");
+                    PdfArrayObject updatedFields = new([.. fieldsArray.Items, widgetReference]);
+                    ReplaceObject(objects, fieldsReference.ObjectId, updatedFields);
+                    dirtyObjectIds.Add(fieldsReference.ObjectId);
+                    fieldsObject = fieldsReference;
+                    break;
+                }
+                default:
+                    throw new NotSupportedException("AcroForm /Fields must be an array or an array reference.");
+            }
+        }
+        else
+        {
+            fieldsObject = new PdfArrayObject([widgetReference]);
+        }
+
+        int sigFlags = 3;
+        if (TryGetDictionaryEntry(acroFormDictionary, "SigFlags", out PdfObject? existingSigFlags)
+            && existingSigFlags is PdfNumberObject flagsNumber
+            && flagsNumber.IsInteger)
+        {
+            sigFlags |= Convert.ToInt32(flagsNumber.Value, CultureInfo.InvariantCulture);
+        }
+
+        return ReplaceDictionaryEntries(
+            acroFormDictionary,
+            new PdfDictionaryEntry("Fields", fieldsObject),
+            new PdfDictionaryEntry("SigFlags", new PdfNumberObject(sigFlags, isInteger: true)));
+    }
+
+    private static PdfArrayObject RequireArrayObjectFromList(
+        IReadOnlyList<PdfIndirectObject> objects,
+        PdfObjectId objectId,
+        string context)
+    {
+        foreach (PdfIndirectObject indirectObject in objects)
+        {
+            if (indirectObject.ObjectId == objectId)
+            {
+                return indirectObject.Value as PdfArrayObject
+                    ?? throw new PdfFormatException($"{context} object {objectId} is not an array.");
+            }
+        }
+
+        throw new PdfFormatException($"{context} object {objectId} was not found.");
+    }
+
+    private static byte[] ApplyDetachedSignature(byte[] unsignedBytes, Func<ReadOnlyMemory<byte>, byte[]> signer)
+    {
+        string text = Encoding.ASCII.GetString(unsignedBytes);
+        const string typeMarker = "/Type /Sig";
+        int signatureTypeIndex = text.LastIndexOf(typeMarker, StringComparison.Ordinal);
+        if (signatureTypeIndex < 0)
+        {
+            throw new PdfFormatException("Could not locate signature dictionary.");
+        }
+
+        int signatureEndIndex = text.IndexOf("endobj", signatureTypeIndex, StringComparison.Ordinal);
+        if (signatureEndIndex < 0)
+        {
+            throw new PdfFormatException("Could not locate end of signature dictionary object.");
+        }
+
+        const string byteRangeMarker = "/ByteRange [";
+        int byteRangeIndex = text.IndexOf(byteRangeMarker, signatureTypeIndex, StringComparison.Ordinal);
+        if (byteRangeIndex < 0 || byteRangeIndex > signatureEndIndex)
+        {
+            throw new PdfFormatException("Could not locate signature /ByteRange entry.");
+        }
+
+        const string contentsMarker = "/Contents <";
+        int contentsIndex = text.IndexOf(contentsMarker, signatureTypeIndex, StringComparison.Ordinal);
+        if (contentsIndex < 0 || contentsIndex > signatureEndIndex)
+        {
+            throw new PdfFormatException("Could not locate signature /Contents entry.");
+        }
+
+        int contentsHexStart = contentsIndex + contentsMarker.Length;
+        int contentsHexEnd = text.IndexOf('>', contentsHexStart);
+        if (contentsHexEnd < 0 || contentsHexEnd > signatureEndIndex)
+        {
+            throw new PdfFormatException("Could not locate end of signature /Contents hex string.");
+        }
+
+        int contentsHexLength = contentsHexEnd - contentsHexStart;
+        if ((contentsHexLength & 1) == 1)
+        {
+            throw new PdfFormatException("Signature /Contents placeholder length must be even.");
+        }
+
+        List<(int Start, int Length)> byteRangeTokenSlots = ParseByteRangeTokenSlots(text, byteRangeIndex + byteRangeMarker.Length);
+        long[] byteRangeValues =
+        [
+            0,
+            contentsHexStart - 1,
+            contentsHexEnd + 1,
+            unsignedBytes.LongLength - (contentsHexEnd + 1L),
+        ];
+
+        for (int index = 0; index < byteRangeTokenSlots.Count; index++)
+        {
+            WriteFixedWidthNumber(unsignedBytes, byteRangeTokenSlots[index], byteRangeValues[index]);
+        }
+
+        int firstRangeLength = checked((int)byteRangeValues[1]);
+        int secondRangeStart = checked((int)byteRangeValues[2]);
+        int secondRangeLength = checked((int)byteRangeValues[3]);
+
+        byte[] signedPayload = new byte[firstRangeLength + secondRangeLength];
+        Buffer.BlockCopy(unsignedBytes, 0, signedPayload, 0, firstRangeLength);
+        Buffer.BlockCopy(unsignedBytes, secondRangeStart, signedPayload, firstRangeLength, secondRangeLength);
+
+        byte[] signatureBytes = signer(signedPayload) ?? throw new InvalidOperationException("Detached signature callback returned null.");
+        int placeholderBytesLength = contentsHexLength / 2;
+        if (signatureBytes.Length > placeholderBytesLength)
+        {
+            throw new ArgumentException(
+                $"Detached signature callback produced {signatureBytes.Length} bytes, which exceeds configured placeholder size {placeholderBytesLength} bytes.",
+                nameof(signer));
+        }
+
+        string signatureHex = Convert.ToHexString(signatureBytes);
+        string paddedHex = signatureHex.PadRight(contentsHexLength, '0');
+        Encoding.ASCII.GetBytes(paddedHex, 0, paddedHex.Length, unsignedBytes, contentsHexStart);
+        return unsignedBytes;
+    }
+
+    private static List<(int Start, int Length)> ParseByteRangeTokenSlots(string text, int byteRangeArrayStart)
+    {
+        int arrayEnd = text.IndexOf(']', byteRangeArrayStart);
+        if (arrayEnd < 0)
+        {
+            throw new PdfFormatException("Signature /ByteRange array was not terminated.");
+        }
+
+        List<(int Start, int Length)> slots = [];
+        int cursor = byteRangeArrayStart;
+        while (cursor < arrayEnd)
+        {
+            while (cursor < arrayEnd && char.IsWhiteSpace(text[cursor]))
+            {
+                cursor++;
+            }
+
+            if (cursor >= arrayEnd)
+            {
+                break;
+            }
+
+            int tokenStart = cursor;
+            while (cursor < arrayEnd && char.IsAsciiDigit(text[cursor]))
+            {
+                cursor++;
+            }
+
+            if (tokenStart == cursor)
+            {
+                throw new PdfFormatException("Signature /ByteRange entries must be integer tokens.");
+            }
+
+            slots.Add((tokenStart, cursor - tokenStart));
+        }
+
+        if (slots.Count != 4)
+        {
+            throw new PdfFormatException("Signature /ByteRange must contain exactly four integer entries.");
+        }
+
+        return slots;
+    }
+
+    private static void WriteFixedWidthNumber(byte[] buffer, (int Start, int Length) slot, long value)
+    {
+        string number = value.ToString(CultureInfo.InvariantCulture);
+        if (number.Length > slot.Length)
+        {
+            throw new PdfFormatException("Signature /ByteRange value exceeded placeholder width.");
+        }
+
+        string padded = number.PadLeft(slot.Length, '0');
+        Encoding.ASCII.GetBytes(padded, 0, padded.Length, buffer, slot.Start);
+    }
+
+    private static string FormatPdfDate(DateTimeOffset value)
+    {
+        string date = value.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+        TimeSpan offset = value.Offset;
+        string sign = offset < TimeSpan.Zero ? "-" : "+";
+        int hours = Math.Abs(offset.Hours);
+        int minutes = Math.Abs(offset.Minutes);
+        return $"D:{date}{sign}{hours:00}'{minutes:00}'";
+    }
+
     private void RebaseFromSavedBytes(byte[] savedBytes)
     {
         PdfFile rebasedFile = PdfFileReader.Read(savedBytes);
@@ -741,6 +1164,20 @@ public sealed class PdfDocument
             {
                 return indirectObject.Value as PdfDictionaryObject
                     ?? throw new PdfFormatException($"{context} object {id} is not a dictionary.");
+            }
+        }
+
+        throw new PdfFormatException($"{context} object {id} was not found.");
+    }
+
+    private PdfArrayObject RequireArrayObject(PdfObjectId id, string context)
+    {
+        foreach (PdfIndirectObject indirectObject in _file.Objects)
+        {
+            if (indirectObject.ObjectId == id)
+            {
+                return indirectObject.Value as PdfArrayObject
+                    ?? throw new PdfFormatException($"{context} object {id} is not an array.");
             }
         }
 
@@ -2707,6 +3144,67 @@ public sealed class PdfDocument
                     throw new ArgumentException($"FallbackTrueTypeFontPaths[{index}] cannot be blank.", nameof(options));
                 }
             }
+        }
+    }
+
+    private static void ValidateSignatureOptions(PdfSignatureOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (string.IsNullOrWhiteSpace(options.FieldName))
+        {
+            throw new ArgumentException("Signature FieldName is required.", nameof(options));
+        }
+
+        if (!double.IsFinite(options.X) || !double.IsFinite(options.Y))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Signature coordinates must be finite.");
+        }
+
+        if (!double.IsFinite(options.Width) || options.Width < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Signature Width must be a non-negative finite number.");
+        }
+
+        if (!double.IsFinite(options.Height) || options.Height < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Signature Height must be a non-negative finite number.");
+        }
+
+        if (options.ContentsByteLength <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Signature ContentsByteLength must be greater than zero.");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.Filter))
+        {
+            throw new ArgumentException("Signature Filter is required.", nameof(options));
+        }
+
+        if (string.IsNullOrWhiteSpace(options.SubFilter))
+        {
+            throw new ArgumentException("Signature SubFilter is required.", nameof(options));
+        }
+
+        EnsureAsciiString(options.FieldName, "Signature FieldName");
+        EnsureAsciiString(options.Filter, "Signature Filter");
+        EnsureAsciiString(options.SubFilter, "Signature SubFilter");
+        EnsureAsciiString(options.Name, "Signature Name");
+        EnsureAsciiString(options.Reason, "Signature Reason");
+        EnsureAsciiString(options.Location, "Signature Location");
+        EnsureAsciiString(options.ContactInfo, "Signature ContactInfo");
+    }
+
+    private static void EnsureAsciiString(string? value, string context)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        if (!value.All(char.IsAscii))
+        {
+            throw new ArgumentException($"{context} must contain only ASCII characters.");
         }
     }
 
