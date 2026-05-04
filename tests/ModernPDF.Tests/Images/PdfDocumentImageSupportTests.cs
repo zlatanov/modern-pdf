@@ -88,12 +88,18 @@ public sealed class PdfDocumentImageSupportTests
     }
 
     [Fact]
-    public void AddImagePageThrowsForPngWithAlpha()
+    public void AddImagePageEmbedsPngImageWithAlphaUsingSoftMask()
     {
         PdfDocument document = PdfDocument.Create();
+        int pageIndex = document.AddImagePage(GetSamplePngWithAlphaBytes());
 
-        NotSupportedException exception = Assert.Throws<NotSupportedException>(() => document.AddImagePage(GetSamplePngWithAlphaBytes()));
-        Assert.Contains("alpha", exception.Message, StringComparison.OrdinalIgnoreCase);
+        byte[] saved = document.Save();
+        string text = Encoding.ASCII.GetString(saved);
+
+        Assert.Equal(0, pageIndex);
+        Assert.Contains("/SMask", text, StringComparison.Ordinal);
+        Assert.Equal(2, CountOccurrences(text, "/Subtype /Image"));
+        Assert.Contains("/Filter /FlateDecode", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -182,6 +188,6 @@ public sealed class PdfDocumentImageSupportTests
     private static byte[] GetSamplePngWithAlphaBytes()
     {
         return Convert.FromBase64String(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAF/gL+qM9sWQAAAABJRU5ErkJggg==");
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Zk9sAAAAASUVORK5CYII=");
     }
 }

@@ -1,3 +1,6 @@
+using System.IO.Compression;
+using System.IO;
+
 namespace ModernPDF.Images;
 
 internal static class PdfImageParser
@@ -261,8 +264,34 @@ internal static class PdfImageParser
                 break;
             case 4:
             case 6:
-                error = "PNG images with alpha channels are not currently supported.";
-                return false;
+                if (!TryDecodePngImageData(idatBytes.ToArray(), width, height, bitsPerComponent, colorType, out byte[]? decodedPixels, out string? decodeError))
+                {
+                    error = decodeError;
+                    return false;
+                }
+
+                if (!TrySplitPngAlphaChannels(decodedPixels!, width, height, colorType, out byte[]? colorBytes, out byte[]? alphaBytes, out string? splitError))
+                {
+                    error = splitError;
+                    return false;
+                }
+
+                colorSpace = colorType == 6 ? "DeviceRGB" : "DeviceGray";
+                colors = colorType == 6 ? 3 : 1;
+                image = new PdfRasterImage(
+                    width,
+                    height,
+                    bitsPerComponent,
+                    colorSpace,
+                    "FlateDecode",
+                    CompressZlib(colorBytes!),
+                    SoftMask: new PdfImageSoftMask(
+                        width,
+                        height,
+                        bitsPerComponent,
+                        "FlateDecode",
+                        CompressZlib(alphaBytes!)));
+                return true;
             case 3:
                 error = "Indexed-color PNG images are not currently supported.";
                 return false;
@@ -282,6 +311,215 @@ internal static class PdfImageParser
             Colors: colors,
             Columns: width);
         return true;
+    }
+
+    private static bool TryDecodePngImageData(
+        byte[] idatBytes,
+        int width,
+        int height,
+        int bitsPerComponent,
+        int colorType,
+        out byte[]? decodedPixels,
+        out string? error)
+    {
+        decodedPixels = null;
+        error = null;
+
+        int components = colorType switch
+        {
+            4 => 2,
+            6 => 4,
+            _ => 0,
+        };
+        if (components == 0 || bitsPerComponent != 8)
+        {
+            error = "PNG image data decoding supports only 8-bit grayscale+alpha or RGBA images.";
+            return false;
+        }
+
+        if (!TryDecompressZlib(idatBytes, out byte[]? inflatedBytes, out string? inflateError))
+        {
+            error = inflateError;
+            return false;
+        }
+
+        int bytesPerPixel = components;
+        int rowLength = checked(width * bytesPerPixel);
+        int expectedInflatedLength = checked(height * (rowLength + 1));
+        if (inflatedBytes!.Length != expectedInflatedLength)
+        {
+            error = "PNG IDAT payload length does not match image dimensions.";
+            return false;
+        }
+
+        byte[] reconstructed = new byte[checked(width * height * bytesPerPixel)];
+        byte[] previousRow = new byte[rowLength];
+        byte[] currentRow = new byte[rowLength];
+        int sourceOffset = 0;
+        int destinationOffset = 0;
+        for (int row = 0; row < height; row++)
+        {
+            byte filterType = inflatedBytes[sourceOffset++];
+            for (int column = 0; column < rowLength; column++)
+            {
+                int raw = inflatedBytes[sourceOffset++];
+                int left = column >= bytesPerPixel ? currentRow[column - bytesPerPixel] : 0;
+                int up = previousRow[column];
+                int upperLeft = column >= bytesPerPixel ? previousRow[column - bytesPerPixel] : 0;
+                int value = filterType switch
+                {
+                    0 => raw,
+                    1 => raw + left,
+                    2 => raw + up,
+                    3 => raw + ((left + up) / 2),
+                    4 => raw + PaethPredictor(left, up, upperLeft),
+                    _ => -1,
+                };
+                if (value < 0)
+                {
+                    error = $"PNG uses unsupported filter type '{filterType}'.";
+                    return false;
+                }
+
+                currentRow[column] = (byte)value;
+            }
+
+            Buffer.BlockCopy(currentRow, 0, reconstructed, destinationOffset, rowLength);
+            destinationOffset += rowLength;
+            (previousRow, currentRow) = (currentRow, previousRow);
+        }
+
+        decodedPixels = reconstructed;
+        return true;
+    }
+
+    private static bool TrySplitPngAlphaChannels(
+        byte[] decodedPixels,
+        int width,
+        int height,
+        int colorType,
+        out byte[]? colorBytes,
+        out byte[]? alphaBytes,
+        out string? error)
+    {
+        colorBytes = null;
+        alphaBytes = null;
+        error = null;
+        int pixelCount = checked(width * height);
+
+        switch (colorType)
+        {
+            case 4:
+            {
+                colorBytes = new byte[pixelCount];
+                alphaBytes = new byte[pixelCount];
+                for (int index = 0; index < pixelCount; index++)
+                {
+                    int sourceOffset = index * 2;
+                    colorBytes[index] = decodedPixels[sourceOffset];
+                    alphaBytes[index] = decodedPixels[sourceOffset + 1];
+                }
+
+                return true;
+            }
+            case 6:
+            {
+                colorBytes = new byte[checked(pixelCount * 3)];
+                alphaBytes = new byte[pixelCount];
+                for (int index = 0; index < pixelCount; index++)
+                {
+                    int sourceOffset = index * 4;
+                    int targetOffset = index * 3;
+                    colorBytes[targetOffset] = decodedPixels[sourceOffset];
+                    colorBytes[targetOffset + 1] = decodedPixels[sourceOffset + 1];
+                    colorBytes[targetOffset + 2] = decodedPixels[sourceOffset + 2];
+                    alphaBytes[index] = decodedPixels[sourceOffset + 3];
+                }
+
+                return true;
+            }
+            default:
+                error = "PNG alpha-channel split only supports grayscale+alpha or RGBA input.";
+                return false;
+        }
+    }
+
+    private static bool TryDecompressZlib(byte[] source, out byte[]? decompressed, out string? error)
+    {
+        decompressed = null;
+        error = null;
+        try
+        {
+            using MemoryStream sourceStream = new(source);
+            using ZLibStream zlib = new(sourceStream, CompressionMode.Decompress);
+            using MemoryStream destinationStream = new();
+            zlib.CopyTo(destinationStream);
+            decompressed = destinationStream.ToArray();
+            return true;
+        }
+        catch (InvalidDataException exception)
+        {
+            if (TryDecompressZlibUsingRawDeflate(source, out decompressed))
+            {
+                return true;
+            }
+
+            error = $"PNG IDAT payload could not be decompressed: {exception.Message}";
+            return false;
+        }
+    }
+
+    private static bool TryDecompressZlibUsingRawDeflate(byte[] source, out byte[]? decompressed)
+    {
+        decompressed = null;
+        if (source.Length <= 6 || (source[0] & 0x0F) != 8)
+        {
+            return false;
+        }
+
+        try
+        {
+            using MemoryStream sourceStream = new(source, 2, source.Length - 6, writable: false);
+            using DeflateStream deflate = new(sourceStream, CompressionMode.Decompress);
+            using MemoryStream destinationStream = new();
+            deflate.CopyTo(destinationStream);
+            decompressed = destinationStream.ToArray();
+            return true;
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    private static byte[] CompressZlib(byte[] source)
+    {
+        using MemoryStream destinationStream = new();
+        using (ZLibStream zlib = new(destinationStream, CompressionLevel.Optimal, leaveOpen: true))
+        {
+            zlib.Write(source, 0, source.Length);
+        }
+
+        return destinationStream.ToArray();
+    }
+
+    private static int PaethPredictor(int left, int up, int upperLeft)
+    {
+        int prediction = left + up - upperLeft;
+        int leftDelta = Math.Abs(prediction - left);
+        int upDelta = Math.Abs(prediction - up);
+        int upperLeftDelta = Math.Abs(prediction - upperLeft);
+        if (leftDelta <= upDelta && leftDelta <= upperLeftDelta)
+        {
+            return left;
+        }
+
+        if (upDelta <= upperLeftDelta)
+        {
+            return up;
+        }
+
+        return upperLeft;
     }
 
     private static int ReadUInt32BigEndian(ReadOnlySpan<byte> source, int offset)

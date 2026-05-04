@@ -1,13 +1,11 @@
 namespace ModernPDF.Images;
 
-internal readonly record struct PdfRasterImage(
+internal readonly record struct PdfImageSoftMask(
     int Width,
     int Height,
     int BitsPerComponent,
-    string ColorSpace,
     string Filter,
     byte[] EncodedBytes,
     int? Predictor = null,
     int? Colors = null,
-    int? Columns = null,
-    PdfImageSoftMask? SoftMask = null);
+    int? Columns = null);

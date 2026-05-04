@@ -207,6 +207,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, `/adbe.pkcs7.sha1`, and `/ETSI.RFC3161`
 - revocation validation supports online retrieval (`RevocationCheckMode = PdfRevocationCheckMode.Online`) and offline DSS OCSP/CRL evidence when embedded in `/DSS`; offline OCSP validation includes delegated responders when `id-kp-OCSPSigning` is present and the responder certificate chains to the OCSP certificate issuer, and enforces signature-scoped `/DSS /VRI` evidence matching; deterministic offline mode remains the default (`Offline`)
-- image APIs currently support JPEG and non-alpha PNG input
+- image APIs currently support JPEG and PNG input, including alpha-channel PNG via soft masks (indexed-color and interlaced PNG remain unsupported)
 - security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, `V=4 / R=4`, and `V=5 / R=6`
 - explicit `PdfSaveOptions.Security` with `PdfSaveMode.Incremental` is supported only for documents opened from encrypted PDFs, and must match the opened security context (password/profile/permissions)

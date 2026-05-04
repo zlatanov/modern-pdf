@@ -2861,10 +2861,16 @@ public sealed class PdfDocument
 
         List<PdfIndirectObject> objects = [.. _file.Objects];
         int nextObjectNumber = GetNextObjectNumber(objects);
+        PdfObjectId? softMaskId = null;
         PdfObjectId imageId = new(nextObjectNumber++, 0);
+        if (image.SoftMask is not null)
+        {
+            softMaskId = new PdfObjectId(nextObjectNumber++, 0);
+        }
+
         PdfObjectId resourcesId = new(nextObjectNumber++, 0);
 
-        PdfDictionaryObject imageDictionary = CreateImageXObjectDictionary(image);
+        PdfDictionaryObject imageDictionary = CreateImageXObjectDictionary(image, softMaskId);
         PdfDictionaryObject resourcesDictionary = new(
         [
             new PdfDictionaryEntry(
@@ -2876,6 +2882,13 @@ public sealed class PdfDocument
         ]);
 
         objects.Add(new PdfIndirectObject(imageId, new PdfStreamObject(imageDictionary, image.EncodedBytes)));
+        if (softMaskId is PdfObjectId actualSoftMaskId)
+        {
+            PdfImageSoftMask softMask = image.SoftMask!.Value;
+            PdfDictionaryObject softMaskDictionary = CreateSoftMaskImageXObjectDictionary(softMask);
+            objects.Add(new PdfIndirectObject(actualSoftMaskId, new PdfStreamObject(softMaskDictionary, softMask.EncodedBytes)));
+        }
+
         objects.Add(new PdfIndirectObject(resourcesId, resourcesDictionary));
 
         string imageContent = BuildImageContentStream(placement, "Im1");
@@ -2901,6 +2914,11 @@ public sealed class PdfDocument
         MarkDirty(page.ObjectId);
         MarkDirty(contentsReference.ObjectId);
         MarkDirty(imageId);
+        if (softMaskId is PdfObjectId dirtySoftMaskId)
+        {
+            MarkDirty(dirtySoftMaskId);
+        }
+
         MarkDirty(resourcesId);
     }
 
@@ -2932,7 +2950,13 @@ public sealed class PdfDocument
 
         List<PdfIndirectObject> objects = [.. _file.Objects];
         int nextObjectNumber = GetNextObjectNumber(objects);
+        PdfObjectId? softMaskId = null;
         PdfObjectId imageId = new(nextObjectNumber++, 0);
+        if (image.SoftMask is not null)
+        {
+            softMaskId = new PdfObjectId(nextObjectNumber++, 0);
+        }
+
         PdfObjectId resourcesId = new(nextObjectNumber++, 0);
         PdfObjectId appendedContentId = new(nextObjectNumber++, 0);
 
@@ -2941,8 +2965,15 @@ public sealed class PdfDocument
         string imageResourceName = AllocateImageResourceName(effectiveResources);
         PdfDictionaryObject mergedResources = BuildResourcesDictionaryWithImage(effectiveResources, imageResourceName, imageId);
 
-        PdfDictionaryObject imageDictionary = CreateImageXObjectDictionary(image);
+        PdfDictionaryObject imageDictionary = CreateImageXObjectDictionary(image, softMaskId);
         objects.Add(new PdfIndirectObject(imageId, new PdfStreamObject(imageDictionary, image.EncodedBytes)));
+        if (softMaskId is PdfObjectId actualSoftMaskId)
+        {
+            PdfImageSoftMask softMask = image.SoftMask!.Value;
+            PdfDictionaryObject softMaskDictionary = CreateSoftMaskImageXObjectDictionary(softMask);
+            objects.Add(new PdfIndirectObject(actualSoftMaskId, new PdfStreamObject(softMaskDictionary, softMask.EncodedBytes)));
+        }
+
         objects.Add(new PdfIndirectObject(resourcesId, mergedResources));
 
         string imageContent = BuildImageContentStream(placement, imageResourceName);
@@ -2967,6 +2998,11 @@ public sealed class PdfDocument
 
         MarkDirty(page.ObjectId);
         MarkDirty(imageId);
+        if (softMaskId is PdfObjectId dirtySoftMaskId)
+        {
+            MarkDirty(dirtySoftMaskId);
+        }
+
         MarkDirty(resourcesId);
         MarkDirty(appendedContentId);
     }
@@ -3422,7 +3458,7 @@ public sealed class PdfDocument
         return builder.ToString();
     }
 
-    private static PdfDictionaryObject CreateImageXObjectDictionary(PdfRasterImage image)
+    private static PdfDictionaryObject CreateImageXObjectDictionary(PdfRasterImage image, PdfObjectId? softMaskObjectId = null)
     {
         List<PdfDictionaryEntry> entries =
         [
@@ -3445,6 +3481,41 @@ public sealed class PdfDocument
                         new PdfDictionaryEntry("Predictor", new PdfNumberObject(predictor, isInteger: true)),
                         new PdfDictionaryEntry("Colors", new PdfNumberObject(colors, isInteger: true)),
                         new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(image.BitsPerComponent, isInteger: true)),
+                        new PdfDictionaryEntry("Columns", new PdfNumberObject(columns, isInteger: true)),
+            ])));
+        }
+
+        if (softMaskObjectId is PdfObjectId actualSoftMaskId)
+        {
+            entries.Add(new PdfDictionaryEntry("SMask", new PdfReferenceObject(actualSoftMaskId)));
+        }
+
+        return new PdfDictionaryObject(entries);
+    }
+
+    private static PdfDictionaryObject CreateSoftMaskImageXObjectDictionary(PdfImageSoftMask softMask)
+    {
+        List<PdfDictionaryEntry> entries =
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("XObject")),
+            new PdfDictionaryEntry("Subtype", new PdfNameObject("Image")),
+            new PdfDictionaryEntry("Width", new PdfNumberObject(softMask.Width, isInteger: true)),
+            new PdfDictionaryEntry("Height", new PdfNumberObject(softMask.Height, isInteger: true)),
+            new PdfDictionaryEntry("ColorSpace", new PdfNameObject("DeviceGray")),
+            new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(softMask.BitsPerComponent, isInteger: true)),
+            new PdfDictionaryEntry("Filter", new PdfNameObject(softMask.Filter)),
+        ];
+
+        if (softMask.Predictor is int predictor && softMask.Colors is int colors && softMask.Columns is int columns)
+        {
+            entries.Add(
+                new PdfDictionaryEntry(
+                    "DecodeParms",
+                    new PdfDictionaryObject(
+                    [
+                        new PdfDictionaryEntry("Predictor", new PdfNumberObject(predictor, isInteger: true)),
+                        new PdfDictionaryEntry("Colors", new PdfNumberObject(colors, isInteger: true)),
+                        new PdfDictionaryEntry("BitsPerComponent", new PdfNumberObject(softMask.BitsPerComponent, isInteger: true)),
                         new PdfDictionaryEntry("Columns", new PdfNumberObject(columns, isInteger: true)),
                     ])));
         }
