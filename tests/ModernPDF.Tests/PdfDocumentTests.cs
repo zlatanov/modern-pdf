@@ -251,6 +251,66 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void ValidateDetachedSignaturesSupportsEtsiCadesDetachedSubFilter()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("cades-detached");
+
+        byte[] signedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span),
+            new PdfSignatureOptions
+            {
+                ContentsByteLength = 8192,
+                SubFilter = "ETSI.CAdES.detached",
+            });
+
+        PdfDocument opened = PdfDocument.Open(signedBytes);
+        PdfDetachedSignatureValidationResult result = Assert.Single(opened.ValidateDetachedSignatures());
+
+        Assert.True(result.IsValid);
+        Assert.Equal(1, result.SignerCount);
+        Assert.Null(result.FailureReason);
+        Assert.Equal("ETSI.CAdES.detached", result.SubFilter);
+    }
+
+    [Fact]
+    public void SaveSignedDetachedSupportsMultipleIncrementalSignatures()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("multi-signature");
+
+        byte[] firstSignedBytes = document.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span),
+            new PdfSignatureOptions
+            {
+                FieldName = "Signature1",
+                ContentsByteLength = 8192,
+                SubFilter = "adbe.pkcs7.detached",
+            });
+
+        PdfDocument reopened = PdfDocument.Open(firstSignedBytes);
+        byte[] secondSignedBytes = reopened.SaveSignedDetached(
+            payload => CreateDetachedCmsSignature(payload.Span),
+            new PdfSignatureOptions
+            {
+                FieldName = "Signature2",
+                ContentsByteLength = 8192,
+                SubFilter = "ETSI.CAdES.detached",
+            });
+
+        Assert.True(secondSignedBytes.Length > firstSignedBytes.Length);
+        Assert.Equal(firstSignedBytes, secondSignedBytes.Take(firstSignedBytes.Length).ToArray());
+        Assert.Equal("multi-signature", PdfDocument.Open(secondSignedBytes).ExtractText());
+
+        PdfDocument validated = PdfDocument.Open(secondSignedBytes);
+        IReadOnlyList<PdfDetachedSignatureValidationResult> results = validated.ValidateDetachedSignatures();
+        Assert.Equal(2, results.Count);
+        Assert.All(results, static result => Assert.True(result.IsValid));
+        Assert.Contains(results, static result => string.Equals(result.SubFilter, "adbe.pkcs7.detached", StringComparison.Ordinal));
+        Assert.Contains(results, static result => string.Equals(result.SubFilter, "ETSI.CAdES.detached", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ValidateDetachedSignaturesReturnsInvalidResultForTamperedSignedBytes()
     {
         PdfDocument document = PdfDocument.Create();

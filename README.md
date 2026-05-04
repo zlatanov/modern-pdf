@@ -115,6 +115,8 @@ byte[] signedBytes = document.SaveSignedDetached(
     });
 ```
 
+You can call `SaveSignedDetached(...)` again on an opened signed document to append additional detached signatures incrementally.
+
 Validate detached signatures (CMS/PKCS#7):
 
 ```csharp
@@ -148,5 +150,5 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 ## Current limitations
 
 - xref/object stream writing is not implemented (reader support is currently focused on common FlateDecode-backed inputs)
-- signature validation currently supports detached CMS (`/SubFilter /adbe.pkcs7.detached`) only
+- signature validation currently supports detached CMS subfilters `/adbe.pkcs7.detached` and `/ETSI.CAdES.detached`
 - security support is intentionally limited to Standard handler `V=1 / R=2`

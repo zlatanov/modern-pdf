@@ -15,6 +15,12 @@ namespace ModernPDF;
 
 public sealed class PdfDocument
 {
+    private static readonly HashSet<string> SupportedDetachedCmsSubFilters =
+    [
+        "adbe.pkcs7.detached",
+        "ETSI.CAdES.detached",
+    ];
+
     private PdfFile _file;
     private PdfDocumentModel _model;
     private PdfTextOptions _defaultTextOptions = new();
@@ -577,13 +583,13 @@ public sealed class PdfDocument
     {
         string? filter = TryReadNameEntry(dictionary, "Filter");
         string? subFilter = TryReadNameEntry(dictionary, "SubFilter");
-        if (!string.Equals(subFilter, "adbe.pkcs7.detached", StringComparison.Ordinal))
+        if (!IsSupportedDetachedCmsSubFilter(subFilter))
         {
             return CreateInvalidSignatureResult(
                 signatureObjectNumber,
                 filter,
                 subFilter,
-                "Only detached signatures with /SubFilter /adbe.pkcs7.detached are currently supported.");
+                "Only detached CMS signatures with /SubFilter /adbe.pkcs7.detached or /ETSI.CAdES.detached are currently supported.");
         }
 
         if (_file.SourceBytes is null)
@@ -672,6 +678,11 @@ public sealed class PdfDocument
         return value is PdfNameObject name ? name.Value : null;
     }
 
+    private static bool IsSupportedDetachedCmsSubFilter(string? subFilter)
+    {
+        return subFilter is not null && SupportedDetachedCmsSubFilters.Contains(subFilter);
+    }
+
     private static bool TryReadByteRange(
         PdfDictionaryObject dictionary,
         int sourceLength,
@@ -724,9 +735,9 @@ public sealed class PdfDocument
             return false;
         }
 
-        if (values[0] != 0 || secondEnd != sourceLength)
+        if (values[0] != 0)
         {
-            error = "Signature /ByteRange must span the full document except the /Contents segment.";
+            error = "Signature /ByteRange must start at offset 0.";
             return false;
         }
 
