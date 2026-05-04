@@ -3112,6 +3112,73 @@ public sealed class PdfDocument
         AddPageRawContent(pageIndex, shapeContent);
     }
 
+    public void AddPageEllipse(
+        int pageIndex,
+        double centerX,
+        double centerY,
+        double radiusX,
+        double radiusY,
+        PdfShapeOptions? options = null)
+    {
+        if (!double.IsFinite(centerX))
+        {
+            throw new ArgumentOutOfRangeException(nameof(centerX), "Ellipse center X must be finite.");
+        }
+
+        if (!double.IsFinite(centerY))
+        {
+            throw new ArgumentOutOfRangeException(nameof(centerY), "Ellipse center Y must be finite.");
+        }
+
+        if (!double.IsFinite(radiusX) || radiusX <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radiusX), "Ellipse radiusX must be a positive finite number.");
+        }
+
+        if (!double.IsFinite(radiusY) || radiusY <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radiusY), "Ellipse radiusY must be a positive finite number.");
+        }
+
+        PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
+        ValidateShapeOptions(effectiveOptions);
+
+        string shapeContent = BuildEllipseContentStream(centerX, centerY, radiusX, radiusY, effectiveOptions);
+        AddPageRawContent(pageIndex, shapeContent);
+    }
+
+    public void AddPagePolygon(
+        int pageIndex,
+        IReadOnlyList<PdfShapePoint> points,
+        bool closePath = true,
+        PdfShapeOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(points);
+        if (points.Count < 2)
+        {
+            throw new ArgumentException("Polygon requires at least two points.", nameof(points));
+        }
+
+        PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
+        ValidateShapeOptions(effectiveOptions);
+
+        string shapeContent = BuildPolygonContentStream(points, closePath, effectiveOptions);
+        AddPageRawContent(pageIndex, shapeContent);
+    }
+
+    public void AddPagePath(
+        int pageIndex,
+        IReadOnlyList<PdfPathCommand> commands,
+        PdfShapeOptions? options = null)
+    {
+        ValidatePathCommands(commands);
+        PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions();
+        ValidateShapeOptions(effectiveOptions);
+
+        string shapeContent = BuildPathContentStream(commands, effectiveOptions);
+        AddPageRawContent(pageIndex, shapeContent);
+    }
+
     public void ReplacePageText(int pageIndex, string text, PdfTextOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -3607,16 +3674,135 @@ public sealed class PdfDocument
         double radius,
         PdfShapeOptions options)
     {
-        const double BezierControlRatio = 0.5522847498307936d;
-        double offset = radius * BezierControlRatio;
-        double right = centerX + radius;
-        double left = centerX - radius;
-        double top = centerY + radius;
-        double bottom = centerY - radius;
+        return BuildEllipseContentStream(centerX, centerY, radius, radius, options);
+    }
 
+    private static string BuildEllipseContentStream(
+        double centerX,
+        double centerY,
+        double radiusX,
+        double radiusY,
+        PdfShapeOptions options)
+    {
         StringBuilder builder = new();
         builder.Append("q ");
         AppendShapeGraphicsState(builder, options);
+        AppendEllipsePath(builder, centerX, centerY, radiusX, radiusY);
+        builder.Append(ResolveShapePaintOperator(options));
+        builder.Append(" Q");
+        return builder.ToString();
+    }
+
+    private static string BuildPolygonContentStream(
+        IReadOnlyList<PdfShapePoint> points,
+        bool closePath,
+        PdfShapeOptions options)
+    {
+        StringBuilder builder = new();
+        builder.Append("q ");
+        AppendShapeGraphicsState(builder, options);
+        AppendPdfNumber(builder, points[0].X);
+        builder.Append(' ');
+        AppendPdfNumber(builder, points[0].Y);
+        builder.Append(" m ");
+        for (int index = 1; index < points.Count; index++)
+        {
+            PdfShapePoint point = points[index];
+            AppendPdfNumber(builder, point.X);
+            builder.Append(' ');
+            AppendPdfNumber(builder, point.Y);
+            builder.Append(" l ");
+        }
+
+        if (closePath)
+        {
+            builder.Append("h ");
+        }
+
+        builder.Append(ResolveShapePaintOperator(options));
+        builder.Append(" Q");
+        return builder.ToString();
+    }
+
+    private static string BuildPathContentStream(
+        IReadOnlyList<PdfPathCommand> commands,
+        PdfShapeOptions options)
+    {
+        StringBuilder builder = new();
+        builder.Append("q ");
+        AppendShapeGraphicsState(builder, options);
+
+        bool subpathStarted = false;
+        for (int index = 0; index < commands.Count; index++)
+        {
+            PdfPathCommand command = commands[index] ?? throw new ArgumentException($"Path command at index {index} cannot be null.", nameof(commands));
+            switch (command)
+            {
+                case PdfPathMoveTo moveTo:
+                    AppendPdfNumber(builder, moveTo.X);
+                    builder.Append(' ');
+                    AppendPdfNumber(builder, moveTo.Y);
+                    builder.Append(" m ");
+                    subpathStarted = true;
+                    break;
+                case PdfPathLineTo lineTo:
+                    if (!subpathStarted)
+                    {
+                        throw new ArgumentException("Path line commands must follow a move command.", nameof(commands));
+                    }
+
+                    AppendPdfNumber(builder, lineTo.X);
+                    builder.Append(' ');
+                    AppendPdfNumber(builder, lineTo.Y);
+                    builder.Append(" l ");
+                    break;
+                case PdfPathCurveTo curveTo:
+                    if (!subpathStarted)
+                    {
+                        throw new ArgumentException("Path curve commands must follow a move command.", nameof(commands));
+                    }
+
+                    AppendPdfNumber(builder, curveTo.Control1X);
+                    builder.Append(' ');
+                    AppendPdfNumber(builder, curveTo.Control1Y);
+                    builder.Append(' ');
+                    AppendPdfNumber(builder, curveTo.Control2X);
+                    builder.Append(' ');
+                    AppendPdfNumber(builder, curveTo.Control2Y);
+                    builder.Append(' ');
+                    AppendPdfNumber(builder, curveTo.EndX);
+                    builder.Append(' ');
+                    AppendPdfNumber(builder, curveTo.EndY);
+                    builder.Append(" c ");
+                    break;
+                case PdfPathClosePath:
+                    if (!subpathStarted)
+                    {
+                        throw new ArgumentException("Path close commands must follow a move command.", nameof(commands));
+                    }
+
+                    builder.Append("h ");
+                    break;
+                default:
+                    throw new NotSupportedException($"Path command type '{command.GetType().Name}' is not supported.");
+            }
+        }
+
+        builder.Append(ResolveShapePaintOperator(options));
+        builder.Append(" Q");
+        return builder.ToString();
+    }
+
+    private static void AppendEllipsePath(StringBuilder builder, double centerX, double centerY, double radiusX, double radiusY)
+    {
+        const double BezierControlRatio = 0.5522847498307936d;
+        double xOffset = radiusX * BezierControlRatio;
+        double yOffset = radiusY * BezierControlRatio;
+        double right = centerX + radiusX;
+        double left = centerX - radiusX;
+        double top = centerY + radiusY;
+        double bottom = centerY - radiusY;
+
         AppendPdfNumber(builder, right);
         builder.Append(' ');
         AppendPdfNumber(builder, centerY);
@@ -3624,9 +3810,9 @@ public sealed class PdfDocument
 
         AppendPdfNumber(builder, right);
         builder.Append(' ');
-        AppendPdfNumber(builder, centerY + offset);
+        AppendPdfNumber(builder, centerY + yOffset);
         builder.Append(' ');
-        AppendPdfNumber(builder, centerX + offset);
+        AppendPdfNumber(builder, centerX + xOffset);
         builder.Append(' ');
         AppendPdfNumber(builder, top);
         builder.Append(' ');
@@ -3635,13 +3821,13 @@ public sealed class PdfDocument
         AppendPdfNumber(builder, top);
         builder.Append(" c ");
 
-        AppendPdfNumber(builder, centerX - offset);
+        AppendPdfNumber(builder, centerX - xOffset);
         builder.Append(' ');
         AppendPdfNumber(builder, top);
         builder.Append(' ');
         AppendPdfNumber(builder, left);
         builder.Append(' ');
-        AppendPdfNumber(builder, centerY + offset);
+        AppendPdfNumber(builder, centerY + yOffset);
         builder.Append(' ');
         AppendPdfNumber(builder, left);
         builder.Append(' ');
@@ -3650,9 +3836,9 @@ public sealed class PdfDocument
 
         AppendPdfNumber(builder, left);
         builder.Append(' ');
-        AppendPdfNumber(builder, centerY - offset);
+        AppendPdfNumber(builder, centerY - yOffset);
         builder.Append(' ');
-        AppendPdfNumber(builder, centerX - offset);
+        AppendPdfNumber(builder, centerX - xOffset);
         builder.Append(' ');
         AppendPdfNumber(builder, bottom);
         builder.Append(' ');
@@ -3661,21 +3847,18 @@ public sealed class PdfDocument
         AppendPdfNumber(builder, bottom);
         builder.Append(" c ");
 
-        AppendPdfNumber(builder, centerX + offset);
+        AppendPdfNumber(builder, centerX + xOffset);
         builder.Append(' ');
         AppendPdfNumber(builder, bottom);
         builder.Append(' ');
         AppendPdfNumber(builder, right);
         builder.Append(' ');
-        AppendPdfNumber(builder, centerY - offset);
+        AppendPdfNumber(builder, centerY - yOffset);
         builder.Append(' ');
         AppendPdfNumber(builder, right);
         builder.Append(' ');
         AppendPdfNumber(builder, centerY);
         builder.Append(" c h ");
-        builder.Append(ResolveShapePaintOperator(options));
-        builder.Append(" Q");
-        return builder.ToString();
     }
 
     private static void AppendShapeGraphicsState(StringBuilder builder, PdfShapeOptions options)
@@ -3686,6 +3869,29 @@ public sealed class PdfDocument
             builder.Append(" RG ");
             AppendPdfNumber(builder, options.StrokeWidth);
             builder.Append(" w ");
+            builder.Append(((int)options.StrokeLineCap).ToString(CultureInfo.InvariantCulture));
+            builder.Append(" J ");
+            builder.Append(((int)options.StrokeLineJoin).ToString(CultureInfo.InvariantCulture));
+            builder.Append(" j ");
+            AppendPdfNumber(builder, options.StrokeMiterLimit);
+            builder.Append(" M ");
+            if (options.StrokeDashPattern is PdfShapeDashPattern dashPattern)
+            {
+                builder.Append('[');
+                for (int index = 0; index < dashPattern.Segments.Count; index++)
+                {
+                    if (index > 0)
+                    {
+                        builder.Append(' ');
+                    }
+
+                    AppendPdfNumber(builder, dashPattern.Segments[index]);
+                }
+
+                builder.Append("] ");
+                AppendPdfNumber(builder, dashPattern.Phase);
+                builder.Append(" d ");
+            }
         }
 
         if (options.FillColor is PdfRgbColor fillColor)
@@ -3714,8 +3920,10 @@ public sealed class PdfDocument
         bool stroke = options.StrokeColor is not null;
         bool fill = options.FillColor is not null;
         return stroke
-            ? fill ? "B" : "S"
-            : "f";
+            ? fill
+                ? options.FillRule == PdfShapeFillRule.EvenOdd ? "B*" : "B"
+                : "S"
+            : options.FillRule == PdfShapeFillRule.EvenOdd ? "f*" : "f";
     }
 
     private static PdfDictionaryObject CreateImageXObjectDictionary(PdfRasterImage image, PdfObjectId? softMaskObjectId = null)
@@ -5971,6 +6179,95 @@ public sealed class PdfDocument
         if (options.StrokeColor is not null && (!double.IsFinite(options.StrokeWidth) || options.StrokeWidth <= 0))
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeWidth must be a positive finite number when stroke is enabled.");
+        }
+
+        if (!Enum.IsDefined(options.StrokeLineCap))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeLineCap contains an unsupported value.");
+        }
+
+        if (!Enum.IsDefined(options.StrokeLineJoin))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeLineJoin contains an unsupported value.");
+        }
+
+        if (!Enum.IsDefined(options.FillRule))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Shape FillRule contains an unsupported value.");
+        }
+
+        if (options.StrokeColor is not null && (!double.IsFinite(options.StrokeMiterLimit) || options.StrokeMiterLimit <= 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeMiterLimit must be a positive finite number when stroke is enabled.");
+        }
+
+        if (options.StrokeColor is not null && options.StrokeDashPattern is PdfShapeDashPattern dashPattern)
+        {
+            if (dashPattern.Segments is null)
+            {
+                throw new ArgumentException("Shape StrokeDashPattern Segments cannot be null.", nameof(options));
+            }
+
+            if (!double.IsFinite(dashPattern.Phase) || dashPattern.Phase < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeDashPattern Phase must be a non-negative finite number.");
+            }
+
+            bool hasPositiveDashSegment = false;
+            for (int index = 0; index < dashPattern.Segments.Count; index++)
+            {
+                double segment = dashPattern.Segments[index];
+                if (!double.IsFinite(segment) || segment < 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeDashPattern segments must be non-negative finite numbers.");
+                }
+
+                hasPositiveDashSegment |= segment > 0;
+            }
+
+            if (dashPattern.Segments.Count > 0 && !hasPositiveDashSegment)
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), "Shape StrokeDashPattern must contain at least one positive segment.");
+            }
+        }
+    }
+
+    private static void ValidatePathCommands(IReadOnlyList<PdfPathCommand> commands)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+        if (commands.Count == 0)
+        {
+            throw new ArgumentException("Path command collection cannot be empty.", nameof(commands));
+        }
+
+        bool hasMove = false;
+        bool hasPaintableSegment = false;
+        for (int index = 0; index < commands.Count; index++)
+        {
+            PdfPathCommand command = commands[index] ?? throw new ArgumentException($"Path command at index {index} cannot be null.", nameof(commands));
+            switch (command)
+            {
+                case PdfPathMoveTo:
+                    hasMove = true;
+                    break;
+                case PdfPathLineTo:
+                case PdfPathCurveTo:
+                case PdfPathClosePath:
+                    if (!hasMove)
+                    {
+                        throw new ArgumentException("Path commands must begin with a move command before line/curve/close commands.", nameof(commands));
+                    }
+
+                    hasPaintableSegment = true;
+                    break;
+                default:
+                    throw new NotSupportedException($"Path command type '{command.GetType().Name}' is not supported.");
+            }
+        }
+
+        if (!hasPaintableSegment)
+        {
+            throw new ArgumentException("Path command collection must include at least one line, curve, or close command.", nameof(commands));
         }
     }
 

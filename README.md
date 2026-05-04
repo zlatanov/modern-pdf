@@ -8,7 +8,7 @@ Current implemented scope includes:
 - text extraction
 - page/content editing
 - JPEG/PNG image page authoring, replacement, and composition
-- shape drawing (line, rectangle, circle) with stroke/fill options
+- shape drawing (line, rectangle, circle, ellipse, polygon, path) with stroke/fill options
 - destructive text redaction
 - password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, `V=4 / R=4 / 128-bit AES`, and `V=5 / R=6 / 256-bit AES`
 - detached digital signatures (callback-based CMS embedding with ByteRange patching)
@@ -128,8 +128,22 @@ document.AddPageRectangle(
         StrokeColor = new PdfRgbColor(0.1, 0.1, 0.1),
         FillColor = new PdfRgbColor(0.8, 0.9, 1.0),
         StrokeWidth = 2,
+        StrokeLineCap = PdfShapeLineCap.Round,
+        StrokeLineJoin = PdfShapeLineJoin.Round,
+        StrokeDashPattern = new PdfShapeDashPattern { Segments = [6, 3] },
     });
 document.AddPageCircle(0, 220, 78, 24, new PdfShapeOptions { FillColor = new PdfRgbColor(1, 0.8, 0.8) });
+document.AddPageEllipse(0, 220, 140, 48, 20);
+document.AddPagePolygon(0, [new PdfShapePoint(40, 160), new PdfShapePoint(96, 196), new PdfShapePoint(152, 160)]);
+document.AddPagePath(
+    0,
+    [
+        new PdfPathMoveTo(200, 160),
+        new PdfPathLineTo(260, 160),
+        new PdfPathCurveTo(280, 160, 280, 210, 260, 210),
+        new PdfPathClosePath(),
+    ],
+    new PdfShapeOptions { FillColor = new PdfRgbColor(0.9, 0.8, 0.3), StrokeColor = null, FillRule = PdfShapeFillRule.EvenOdd });
 ```
 
 ## Save cross-reference style
@@ -232,6 +246,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 - signature validation currently supports CMS subfilters `/adbe.pkcs7.detached`, `/ETSI.CAdES.detached`, `/adbe.pkcs7.sha1`, and `/ETSI.RFC3161`
 - revocation validation supports online retrieval (`RevocationCheckMode = PdfRevocationCheckMode.Online`) and offline DSS OCSP/CRL evidence when embedded in `/DSS`; offline OCSP validation includes delegated responders when `id-kp-OCSPSigning` is present and the responder certificate chains to the OCSP certificate issuer, and enforces signature-scoped `/DSS /VRI` evidence matching; deterministic offline mode remains the default (`Offline`)
 - image APIs currently support JPEG and PNG input, including alpha-channel PNG via soft masks (indexed-color and interlaced PNG remain unsupported)
-- shape APIs currently emit solid RGB stroke/fill commands (line, rectangle, circle) and do not yet expose dashed strokes, joins/caps, gradients, or transparency state controls
+- shape APIs support line/rectangle/circle/ellipse/polygon/path with RGB stroke/fill, line cap/join/miter/dash, and even-odd fill rule; gradients, blend modes, and transparency state controls are not yet exposed
 - security support is intentionally limited to Standard handler profiles `V=1 / R=2`, `V=2 / R=3`, `V=4 / R=4`, and `V=5 / R=6`
 - explicit `PdfSaveOptions.Security` with `PdfSaveMode.Incremental` is supported only for documents opened from encrypted PDFs, and must match the opened security context (password/profile/permissions)
