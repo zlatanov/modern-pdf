@@ -382,6 +382,57 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void AddTextPageWithEmbeddedTrueTypeFontWrapsParagraphAndPreservesText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        const string text = "This is a long paragraph that should wrap into multiple lines while keeping extracted text stable.";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                FontSize = 20,
+                X = 72,
+                Y = 700,
+                TrueTypeFontPath = fontPath,
+                SubsetFont = true,
+                MaxWidth = 120,
+                LineHeightMultiplier = 1.5,
+                Alignment = PdfTextAlignment.Center,
+                Direction = PdfTextDirection.LeftToRight,
+            });
+
+        byte[] bytes = document.Save();
+        string ascii = Encoding.ASCII.GetString(bytes);
+
+        Assert.Equal(text, document.ExtractText());
+        Assert.Contains(" 700 Tm <", ascii, StringComparison.Ordinal);
+        Assert.Contains(" 670 Tm <", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddTextPageWithEmbeddedTrueTypeFontSupportsRtlDirection()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        const string text = "مرحبا بالعالم";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                TrueTypeFontPath = fontPath,
+                SubsetFont = true,
+                MaxWidth = 240,
+                Alignment = PdfTextAlignment.Right,
+                Direction = PdfTextDirection.RightToLeft,
+            });
+
+        Assert.Equal(text, document.ExtractText());
+    }
+
+    [Fact]
     public void AddTextPageUsesDocumentDefaultTextOptionsWhenOptionsAreNotProvided()
     {
         PdfDocument document = PdfDocument.Create();
@@ -816,6 +867,10 @@ public sealed class PdfDocumentTests
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { FontSize = 0 }));
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { X = double.NaN }));
         Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { Y = double.PositiveInfinity }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { MaxWidth = 0 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { LineHeightMultiplier = 0 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { Alignment = (PdfTextAlignment)999 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { Direction = (PdfTextDirection)999 }));
         Assert.Throws<ArgumentException>(() => document.ReplacePageText(0, "x", new PdfTextOptions { TrueTypeFontPath = " " }));
     }
 
@@ -828,6 +883,10 @@ public sealed class PdfDocumentTests
         Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { FontSize = 0 });
         Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { X = double.NaN });
         Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { Y = double.PositiveInfinity });
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { MaxWidth = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { LineHeightMultiplier = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { Alignment = (PdfTextAlignment)999 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => document.DefaultTextOptions = new PdfTextOptions { Direction = (PdfTextDirection)999 });
         Assert.Throws<ArgumentException>(() => document.DefaultTextOptions = new PdfTextOptions { TrueTypeFontPath = " " });
     }
 

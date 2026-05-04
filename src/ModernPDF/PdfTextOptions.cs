@@ -11,4 +11,12 @@ public sealed class PdfTextOptions
     public string? TrueTypeFontPath { get; init; }
 
     public bool SubsetFont { get; init; } = true;
+
+    public double? MaxWidth { get; init; }
+
+    public double LineHeightMultiplier { get; init; } = 1.2;
+
+    public PdfTextAlignment Alignment { get; init; } = PdfTextAlignment.Left;
+
+    public PdfTextDirection Direction { get; init; } = PdfTextDirection.Auto;
 }

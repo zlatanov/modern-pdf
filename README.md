@@ -67,6 +67,10 @@ document.AddTextPage(
     {
         TrueTypeFontPath = @"C:\fonts\AnotherFont.ttf",
         SubsetFont = false,
+        MaxWidth = 420,
+        LineHeightMultiplier = 1.4,
+        Alignment = PdfTextAlignment.Left,
+        Direction = PdfTextDirection.Auto,
     });
 ```
 

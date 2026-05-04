@@ -682,7 +682,8 @@ public sealed class PdfDocument
         PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(
             options.TrueTypeFontPath,
             text,
-            options.SubsetFont);
+            options.SubsetFont,
+            options.Direction);
 
         PdfObjectId fontFileId = new(nextObjectNumber++, 0);
         PdfObjectId descriptorId = new(nextObjectNumber++, 0);
@@ -773,6 +774,7 @@ public sealed class PdfDocument
 
         ReadOnlyMemory<byte> contentBytes = BuildEmbeddedTextContentStream(
             embedded.GlyphRun,
+            embedded.CidToUnicode,
             embedded.UnitsPerEm,
             options);
 
@@ -892,35 +894,59 @@ public sealed class PdfDocument
 
     private static ReadOnlyMemory<byte> BuildEmbeddedTextContentStream(
         IReadOnlyList<PdfShapedGlyph> glyphRun,
+        IReadOnlyDictionary<int, string> cidToUnicode,
         ushort unitsPerEm,
         PdfTextOptions options)
     {
         string fontSize = options.FontSize.ToString("0.###", CultureInfo.InvariantCulture);
+        double lineHeight = options.FontSize * options.LineHeightMultiplier;
+        List<List<PdfShapedGlyph>> lines = BuildEmbeddedLines(glyphRun, cidToUnicode, unitsPerEm, options);
         System.Text.StringBuilder builder = new();
         builder.Append("BT /F1 ");
         builder.Append(fontSize);
         builder.Append(" Tf ");
 
-        double penX = options.X;
-        double penY = options.Y;
-
-        foreach (PdfShapedGlyph glyph in glyphRun)
+        for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
-            double xOffset = ScaleGlyphUnitToUserSpace(glyph.XOffset, unitsPerEm, options.FontSize);
-            double yOffset = ScaleGlyphUnitToUserSpace(glyph.YOffset, unitsPerEm, options.FontSize);
-            double glyphX = penX + xOffset;
-            double glyphY = penY + yOffset;
+            List<PdfShapedGlyph> line = lines[lineIndex];
+            if (line.Count == 0)
+            {
+                continue;
+            }
 
-            builder.Append("1 0 0 1 ");
-            builder.Append(glyphX.ToString("0.###", CultureInfo.InvariantCulture));
-            builder.Append(' ');
-            builder.Append(glyphY.ToString("0.###", CultureInfo.InvariantCulture));
-            builder.Append(" Tm <");
-            builder.Append(glyph.Cid.ToString("X4", CultureInfo.InvariantCulture));
-            builder.Append("> Tj ");
+            EmbeddedLineMetrics metrics = MeasureEmbeddedLine(line, unitsPerEm, options.FontSize);
+            double containerWidth = options.MaxWidth ?? metrics.Width;
+            double alignmentOffset = GetAlignmentOffset(options.Alignment, containerWidth, metrics.Width);
+            double penX = options.X + alignmentOffset - metrics.MinX;
+            double penY = options.Y - (lineIndex * lineHeight);
+            List<EmbeddedGlyphPlacement> placements = new(line.Count);
+            int sequence = 0;
 
-            penX += ScaleGlyphUnitToUserSpace(glyph.XAdvance, unitsPerEm, options.FontSize);
-            penY += ScaleGlyphUnitToUserSpace(glyph.YAdvance, unitsPerEm, options.FontSize);
+            foreach (PdfShapedGlyph glyph in line)
+            {
+                double xOffset = ScaleGlyphUnitToUserSpace(glyph.XOffset, unitsPerEm, options.FontSize);
+                double yOffset = ScaleGlyphUnitToUserSpace(glyph.YOffset, unitsPerEm, options.FontSize);
+                double glyphX = penX + xOffset;
+                double glyphY = penY + yOffset;
+
+                placements.Add(new EmbeddedGlyphPlacement(glyph, glyphX, glyphY, sequence++));
+
+                penX += ScaleGlyphUnitToUserSpace(glyph.XAdvance, unitsPerEm, options.FontSize);
+                penY += ScaleGlyphUnitToUserSpace(glyph.YAdvance, unitsPerEm, options.FontSize);
+            }
+
+            foreach (EmbeddedGlyphPlacement placement in placements
+                .OrderBy(static value => value.Glyph.Cluster)
+                .ThenBy(static value => value.Sequence))
+            {
+                builder.Append("1 0 0 1 ");
+                builder.Append(placement.X.ToString("0.###", CultureInfo.InvariantCulture));
+                builder.Append(' ');
+                builder.Append(placement.Y.ToString("0.###", CultureInfo.InvariantCulture));
+                builder.Append(" Tm <");
+                builder.Append(placement.Glyph.Cid.ToString("X4", CultureInfo.InvariantCulture));
+                builder.Append("> Tj ");
+            }
         }
 
         builder.Append("ET");
@@ -934,12 +960,238 @@ public sealed class PdfDocument
 
     private static string BuildTextContentStream(string text, PdfTextOptions options)
     {
-        string escaped = EscapeLiteralString(text);
-        string x = options.X.ToString("0.###", CultureInfo.InvariantCulture);
-        string y = options.Y.ToString("0.###", CultureInfo.InvariantCulture);
-        string fontSize = options.FontSize.ToString("0.###", CultureInfo.InvariantCulture);
+        if (options.MaxWidth is null
+            && options.Alignment == PdfTextAlignment.Left
+            && options.LineHeightMultiplier == 1.2
+            && text.IndexOfAny(['\r', '\n']) < 0)
+        {
+            string escapedSimple = EscapeLiteralString(text);
+            string xSimple = options.X.ToString("0.###", CultureInfo.InvariantCulture);
+            string ySimple = options.Y.ToString("0.###", CultureInfo.InvariantCulture);
+            string fontSizeSimple = options.FontSize.ToString("0.###", CultureInfo.InvariantCulture);
 
-        return $"BT /F1 {fontSize} Tf {x} {y} Td ({escaped}) Tj ET";
+            return $"BT /F1 {fontSizeSimple} Tf {xSimple} {ySimple} Td ({escapedSimple}) Tj ET";
+        }
+
+        IReadOnlyList<string> lines = BuildSimpleTextLines(text, options);
+        double lineHeight = options.FontSize * options.LineHeightMultiplier;
+        string fontSize = options.FontSize.ToString("0.###", CultureInfo.InvariantCulture);
+        System.Text.StringBuilder builder = new();
+        builder.Append("BT /F1 ");
+        builder.Append(fontSize);
+        builder.Append(" Tf ");
+
+        for (int index = 0; index < lines.Count; index++)
+        {
+            string line = lines[index];
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            double lineWidth = EstimateSimpleTextWidth(line, options.FontSize);
+            double containerWidth = options.MaxWidth ?? lineWidth;
+            double alignmentOffset = GetAlignmentOffset(options.Alignment, containerWidth, lineWidth);
+            double x = options.X + alignmentOffset;
+            double y = options.Y - (index * lineHeight);
+
+            builder.Append("1 0 0 1 ");
+            builder.Append(x.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(' ');
+            builder.Append(y.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(" Tm (");
+            builder.Append(EscapeLiteralString(line));
+            builder.Append(") Tj ");
+        }
+
+        builder.Append("ET");
+        return builder.ToString();
+    }
+
+    private static List<List<PdfShapedGlyph>> BuildEmbeddedLines(
+        IReadOnlyList<PdfShapedGlyph> glyphRun,
+        IReadOnlyDictionary<int, string> cidToUnicode,
+        ushort unitsPerEm,
+        PdfTextOptions options)
+    {
+        List<List<PdfShapedGlyph>> lines = [[]];
+        int currentLineIndex = 0;
+        int lastBreakGlyphIndex = -1;
+        double currentAdvance = 0;
+        double widthAtBreak = 0;
+
+        double maxWidth = options.MaxWidth ?? double.PositiveInfinity;
+        foreach (PdfShapedGlyph glyph in glyphRun)
+        {
+            if (IsLineBreakGlyph(glyph, cidToUnicode))
+            {
+                currentLineIndex++;
+                lines.Add([]);
+                currentAdvance = 0;
+                lastBreakGlyphIndex = -1;
+                widthAtBreak = 0;
+                continue;
+            }
+
+            List<PdfShapedGlyph> currentLine = lines[currentLineIndex];
+            currentLine.Add(glyph);
+            currentAdvance += Math.Abs(ScaleGlyphUnitToUserSpace(glyph.XAdvance, unitsPerEm, options.FontSize));
+
+            if (IsWhitespaceGlyph(glyph, cidToUnicode))
+            {
+                lastBreakGlyphIndex = currentLine.Count - 1;
+                widthAtBreak = currentAdvance;
+            }
+
+            if (double.IsFinite(maxWidth) && maxWidth > 0 && currentAdvance > maxWidth && currentLine.Count > 1)
+            {
+                List<PdfShapedGlyph> overflow;
+                if (lastBreakGlyphIndex >= 0)
+                {
+                    int breakAfter = lastBreakGlyphIndex + 1;
+                    overflow = currentLine.GetRange(breakAfter, currentLine.Count - breakAfter);
+                    currentLine.RemoveRange(breakAfter, currentLine.Count - breakAfter);
+                    currentAdvance = widthAtBreak;
+                }
+                else
+                {
+                    PdfShapedGlyph pushed = currentLine[^1];
+                    currentLine.RemoveAt(currentLine.Count - 1);
+                    overflow = [pushed];
+                    currentAdvance = ComputeEmbeddedLineAdvance(currentLine, unitsPerEm, options.FontSize);
+                }
+
+                currentLineIndex++;
+                lines.Add(overflow);
+                currentAdvance = ComputeEmbeddedLineAdvance(lines[currentLineIndex], unitsPerEm, options.FontSize);
+                lastBreakGlyphIndex = FindLastWhitespaceGlyph(lines[currentLineIndex], cidToUnicode);
+                widthAtBreak = lastBreakGlyphIndex >= 0
+                    ? ComputeEmbeddedLineAdvance(
+                        lines[currentLineIndex].Take(lastBreakGlyphIndex + 1),
+                        unitsPerEm,
+                        options.FontSize)
+                    : 0;
+            }
+        }
+
+        return lines;
+    }
+
+    private static bool IsWhitespaceGlyph(PdfShapedGlyph glyph, IReadOnlyDictionary<int, string> cidToUnicode)
+    {
+        if (!cidToUnicode.TryGetValue(glyph.Cid, out string? value))
+        {
+            return false;
+        }
+
+        return value.Length > 0 && value.All(char.IsWhiteSpace);
+    }
+
+    private static bool IsLineBreakGlyph(PdfShapedGlyph glyph, IReadOnlyDictionary<int, string> cidToUnicode)
+    {
+        if (!cidToUnicode.TryGetValue(glyph.Cid, out string? value))
+        {
+            return false;
+        }
+
+        return value.IndexOfAny(['\r', '\n']) >= 0;
+    }
+
+    private static int FindLastWhitespaceGlyph(List<PdfShapedGlyph> line, IReadOnlyDictionary<int, string> cidToUnicode)
+    {
+        for (int index = line.Count - 1; index >= 0; index--)
+        {
+            if (IsWhitespaceGlyph(line[index], cidToUnicode))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static double ComputeEmbeddedLineAdvance(IEnumerable<PdfShapedGlyph> glyphs, ushort unitsPerEm, double fontSize)
+    {
+        return glyphs.Sum(glyph => Math.Abs(ScaleGlyphUnitToUserSpace(glyph.XAdvance, unitsPerEm, fontSize)));
+    }
+
+    private static EmbeddedLineMetrics MeasureEmbeddedLine(
+        List<PdfShapedGlyph> glyphs,
+        ushort unitsPerEm,
+        double fontSize)
+    {
+        double penX = 0;
+        double minX = 0;
+        double maxX = 0;
+
+        foreach (PdfShapedGlyph glyph in glyphs)
+        {
+            double xOffset = ScaleGlyphUnitToUserSpace(glyph.XOffset, unitsPerEm, fontSize);
+            double x = penX + xOffset;
+            minX = Math.Min(minX, x);
+            maxX = Math.Max(maxX, x);
+
+            penX += ScaleGlyphUnitToUserSpace(glyph.XAdvance, unitsPerEm, fontSize);
+            minX = Math.Min(minX, penX);
+            maxX = Math.Max(maxX, penX);
+        }
+
+        return new EmbeddedLineMetrics(minX, maxX - minX);
+    }
+
+    private static IReadOnlyList<string> BuildSimpleTextLines(string text, PdfTextOptions options)
+    {
+        string normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        if (options.MaxWidth is null)
+        {
+            return normalized.Split('\n');
+        }
+
+        List<string> lines = [];
+        foreach (string paragraph in normalized.Split('\n'))
+        {
+            if (paragraph.Length == 0)
+            {
+                lines.Add(string.Empty);
+                continue;
+            }
+
+            string[] words = paragraph.Split(' ', StringSplitOptions.None);
+            string current = string.Empty;
+            foreach (string word in words)
+            {
+                string candidate = current.Length == 0 ? word : $"{current} {word}";
+                if (current.Length == 0 || EstimateSimpleTextWidth(candidate, options.FontSize) <= options.MaxWidth.Value)
+                {
+                    current = candidate;
+                    continue;
+                }
+
+                lines.Add($"{current} ");
+                current = word;
+            }
+
+            lines.Add(current);
+        }
+
+        return lines;
+    }
+
+    private static double EstimateSimpleTextWidth(string text, double fontSize)
+    {
+        int glyphCount = text.EnumerateRunes().Count();
+        return glyphCount * fontSize * 0.5;
+    }
+
+    private static double GetAlignmentOffset(PdfTextAlignment alignment, double containerWidth, double lineWidth)
+    {
+        return alignment switch
+        {
+            PdfTextAlignment.Left => 0,
+            PdfTextAlignment.Center => (containerWidth - lineWidth) / 2,
+            PdfTextAlignment.Right => containerWidth - lineWidth,
+            _ => 0,
+        };
     }
 
     private static string EscapeLiteralString(string value)
@@ -986,6 +1238,26 @@ public sealed class PdfDocument
         {
             throw new ArgumentException("TrueTypeFontPath cannot be blank when provided.", nameof(options));
         }
+
+        if (options.MaxWidth is double maxWidth && (!double.IsFinite(maxWidth) || maxWidth <= 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Text MaxWidth must be a positive finite number when provided.");
+        }
+
+        if (!double.IsFinite(options.LineHeightMultiplier) || options.LineHeightMultiplier <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Text LineHeightMultiplier must be a positive finite number.");
+        }
+
+        if (!Enum.IsDefined(options.Alignment))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Text Alignment contains an unsupported value.");
+        }
+
+        if (!Enum.IsDefined(options.Direction))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Text Direction contains an unsupported value.");
+        }
     }
 
     private static void ValidateSecurityOptions(PdfSecurityOptions security)
@@ -1012,4 +1284,12 @@ public sealed class PdfDocument
         ReadOnlyMemory<byte> ContentStreamBytes,
         IReadOnlyList<PdfIndirectObject> ObjectsToAdd,
         IReadOnlyList<PdfObjectId> DirtyObjectIds);
+
+    private readonly record struct EmbeddedLineMetrics(double MinX, double Width);
+
+    private readonly record struct EmbeddedGlyphPlacement(
+        PdfShapedGlyph Glyph,
+        double X,
+        double Y,
+        int Sequence);
 }

@@ -11,7 +11,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
     {
         string missingPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.ttf");
 
-        Assert.Throws<FileNotFoundException>(() => PdfTrueTypeFontEmbedder.Build(missingPath, "abc", subsetFont: true));
+        Assert.Throws<FileNotFoundException>(() => PdfTrueTypeFontEmbedder.Build(missingPath, "abc", subsetFont: true, direction: PdfTextDirection.Auto));
     }
 
     [Fact]
@@ -20,7 +20,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile([1, 2, 3]);
         try
         {
-            Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true));
+            Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true, direction: PdfTextDirection.Auto));
         }
         finally
         {
@@ -38,7 +38,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("Unsupported font format", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -57,7 +57,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("table directory is truncated", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -79,7 +79,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("is out of range", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -101,7 +101,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("missing required table", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -120,7 +120,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("indexToLocFormat", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -150,7 +150,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("supported format 4", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -172,7 +172,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("segment count", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -192,7 +192,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("cmap subtable exceeded available data", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -211,7 +211,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "abc", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("head", exception.Message, StringComparison.Ordinal);
             Assert.Contains("shorter than expected", exception.Message, StringComparison.Ordinal);
         }
@@ -225,7 +225,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
     public void BuildSupportsNonBmpCharacters()
     {
         string fontPath = GetFixtureFontPath();
-        PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(fontPath, "emoji-\U0001F600", subsetFont: true);
+        PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(fontPath, "emoji-\U0001F600", subsetFont: true, direction: PdfTextDirection.Auto);
 
         Assert.NotEmpty(embedded.GlyphRun);
         Assert.NotEmpty(embedded.CidToGlyphId);
@@ -242,7 +242,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes, "Fallback Font#1.ttf");
         try
         {
-            PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(path, "ABC", subsetFont: false);
+            PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(path, "ABC", subsetFont: false, direction: PdfTextDirection.Auto);
             Assert.Equal("FallbackFont1", embedded.BaseFontName);
         }
         finally
@@ -273,7 +273,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         string path = WriteTempFontFile(bytes);
         try
         {
-            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true));
+            PdfFormatException exception = Assert.Throws<PdfFormatException>(() => PdfTrueTypeFontEmbedder.Build(path, "A", subsetFont: true, direction: PdfTextDirection.Auto));
             Assert.Contains("Invalid glyph offset ordering", exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -294,7 +294,7 @@ public sealed class PdfTrueTypeFontEmbedderTests
         try
         {
             string text = new(compositeChars.ToArray());
-            PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(path, text, subsetFont: true);
+            PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(path, text, subsetFont: true, direction: PdfTextDirection.Auto);
 
             Assert.Contains("+", embedded.BaseFontName, StringComparison.Ordinal);
             Assert.Equal(text.Length, embedded.UnicodeToGlyphId.Count);

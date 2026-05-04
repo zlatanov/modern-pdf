@@ -8,6 +8,7 @@ namespace ModernPDF.Fonts;
 
 internal readonly record struct PdfShapedGlyph(
     int Cid,
+    int Cluster,
     int XAdvance,
     int YAdvance,
     int XOffset,
@@ -48,7 +49,7 @@ internal sealed class PdfEmbeddedTrueTypeFont
 
 internal static class PdfTrueTypeFontEmbedder
 {
-    public static PdfEmbeddedTrueTypeFont Build(string fontPath, string text, bool subsetFont)
+    public static PdfEmbeddedTrueTypeFont Build(string fontPath, string text, bool subsetFont, PdfTextDirection direction)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fontPath);
         ArgumentNullException.ThrowIfNull(text);
@@ -60,7 +61,7 @@ internal static class PdfTrueTypeFontEmbedder
 
         byte[] bytes = File.ReadAllBytes(fontPath);
         TrueTypeFont font = TrueTypeFont.Parse(bytes, fontPath);
-        return font.BuildEmbeddedFont(text, subsetFont);
+        return font.BuildEmbeddedFont(text, subsetFont, direction);
     }
 
     private sealed class TrueTypeFont
@@ -228,9 +229,9 @@ internal static class PdfTrueTypeFontEmbedder
                 postScriptName);
         }
 
-        public PdfEmbeddedTrueTypeFont BuildEmbeddedFont(string text, bool subsetFont)
+        public PdfEmbeddedTrueTypeFont BuildEmbeddedFont(string text, bool subsetFont, PdfTextDirection direction)
         {
-            IReadOnlyList<ShapedGlyphEntry> shapedGlyphs = ShapeGlyphs(text, _bytes, UnitsPerEm);
+            IReadOnlyList<ShapedGlyphEntry> shapedGlyphs = ShapeGlyphs(text, _bytes, UnitsPerEm, direction);
 
             HashSet<int> unicodeSet = [.. text.EnumerateRunes().Select(static rune => rune.Value)];
 
@@ -276,6 +277,7 @@ internal static class PdfTrueTypeFontEmbedder
 
                 glyphRun.Add(new PdfShapedGlyph(
                     cid,
+                    shaped.Cluster,
                     shaped.XAdvance,
                     shaped.YAdvance,
                     shaped.XOffset,
@@ -386,7 +388,7 @@ internal static class PdfTrueTypeFontEmbedder
             return new SubsetResult(fontProgram, oldToNew, unicodeToNewGlyph);
         }
 
-        private static List<ShapedGlyphEntry> ShapeGlyphs(string text, byte[] fontBytes, ushort unitsPerEm)
+        private static List<ShapedGlyphEntry> ShapeGlyphs(string text, byte[] fontBytes, ushort unitsPerEm, PdfTextDirection direction)
         {
             using MemoryStream stream = new(fontBytes, writable: false);
             using Blob blob = Blob.FromStream(stream);
@@ -398,6 +400,13 @@ internal static class PdfTrueTypeFontEmbedder
             using HarfBuzzSharp.Buffer buffer = new();
             buffer.AddUtf16(text);
             buffer.GuessSegmentProperties();
+            if (direction != PdfTextDirection.Auto)
+            {
+                buffer.Direction = direction == PdfTextDirection.RightToLeft
+                    ? Direction.RightToLeft
+                    : Direction.LeftToRight;
+            }
+
             font.Shape(buffer, Array.Empty<Feature>());
 
             GlyphInfo[] infos = buffer.GlyphInfos;

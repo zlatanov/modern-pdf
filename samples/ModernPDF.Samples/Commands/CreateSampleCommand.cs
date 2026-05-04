@@ -28,7 +28,20 @@ internal static class CreateSampleCommand
         document.AddTextPage(
             "Hello from ModernPDF!",
             new PdfPageOptions { Width = 612, Height = 792 });
-        document.AddTextPage("Shaping demo: office fi ffi | Arabic: مرحبا بالعالم | Emoji: 👩‍💻");
+        PdfTextOptions defaultText = document.DefaultTextOptions;
+        document.DefaultTextOptions = new PdfTextOptions
+        {
+            FontSize = 14,
+            X = 72,
+            Y = 740,
+            TrueTypeFontPath = defaultText.TrueTypeFontPath,
+            SubsetFont = defaultText.SubsetFont,
+            MaxWidth = 468,
+            LineHeightMultiplier = 1.4,
+            Alignment = PdfTextAlignment.Left,
+            Direction = PdfTextDirection.Auto,
+        };
+        document.AddTextPage("Paragraph demo: office fi ffi, Arabic مرحبا بالعالم, and Emoji 👩‍💻 with automatic shaping, wrapping, and alignment.");
         document.SetInfoProducer("ModernPDF Samples");
         document.Save(outputPath);
 
