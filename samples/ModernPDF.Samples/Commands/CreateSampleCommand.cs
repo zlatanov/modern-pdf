@@ -28,6 +28,7 @@ internal static class CreateSampleCommand
         document.AddTextPage(
             "Hello from ModernPDF!",
             new PdfPageOptions { Width = 612, Height = 792 });
+        document.AddTextPage("Shaping demo: office fi ffi | Arabic: مرحبا بالعالم | Emoji: 👩‍💻");
         document.SetInfoProducer("ModernPDF Samples");
         document.Save(outputPath);
 

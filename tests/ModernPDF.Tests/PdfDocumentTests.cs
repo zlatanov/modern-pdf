@@ -346,6 +346,42 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void AddTextPageWithEmbeddedTrueTypeFontSupportsSurrogatePairs()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        const string text = "emoji \U0001F600";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                TrueTypeFontPath = fontPath,
+                SubsetFont = true,
+            });
+
+        Assert.Equal(text, document.ExtractText());
+    }
+
+    [Fact]
+    public void AddTextPageWithEmbeddedTrueTypeFontShapesLigaturesAndExtractsText()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        const string text = "office ffi";
+
+        document.AddTextPage(
+            text,
+            textOptions: new PdfTextOptions
+            {
+                TrueTypeFontPath = fontPath,
+                SubsetFont = true,
+            });
+
+        Assert.Equal(text, document.ExtractText());
+    }
+
+    [Fact]
     public void AddTextPageUsesDocumentDefaultTextOptionsWhenOptionsAreNotProvided()
     {
         PdfDocument document = PdfDocument.Create();
@@ -532,6 +568,25 @@ public sealed class PdfDocumentTests
 
         Assert.Equal("New embedded text", document.ExtractText());
         Assert.Contains("/CIDToGIDMap", ascii, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReplacePageTextWithEmbeddedTrueTypeFontSupportsSurrogatePairs()
+    {
+        PdfDocument document = PdfDocument.Create();
+        string fontPath = GetFixtureFontPath();
+        document.AddTextPage("Old text");
+
+        document.ReplacePageText(
+            0,
+            "Updated \U0001F600",
+            new PdfTextOptions
+            {
+                TrueTypeFontPath = fontPath,
+                SubsetFont = true,
+            });
+
+        Assert.Equal("Updated \U0001F600", document.ExtractText());
     }
 
     [Fact]

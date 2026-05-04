@@ -721,10 +721,10 @@ public sealed class PdfDocument
             new PdfDictionaryEntry("FontFile2", new PdfReferenceObject(fontFileId)),
         ]);
 
-        byte[] cidToGidBytes = BuildCidToGidMapBytes(embedded.UnicodeToGlyphId);
+        byte[] cidToGidBytes = BuildCidToGidMapBytes(embedded.CidToGlyphId);
         PdfStreamObject cidToGidMap = new(new PdfDictionaryObject([]), cidToGidBytes);
 
-        byte[] toUnicodeBytes = BuildToUnicodeCMapBytes(embedded.UnicodeToGlyphId.Keys);
+        byte[] toUnicodeBytes = BuildToUnicodeCMapBytes(embedded.CidToUnicode);
         PdfStreamObject toUnicode = new(new PdfDictionaryObject([]), toUnicodeBytes);
 
         PdfDictionaryObject descendantFont = new(
@@ -743,7 +743,7 @@ public sealed class PdfDocument
             new PdfDictionaryEntry("FontDescriptor", new PdfReferenceObject(descriptorId)),
             new PdfDictionaryEntry("CIDToGIDMap", new PdfReferenceObject(cidToGidId)),
             new PdfDictionaryEntry("DW", new PdfNumberObject(1000, isInteger: true)),
-            new PdfDictionaryEntry("W", BuildWidthArray(embedded.UnicodeToWidth)),
+            new PdfDictionaryEntry("W", BuildWidthArray(embedded.CidToWidth)),
         ]);
 
         PdfDictionaryObject type0Font = new(
@@ -771,7 +771,10 @@ public sealed class PdfDocument
                 ])),
         ]);
 
-        ReadOnlyMemory<byte> contentBytes = BuildEmbeddedTextContentStream(text, options);
+        ReadOnlyMemory<byte> contentBytes = BuildEmbeddedTextContentStream(
+            embedded.GlyphRun,
+            embedded.UnitsPerEm,
+            options);
 
         List<PdfIndirectObject> objects =
         [
@@ -842,9 +845,9 @@ public sealed class PdfDocument
         return bytes;
     }
 
-    private static byte[] BuildToUnicodeCMapBytes(IEnumerable<int> unicodeCodes)
+    private static byte[] BuildToUnicodeCMapBytes(IReadOnlyDictionary<int, string> cidToUnicode)
     {
-        List<int> codes = [.. unicodeCodes.OrderBy(static value => value)];
+        List<int> cids = [.. cidToUnicode.Keys.OrderBy(static value => value)];
         System.Text.StringBuilder builder = new();
 
         builder.AppendLine("/CIDInit /ProcSet findresource begin");
@@ -858,18 +861,20 @@ public sealed class PdfDocument
         builder.AppendLine("endcodespacerange");
 
         int cursor = 0;
-        while (cursor < codes.Count)
+        while (cursor < cids.Count)
         {
-            int batchSize = Math.Min(100, codes.Count - cursor);
+            int batchSize = Math.Min(100, cids.Count - cursor);
             builder.Append(batchSize.ToString(CultureInfo.InvariantCulture));
             builder.AppendLine(" beginbfchar");
             for (int index = 0; index < batchSize; index++)
             {
-                int code = codes[cursor + index];
+                int cid = cids[cursor + index];
+                string unicode = cidToUnicode[cid];
+                string destination = Convert.ToHexString(System.Text.Encoding.BigEndianUnicode.GetBytes(unicode));
                 builder.Append('<');
-                builder.Append(code.ToString("X4", CultureInfo.InvariantCulture));
+                builder.Append(cid.ToString("X4", CultureInfo.InvariantCulture));
                 builder.Append("> <");
-                builder.Append(code.ToString("X4", CultureInfo.InvariantCulture));
+                builder.Append(destination);
                 builder.AppendLine(">");
             }
 
@@ -885,15 +890,46 @@ public sealed class PdfDocument
         return System.Text.Encoding.ASCII.GetBytes(builder.ToString());
     }
 
-    private static ReadOnlyMemory<byte> BuildEmbeddedTextContentStream(string text, PdfTextOptions options)
+    private static ReadOnlyMemory<byte> BuildEmbeddedTextContentStream(
+        IReadOnlyList<PdfShapedGlyph> glyphRun,
+        ushort unitsPerEm,
+        PdfTextOptions options)
     {
-        string x = options.X.ToString("0.###", CultureInfo.InvariantCulture);
-        string y = options.Y.ToString("0.###", CultureInfo.InvariantCulture);
         string fontSize = options.FontSize.ToString("0.###", CultureInfo.InvariantCulture);
-        byte[] utf16 = System.Text.Encoding.BigEndianUnicode.GetBytes(text);
-        string hex = Convert.ToHexString(utf16);
-        string content = $"BT /F1 {fontSize} Tf {x} {y} Td <{hex}> Tj ET";
-        return System.Text.Encoding.ASCII.GetBytes(content);
+        System.Text.StringBuilder builder = new();
+        builder.Append("BT /F1 ");
+        builder.Append(fontSize);
+        builder.Append(" Tf ");
+
+        double penX = options.X;
+        double penY = options.Y;
+
+        foreach (PdfShapedGlyph glyph in glyphRun)
+        {
+            double xOffset = ScaleGlyphUnitToUserSpace(glyph.XOffset, unitsPerEm, options.FontSize);
+            double yOffset = ScaleGlyphUnitToUserSpace(glyph.YOffset, unitsPerEm, options.FontSize);
+            double glyphX = penX + xOffset;
+            double glyphY = penY + yOffset;
+
+            builder.Append("1 0 0 1 ");
+            builder.Append(glyphX.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(' ');
+            builder.Append(glyphY.ToString("0.###", CultureInfo.InvariantCulture));
+            builder.Append(" Tm <");
+            builder.Append(glyph.Cid.ToString("X4", CultureInfo.InvariantCulture));
+            builder.Append("> Tj ");
+
+            penX += ScaleGlyphUnitToUserSpace(glyph.XAdvance, unitsPerEm, options.FontSize);
+            penY += ScaleGlyphUnitToUserSpace(glyph.YAdvance, unitsPerEm, options.FontSize);
+        }
+
+        builder.Append("ET");
+        return System.Text.Encoding.ASCII.GetBytes(builder.ToString());
+    }
+
+    private static double ScaleGlyphUnitToUserSpace(int value, ushort unitsPerEm, double fontSize)
+    {
+        return value * fontSize / unitsPerEm;
     }
 
     private static string BuildTextContentStream(string text, PdfTextOptions options)

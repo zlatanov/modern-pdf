@@ -9,7 +9,7 @@ Current implemented scope includes:
 - page/content editing
 - destructive text redaction
 - password security for Standard handler `V=1 / R=2 / 40-bit` (with permission flags)
-- TrueType font embedding for generated/replaced text with automatic subsetting
+- TrueType font embedding for generated/replaced text with automatic subsetting and OpenType shaping
 - corpus-based interoperability/hardening test harness
 
 ## Repository layout
@@ -49,7 +49,7 @@ dotnet run --project samples\ModernPDF.Samples -- secure --output .\artifacts\sa
 
 ## Embedded TrueType fonts
 
-`PdfTextOptions` supports embedding a TrueType font file and subsetting glyphs by default.
+`PdfTextOptions` supports embedding a TrueType font file, OpenType shaping (including surrogate pairs), and subsetting glyphs by default.
 You can configure this once per document via `DefaultTextOptions` and still override per call:
 
 ```csharp
@@ -97,4 +97,3 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 - incremental save is not implemented
 - digital signatures are not implemented
 - security support is intentionally limited to Standard handler `V=1 / R=2`
-- embedded TrueType text currently supports BMP Unicode code points only (no surrogate-pair shaping)

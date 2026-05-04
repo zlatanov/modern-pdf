@@ -222,10 +222,14 @@ public sealed class PdfTrueTypeFontEmbedderTests
     }
 
     [Fact]
-    public void BuildThrowsForNonBmpCharacters()
+    public void BuildSupportsNonBmpCharacters()
     {
         string fontPath = GetFixtureFontPath();
-        Assert.Throws<NotSupportedException>(() => PdfTrueTypeFontEmbedder.Build(fontPath, "emoji-\U0001F600", subsetFont: true));
+        PdfEmbeddedTrueTypeFont embedded = PdfTrueTypeFontEmbedder.Build(fontPath, "emoji-\U0001F600", subsetFont: true);
+
+        Assert.NotEmpty(embedded.GlyphRun);
+        Assert.NotEmpty(embedded.CidToGlyphId);
+        Assert.Contains(embedded.CidToUnicode.Values, static value => string.Equals(value, "\U0001F600", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -1,15 +1,33 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using HarfBuzzSharp;
 using ModernPDF.Format;
 
 namespace ModernPDF.Fonts;
+
+internal readonly record struct PdfShapedGlyph(
+    int Cid,
+    int XAdvance,
+    int YAdvance,
+    int XOffset,
+    int YOffset);
 
 internal sealed class PdfEmbeddedTrueTypeFont
 {
     public required string BaseFontName { get; init; }
 
     public required byte[] FontProgram { get; init; }
+
+    public required IReadOnlyDictionary<int, ushort> CidToGlyphId { get; init; }
+
+    public required IReadOnlyDictionary<int, int> CidToWidth { get; init; }
+
+    public required IReadOnlyDictionary<int, string> CidToUnicode { get; init; }
+
+    public required IReadOnlyList<PdfShapedGlyph> GlyphRun { get; init; }
+
+    public required ushort UnitsPerEm { get; init; }
 
     public required IReadOnlyDictionary<int, ushort> UnicodeToGlyphId { get; init; }
 
@@ -212,16 +230,9 @@ internal static class PdfTrueTypeFontEmbedder
 
         public PdfEmbeddedTrueTypeFont BuildEmbeddedFont(string text, bool subsetFont)
         {
-            HashSet<int> unicodeSet = [];
-            foreach (char value in text)
-            {
-                if (char.IsSurrogate(value))
-                {
-                    throw new NotSupportedException("Embedded TrueType text currently supports BMP characters only.");
-                }
+            IReadOnlyList<ShapedGlyphEntry> shapedGlyphs = ShapeGlyphs(text, _bytes, UnitsPerEm);
 
-                unicodeSet.Add(value);
-            }
+            HashSet<int> unicodeSet = [.. text.EnumerateRunes().Select(static rune => rune.Value)];
 
             Dictionary<int, ushort> unicodeToOriginalGlyph = [];
             foreach (int unicode in unicodeSet)
@@ -229,18 +240,72 @@ internal static class PdfTrueTypeFontEmbedder
                 unicodeToOriginalGlyph[unicode] = _cmap.GetGlyphId(unicode);
             }
 
-            IReadOnlyDictionary<int, ushort> unicodeToGlyph;
+            Dictionary<CidKey, int> cidByKey = new();
+            Dictionary<int, ushort> cidToOriginalGlyph = [];
+            Dictionary<int, int> cidToOriginalWidth = [];
+            Dictionary<int, string> cidToUnicode = [];
+            List<PdfShapedGlyph> glyphRun = [];
+            Dictionary<int, (int Start, int End)> clusterRanges = BuildClusterRanges(text, shapedGlyphs);
+            int nextCid = 1;
+
+            foreach (ShapedGlyphEntry shaped in shapedGlyphs)
+            {
+                if (shaped.GlyphId >= GlyphCount)
+                {
+                    throw new PdfFormatException($"Shaping produced glyph id {shaped.GlyphId}, which is outside the font glyph range.");
+                }
+
+                if (!clusterRanges.TryGetValue(ClampCluster(shaped.Cluster, text.Length), out (int Start, int End) range))
+                {
+                    range = (0, text.Length);
+                }
+
+                string unicodeSlice = range.End > range.Start
+                    ? text.Substring(range.Start, range.End - range.Start)
+                    : "\uFFFD";
+
+                CidKey cidKey = new(shaped.GlyphId, unicodeSlice);
+                if (!cidByKey.TryGetValue(cidKey, out int cid))
+                {
+                    cid = nextCid++;
+                    cidByKey[cidKey] = cid;
+                    cidToOriginalGlyph[cid] = shaped.GlyphId;
+                    cidToOriginalWidth[cid] = ScaleToPdfUnits(_advanceWidths[shaped.GlyphId], UnitsPerEm);
+                    cidToUnicode[cid] = unicodeSlice;
+                }
+
+                glyphRun.Add(new PdfShapedGlyph(
+                    cid,
+                    shaped.XAdvance,
+                    shaped.YAdvance,
+                    shaped.XOffset,
+                    shaped.YOffset));
+            }
+
+            if (nextCid > 0x10000)
+            {
+                throw new NotSupportedException("Embedded text run produced more than 65535 unique CID entries.");
+            }
+
             byte[] programBytes;
+            IReadOnlyDictionary<int, ushort> unicodeToGlyph;
+            Dictionary<int, ushort> cidToGlyph;
             if (subsetFont)
             {
-                SubsetResult subset = BuildSubset(unicodeToOriginalGlyph);
+                SubsetResult subset = BuildSubset(
+                    [.. cidToOriginalGlyph.Values.Distinct()],
+                    unicodeToOriginalGlyph);
                 unicodeToGlyph = subset.UnicodeToGlyphId;
                 programBytes = subset.FontProgram;
+                cidToGlyph = cidToOriginalGlyph.ToDictionary(
+                    static pair => pair.Key,
+                    pair => subset.OldToNewGlyphId.TryGetValue(pair.Value, out ushort remapped) ? remapped : (ushort)0);
             }
             else
             {
                 unicodeToGlyph = unicodeToOriginalGlyph;
                 programBytes = _bytes.ToArray();
+                cidToGlyph = cidToOriginalGlyph;
             }
 
             Dictionary<int, int> unicodeToWidth = [];
@@ -258,6 +323,11 @@ internal static class PdfTrueTypeFontEmbedder
             {
                 BaseFontName = baseFontName,
                 FontProgram = programBytes,
+                CidToGlyphId = cidToGlyph,
+                CidToWidth = cidToOriginalWidth,
+                CidToUnicode = cidToUnicode,
+                GlyphRun = glyphRun,
+                UnitsPerEm = UnitsPerEm,
                 UnicodeToGlyphId = unicodeToGlyph,
                 UnicodeToWidth = unicodeToWidth,
                 Ascent = ScaleToPdfUnits(Ascender, UnitsPerEm),
@@ -269,10 +339,12 @@ internal static class PdfTrueTypeFontEmbedder
             };
         }
 
-        private SubsetResult BuildSubset(IReadOnlyDictionary<int, ushort> unicodeToOriginalGlyph)
+        private SubsetResult BuildSubset(
+            IReadOnlyCollection<ushort> requiredGlyphIds,
+            IReadOnlyDictionary<int, ushort> unicodeToOriginalGlyph)
         {
             HashSet<int> glyphSet = [0];
-            foreach (ushort gid in unicodeToOriginalGlyph.Values)
+            foreach (ushort gid in requiredGlyphIds)
             {
                 glyphSet.Add(gid);
             }
@@ -311,7 +383,77 @@ internal static class PdfTrueTypeFontEmbedder
                 ["cmap"] = cmap,
             });
 
-            return new SubsetResult(fontProgram, unicodeToNewGlyph);
+            return new SubsetResult(fontProgram, oldToNew, unicodeToNewGlyph);
+        }
+
+        private static List<ShapedGlyphEntry> ShapeGlyphs(string text, byte[] fontBytes, ushort unitsPerEm)
+        {
+            using MemoryStream stream = new(fontBytes, writable: false);
+            using Blob blob = Blob.FromStream(stream);
+            using Face face = new(blob, index: 0);
+            using Font font = new(face);
+            font.SetFunctionsOpenType();
+            font.SetScale(unitsPerEm, unitsPerEm);
+
+            using HarfBuzzSharp.Buffer buffer = new();
+            buffer.AddUtf16(text);
+            buffer.GuessSegmentProperties();
+            font.Shape(buffer, Array.Empty<Feature>());
+
+            GlyphInfo[] infos = buffer.GlyphInfos;
+            GlyphPosition[] positions = buffer.GlyphPositions;
+            if (infos.Length != positions.Length)
+            {
+                throw new PdfFormatException("Shaping produced mismatched glyph info and position arrays.");
+            }
+
+            List<ShapedGlyphEntry> shaped = new(infos.Length);
+            for (int index = 0; index < infos.Length; index++)
+            {
+                uint codepoint = infos[index].Codepoint;
+                if (codepoint > ushort.MaxValue)
+                {
+                    throw new NotSupportedException($"Shaping produced glyph id {codepoint}, which exceeds 16-bit CIDFontType2 limits.");
+                }
+
+                shaped.Add(new ShapedGlyphEntry(
+                    (ushort)codepoint,
+                    checked((int)infos[index].Cluster),
+                    positions[index].XAdvance,
+                    positions[index].YAdvance,
+                    positions[index].XOffset,
+                    positions[index].YOffset));
+            }
+
+            return shaped;
+        }
+
+        private static Dictionary<int, (int Start, int End)> BuildClusterRanges(string text, IReadOnlyList<ShapedGlyphEntry> shapedGlyphs)
+        {
+            SortedSet<int> boundaries = [0, text.Length];
+            foreach (ShapedGlyphEntry glyph in shapedGlyphs)
+            {
+                boundaries.Add(ClampCluster(glyph.Cluster, text.Length));
+            }
+
+            List<int> ordered = [.. boundaries];
+            Dictionary<int, (int Start, int End)> ranges = new(ordered.Count);
+            for (int index = 0; index < ordered.Count - 1; index++)
+            {
+                ranges[ordered[index]] = (ordered[index], ordered[index + 1]);
+            }
+
+            return ranges;
+        }
+
+        private static int ClampCluster(int cluster, int textLength)
+        {
+            if (cluster < 0)
+            {
+                return 0;
+            }
+
+            return cluster > textLength ? textLength : cluster;
         }
 
         private byte[] BuildSubsetFontProgram(Dictionary<string, byte[]> rebuiltTables)
@@ -794,7 +936,20 @@ internal static class PdfTrueTypeFontEmbedder
 
     private readonly record struct SubsetResult(
         byte[] FontProgram,
+        IReadOnlyDictionary<int, ushort> OldToNewGlyphId,
         IReadOnlyDictionary<int, ushort> UnicodeToGlyphId);
+
+    private readonly record struct ShapedGlyphEntry(
+        ushort GlyphId,
+        int Cluster,
+        int XAdvance,
+        int YAdvance,
+        int XOffset,
+        int YOffset);
+
+    private readonly record struct CidKey(
+        ushort GlyphId,
+        string UnicodeText);
 
     private readonly record struct TableRecord(
         string Tag,
