@@ -186,6 +186,68 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
+    public void SaveWithIncrementalClassicStyleAfterStreamFullSaveRoundTrips()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("stream-mixed-classic");
+        byte[] fullStreamBytes = document.Save(
+            new PdfSaveOptions
+            {
+                CrossReferenceStyle = PdfCrossReferenceStyle.Stream,
+            });
+
+        PdfDocument opened = PdfDocument.Open(fullStreamBytes);
+        opened.SetInfoProducer("ModernPDF Stream->Classic");
+        byte[] incrementalBytes = opened.Save(
+            new PdfSaveOptions
+            {
+                Mode = PdfSaveMode.Incremental,
+                CrossReferenceStyle = PdfCrossReferenceStyle.Classic,
+            });
+        string text = Encoding.ASCII.GetString(incrementalBytes);
+
+        Assert.True(incrementalBytes.Length > fullStreamBytes.Length);
+        Assert.Equal(fullStreamBytes, incrementalBytes.Take(fullStreamBytes.Length).ToArray());
+        Assert.Contains("\nxref\n", text, StringComparison.Ordinal);
+        Assert.Contains("/Prev", text, StringComparison.Ordinal);
+
+        PdfDocument reopened = PdfDocument.Open(incrementalBytes);
+        Assert.Equal("stream-mixed-classic", reopened.ExtractText());
+        Assert.Equal("ModernPDF Stream->Classic", reopened.GetInfoProducer());
+    }
+
+    [Fact]
+    public void SaveWithIncrementalStreamStyleAfterStreamFullSaveHasMultipleXrefStreams()
+    {
+        PdfDocument document = PdfDocument.Create();
+        document.AddTextPage("stream-mixed-stream");
+        byte[] fullStreamBytes = document.Save(
+            new PdfSaveOptions
+            {
+                CrossReferenceStyle = PdfCrossReferenceStyle.Stream,
+            });
+
+        PdfDocument opened = PdfDocument.Open(fullStreamBytes);
+        opened.SetInfoProducer("ModernPDF Stream->Stream");
+        byte[] incrementalBytes = opened.Save(
+            new PdfSaveOptions
+            {
+                Mode = PdfSaveMode.Incremental,
+                CrossReferenceStyle = PdfCrossReferenceStyle.Stream,
+            });
+        string text = Encoding.ASCII.GetString(incrementalBytes);
+
+        Assert.True(incrementalBytes.Length > fullStreamBytes.Length);
+        Assert.Equal(fullStreamBytes, incrementalBytes.Take(fullStreamBytes.Length).ToArray());
+        Assert.True(text.Split("/Type /XRef", StringSplitOptions.None).Length - 1 >= 2);
+        Assert.Contains("/Prev", text, StringComparison.Ordinal);
+
+        PdfDocument reopened = PdfDocument.Open(incrementalBytes);
+        Assert.Equal("stream-mixed-stream", reopened.ExtractText());
+        Assert.Equal("ModernPDF Stream->Stream", reopened.GetInfoProducer());
+    }
+
+    [Fact]
     public void SaveWithIncrementalModeAndSecurityOptionsIsNotSupported()
     {
         PdfDocument document = PdfDocument.Create();

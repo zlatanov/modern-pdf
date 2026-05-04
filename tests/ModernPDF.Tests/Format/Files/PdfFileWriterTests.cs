@@ -179,6 +179,57 @@ public sealed class PdfFileWriterTests
     }
 
     [Fact]
+    public void WriteIncrementalWithXrefStreamFallsBackToFullStreamWhenNoSourceMetadataExists()
+    {
+        PdfFile file = CreateMinimalFile();
+        byte[] fullStreamBytes = PdfFileWriter.Write(file, PdfCrossReferenceStyle.Stream);
+        byte[] incrementalBytes = PdfFileWriter.WriteIncremental(file, [new PdfObjectId(1, 0)], PdfCrossReferenceStyle.Stream);
+
+        Assert.Equal(fullStreamBytes, incrementalBytes);
+        Assert.Contains("/Type /XRef", Encoding.ASCII.GetString(incrementalBytes), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WriteIncrementalClassicAfterStreamFullSaveRoundTrips()
+    {
+        PdfFile original = CreateMinimalFile();
+        byte[] fullStreamBytes = PdfFileWriter.Write(original, PdfCrossReferenceStyle.Stream);
+        PdfFile parsed = PdfFileReader.Read(fullStreamBytes);
+        PdfFile updated = CreateUpdatedCatalogFile(parsed);
+
+        byte[] incrementalBytes = PdfFileWriter.WriteIncremental(updated, [new PdfObjectId(1, 0)], PdfCrossReferenceStyle.Classic);
+        string text = Encoding.ASCII.GetString(incrementalBytes);
+        PdfFile reparsed = PdfFileReader.Read(incrementalBytes);
+        PdfDictionaryObject dictionary = Assert.IsType<PdfDictionaryObject>(reparsed.Objects[0].Value);
+
+        Assert.True(incrementalBytes.Length > fullStreamBytes.Length);
+        Assert.Equal(fullStreamBytes, incrementalBytes.Take(fullStreamBytes.Length).ToArray());
+        Assert.Contains("\nxref\n", text, StringComparison.Ordinal);
+        Assert.Contains("/Prev", text, StringComparison.Ordinal);
+        Assert.Contains(dictionary.Entries, static entry => entry.Key == "Version");
+    }
+
+    [Fact]
+    public void WriteIncrementalStreamAfterStreamFullSaveRoundTrips()
+    {
+        PdfFile original = CreateMinimalFile();
+        byte[] fullStreamBytes = PdfFileWriter.Write(original, PdfCrossReferenceStyle.Stream);
+        PdfFile parsed = PdfFileReader.Read(fullStreamBytes);
+        PdfFile updated = CreateUpdatedCatalogFile(parsed);
+
+        byte[] incrementalBytes = PdfFileWriter.WriteIncremental(updated, [new PdfObjectId(1, 0)], PdfCrossReferenceStyle.Stream);
+        string text = Encoding.ASCII.GetString(incrementalBytes);
+        PdfFile reparsed = PdfFileReader.Read(incrementalBytes);
+        PdfDictionaryObject dictionary = Assert.IsType<PdfDictionaryObject>(reparsed.Objects[0].Value);
+
+        Assert.True(incrementalBytes.Length > fullStreamBytes.Length);
+        Assert.Equal(fullStreamBytes, incrementalBytes.Take(fullStreamBytes.Length).ToArray());
+        Assert.True(text.Split("/Type /XRef", StringSplitOptions.None).Length - 1 >= 2);
+        Assert.Contains("/Prev", text, StringComparison.Ordinal);
+        Assert.Contains(dictionary.Entries, static entry => entry.Key == "Version");
+    }
+
+    [Fact]
     public void WriteIncrementalFallsBackToFullWhenNoSourceMetadataExists()
     {
         PdfFile file = CreateMinimalFile();
@@ -280,5 +331,21 @@ public sealed class PdfFileWriterTests
                 new PdfIndirectObject(new PdfObjectId(2, 0), pages),
             ],
             trailer);
+    }
+
+    private static PdfFile CreateUpdatedCatalogFile(PdfFile parsed)
+    {
+        PdfDictionaryObject updatedCatalog = new(
+        [
+            new PdfDictionaryEntry("Type", new PdfNameObject("Catalog")),
+            new PdfDictionaryEntry("Version", new PdfNameObject("2.0")),
+        ]);
+        return new PdfFile(
+            parsed.Version,
+            [new PdfIndirectObject(new PdfObjectId(1, 0), updatedCatalog)],
+            parsed.Trailer,
+            parsed.SourceBytes,
+            parsed.StartXrefOffset,
+            parsed.XrefEntries);
     }
 }

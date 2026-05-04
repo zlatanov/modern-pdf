@@ -94,6 +94,18 @@ textOptions: new PdfTextOptions
 });
 ```
 
+## Save cross-reference style
+
+You can choose classic xref tables or stream-style xref output during save:
+
+```csharp
+byte[] streamStylePdf = document.Save(
+    new PdfSaveOptions
+    {
+        CrossReferenceStyle = PdfCrossReferenceStyle.Stream,
+    });
+```
+
 ## Detached signatures (MVP)
 
 The signature API is callback-based: ModernPDF computes and patches `/ByteRange`, provides the exact signed payload bytes, and embeds returned CMS bytes into `/Contents`.
@@ -127,7 +139,7 @@ IReadOnlyList<PdfDetachedSignatureValidationResult> results =
 
 ## Corpus tests
 
-Corpus tests are opt-in and use fixtures downloaded from pinned external source commits with SHA-256 verification.
+Corpus tests are opt-in and use fixtures downloaded from pinned external source commits with SHA-256 verification. The full corpus suite includes stream-writer round-trip compatibility tests for known open fixtures.
 
 Smoke corpus:
 
