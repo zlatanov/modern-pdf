@@ -323,6 +323,37 @@ public sealed class PdfFileReaderTests
     }
 
     [Fact]
+    public void ReadParsesXrefStreamWithFlateCompressedObjectStream()
+    {
+        byte[] bytes = CreateXrefStreamPdfWithCompressedObjectStream();
+
+        PdfFile parsed = PdfFileReader.Read(bytes);
+
+        PdfDictionaryObject pagesDictionary = Assert.IsType<PdfDictionaryObject>(
+            parsed.Objects.Single(static objectItem => objectItem.ObjectId.ObjectNumber == 2).Value);
+        PdfNumberObject count = Assert.IsType<PdfNumberObject>(
+            Assert.Single(pagesDictionary.Entries, static entry => entry.Key == "Count").Value);
+        Assert.Equal(1, count.Value);
+
+        PdfDictionaryEntry rootEntry = Assert.Single(parsed.Trailer.Entries, static entry => entry.Key == "Root");
+        PdfReferenceObject rootReference = Assert.IsType<PdfReferenceObject>(rootEntry.Value);
+        Assert.Equal(1, rootReference.ObjectId.ObjectNumber);
+
+        Assert.True(parsed.XrefEntries.ContainsKey(1));
+        Assert.False(parsed.XrefEntries.ContainsKey(2));
+        Assert.True(parsed.XrefEntries.ContainsKey(4));
+        Assert.True(parsed.XrefEntries.ContainsKey(5));
+    }
+
+    [Fact]
+    public void ReadRejectsXrefStreamWithUnsupportedFilter()
+    {
+        byte[] bytes = CreateXrefStreamPdfWithCompressedObjectStream(xrefFilterName: "ASCIIHexDecode");
+
+        Assert.Throws<PdfFormatException>(() => PdfFileReader.Read(bytes));
+    }
+
+    [Fact]
     public void ReadRejectsTrailerPrevThatIsNotInteger()
     {
         byte[] bytes = CreateSparseIncrementalPdf();
@@ -496,6 +527,93 @@ public sealed class PdfFileReaderTests
             + "%%EOF\n";
 
         return System.Text.Encoding.ASCII.GetBytes(firstRevision + object2V2 + secondRevisionXref);
+    }
+
+    private static byte[] CreateXrefStreamPdfWithCompressedObjectStream(string xrefFilterName = "FlateDecode")
+    {
+        const string header = "%PDF-2.0\n";
+        const string object1 = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+        const string compressedObjectBody = "<< /Type /Pages /Kids [] /Count 1 >>";
+
+        byte[] objectStreamPayload = System.Text.Encoding.ASCII.GetBytes($"2 0 {compressedObjectBody}");
+        byte[] objectStreamData = CompressZlib(objectStreamPayload);
+        string object4PrefixText =
+            "4 0 obj\n"
+            + $"<< /Type /ObjStm /N 1 /First 4 /Filter /FlateDecode /Length {objectStreamData.Length} >>\n"
+            + "stream\n";
+        byte[] object4Prefix = System.Text.Encoding.ASCII.GetBytes(object4PrefixText);
+        byte[] object4Suffix = System.Text.Encoding.ASCII.GetBytes("\nendstream\nendobj\n");
+
+        int object1Offset = System.Text.Encoding.ASCII.GetByteCount(header);
+        int object4Offset = object1Offset + System.Text.Encoding.ASCII.GetByteCount(object1);
+        int object5Offset = object4Offset + object4Prefix.Length + objectStreamData.Length + object4Suffix.Length;
+
+        byte[] xrefStreamPayload = BuildXrefStreamPayload(object1Offset, object4Offset, object5Offset);
+        byte[] xrefStreamData = CompressZlib(xrefStreamPayload);
+        string object5PrefixText =
+            "5 0 obj\n"
+            + $"<< /Type /XRef /Size 6 /Root 1 0 R /W [1 4 2] /Index [0 6] /Filter /{xrefFilterName} /Length {xrefStreamData.Length} >>\n"
+            + "stream\n";
+        byte[] object5Prefix = System.Text.Encoding.ASCII.GetBytes(object5PrefixText);
+        byte[] object5Suffix = System.Text.Encoding.ASCII.GetBytes("\nendstream\nendobj\n");
+
+        using MemoryStream output = new();
+        WriteAscii(output, header);
+        WriteAscii(output, object1);
+        output.Write(object4Prefix);
+        output.Write(objectStreamData);
+        output.Write(object4Suffix);
+        output.Write(object5Prefix);
+        output.Write(xrefStreamData);
+        output.Write(object5Suffix);
+        WriteAscii(output, $"startxref\n{object5Offset}\n%%EOF\n");
+        return output.ToArray();
+    }
+
+    private static byte[] BuildXrefStreamPayload(int object1Offset, int object4Offset, int object5Offset)
+    {
+        List<byte> payload =
+        [
+            .. BuildXrefStreamEntry(type: 0, field2: 0, field3: 65535),
+            .. BuildXrefStreamEntry(type: 1, field2: object1Offset, field3: 0),
+            .. BuildXrefStreamEntry(type: 2, field2: 4, field3: 0),
+            .. BuildXrefStreamEntry(type: 0, field2: 0, field3: 0),
+            .. BuildXrefStreamEntry(type: 1, field2: object4Offset, field3: 0),
+            .. BuildXrefStreamEntry(type: 1, field2: object5Offset, field3: 0),
+        ];
+
+        return payload.ToArray();
+    }
+
+    private static byte[] BuildXrefStreamEntry(byte type, int field2, int field3)
+    {
+        return
+        [
+            type,
+            (byte)((field2 >> 24) & 0xFF),
+            (byte)((field2 >> 16) & 0xFF),
+            (byte)((field2 >> 8) & 0xFF),
+            (byte)(field2 & 0xFF),
+            (byte)((field3 >> 8) & 0xFF),
+            (byte)(field3 & 0xFF),
+        ];
+    }
+
+    private static byte[] CompressZlib(byte[] input)
+    {
+        using MemoryStream output = new();
+        using (System.IO.Compression.ZLibStream stream = new(output, System.IO.Compression.CompressionLevel.SmallestSize, leaveOpen: true))
+        {
+            stream.Write(input, 0, input.Length);
+        }
+
+        return output.ToArray();
+    }
+
+    private static void WriteAscii(Stream output, string text)
+    {
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(text);
+        output.Write(bytes);
     }
 
     private static string BuildPdfWithTailOnlyAfterStartXref(string tail)

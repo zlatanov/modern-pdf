@@ -139,6 +139,6 @@ See `spec\corpus-sources.md` for source commits, license notes, and corpus polic
 
 ## Current limitations
 
-- xref-stream and object-stream parsing/writing are not implemented
+- xref/object stream writing is not implemented (reader support is currently focused on common FlateDecode-backed inputs)
 - signature validation is not implemented (current API focuses on detached signature embedding)
 - security support is intentionally limited to Standard handler `V=1 / R=2`
