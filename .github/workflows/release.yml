@@ -1,0 +1,87 @@
+name: Release NuGet
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "NuGet package version (e.g. 1.2.3)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set release variables
+        id: vars
+        run: |
+          echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tag does not exist
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then
+            echo "Tag $TAG already exists locally."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "Tag $TAG already exists on origin."
+            exit 1
+          fi
+
+      - name: Build
+        run: dotnet build ModernPDF.slnx --configuration Release
+
+      - name: Test
+        run: dotnet test --solution ModernPDF.slnx --configuration Release --no-build
+
+      - name: Pack
+        run: >
+          dotnet pack src/ModernPDF/ModernPDF.csproj
+          --configuration Release
+          --no-build
+          --output ./artifacts/nupkg
+          -p:Version=${{ inputs.version }}
+
+      - name: Create and push git tag
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Publish to NuGet
+        run: >
+          dotnet nuget push ./artifacts/nupkg/*.nupkg
+          --api-key ${{ secrets.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ inputs.prerelease }}
+          files: artifacts/nupkg/*.nupkg
