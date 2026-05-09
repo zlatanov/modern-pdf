@@ -3,10 +3,6 @@ name: Release NuGet
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "NuGet package version (e.g. 1.2.3)"
-        required: true
-        type: string
       prerelease:
         description: "Mark the GitHub release as prerelease"
         required: true
@@ -34,7 +30,15 @@ jobs:
       - name: Set release variables
         id: vars
         run: |
-          echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          PACKAGE_ID="$(dotnet msbuild src/ModernPDF/ModernPDF.csproj -nologo -getProperty:PackageId | tr -d '\r\n')"
+          VERSION="$(dotnet msbuild src/ModernPDF/ModernPDF.csproj -nologo -getProperty:Version | tr -d '\r\n')"
+          if [ -z "$VERSION" ]; then
+            echo "Package version is empty. Set <Version> in src/ModernPDF/ModernPDF.csproj."
+            exit 1
+          fi
+          echo "package_id=$PACKAGE_ID" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Ensure tag does not exist
         run: |
@@ -48,6 +52,35 @@ jobs:
             exit 1
           fi
 
+      - name: Ensure package version is not already on NuGet
+        run: |
+          PACKAGE_ID_LOWER="$(echo '${{ steps.vars.outputs.package_id }}' | tr '[:upper:]' '[:lower:]')"
+          VERSION="${{ steps.vars.outputs.version }}"
+          INDEX_URL="https://api.nuget.org/v3-flatcontainer/$PACKAGE_ID_LOWER/index.json"
+          HTTP_STATUS="$(curl -sS -o nuget-index.json -w '%{http_code}' "$INDEX_URL")"
+          if [ "$HTTP_STATUS" = "404" ]; then
+            echo "No package history found for $PACKAGE_ID_LOWER on NuGet yet."
+            exit 0
+          fi
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Could not verify NuGet versions for $PACKAGE_ID_LOWER (HTTP $HTTP_STATUS)."
+            exit 1
+          fi
+          VERSION="$VERSION" python - <<'PY'
+import json
+import os
+import sys
+
+version = os.environ["VERSION"].lower()
+with open("nuget-index.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
+versions = {v.lower() for v in data.get("versions", [])}
+if version in versions:
+    print(f"Version {os.environ['VERSION']} is already published on NuGet.")
+    sys.exit(1)
+print(f"Version {os.environ['VERSION']} is not published on NuGet.")
+PY
+
       - name: Build
         run: dotnet build ModernPDF.slnx --configuration Release
 
@@ -60,7 +93,6 @@ jobs:
           --configuration Release
           --no-build
           --output ./artifacts/nupkg
-          -p:Version=${{ inputs.version }}
 
       - name: Create and push git tag
         run: |
@@ -75,7 +107,6 @@ jobs:
           dotnet nuget push ./artifacts/nupkg/*.nupkg
           --api-key ${{ secrets.NUGET_API_KEY }}
           --source https://api.nuget.org/v3/index.json
-          --skip-duplicate
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

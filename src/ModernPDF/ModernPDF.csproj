@@ -2,6 +2,18 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>prerelease</VersionSuffix>
+    <PackageVersion>$(VersionPrefix)</PackageVersion>
+    <PackageVersion Condition="'$(VersionSuffix)' != ''">$(VersionPrefix)-$(VersionSuffix)</PackageVersion>
+    <RepositoryUrl>https://github.com/zlatanov/modern-pdf</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <RepositoryCommit Condition="'$(SourceRevisionId)' != ''">$(SourceRevisionId)</RepositoryCommit>
   </PropertyGroup>
 
   <ItemGroup>
