@@ -9,7 +9,7 @@ Current implemented scope includes:
 - page/content editing
 - JPEG/PNG image page authoring, replacement, and composition
 - shape drawing (line, rectangle, rounded rectangle, circle, ellipse, polygon, arc/sector, and path) with stroke/fill, gradients, blending, transforms, clipping, and ID-based replace/remove
-- destructive text redaction
+- hard/soft redaction APIs (literal and pattern-based)
 - password security for Standard handler profiles `V=1 / R=2 / 40-bit RC4`, `V=2 / R=3 / 128-bit RC4`, `V=4 / R=4 / 128-bit AES`, and `V=5 / R=6 / 256-bit AES`
 - detached digital signatures (callback-based CMS embedding with ByteRange patching)
 - TrueType font embedding for generated/replaced text with automatic subsetting and OpenType shaping
@@ -217,6 +217,34 @@ document.ReplacePageShape(
     new PdfShapeOptions { FillColor = new PdfRgbColor(0.3, 0.5, 0.9), StrokeColor = null });
 document.RemovePageShape(0, "badge-sector");
 ```
+
+## Redaction
+
+Use hard redaction when data must be permanently hidden, and soft redaction when data should be transformed:
+
+```csharp
+PdfDocument document = PdfDocument.Create();
+document.AddTextPage("SSN: 111-22-3333\nPhone: 555-123-4567");
+
+// hard: removes underlying text and overlays opaque blackout rectangles
+document.HardRedactText("111-22-3333");
+
+// soft: keep only a suffix and box the hidden span (no replacement text needed)
+document.SoftRedactText(
+    @"\b(\d{3})-(\d{3})-(\d{4})\b",
+    _ => PdfSoftRedactionDirective.KeepSuffix(3));
+
+// explicit hard bounds redaction
+document.HardRedactBounds(0, 70, 706, 140, 18);
+
+// location-aware redaction: pick exact occurrence, then hard-redact only that handle
+IReadOnlyList<PdfTextMatch> matches = document.FindText(@"\bSofia\b");
+PdfTextMatch selected = matches.First(match => match.PageIndex == 1 && match.X > 120);
+document.HardRedactText([selected]);
+```
+
+Soft redaction keeps visual text flow stable by compensating glyph advance after hidden spans are removed, so surrounding content does not shift horizontally.
+For geometry-driven workflows, `ExtractTextRegions()` returns text spans with page coordinates, and `FindText(...)` returns anchored matches that can be passed directly to `HardRedactText(IReadOnlyList<PdfTextMatch>)`.
 
 ## Save cross-reference style
 

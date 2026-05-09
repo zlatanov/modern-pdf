@@ -25,17 +25,20 @@ internal static class RedactSampleCommand
         string redactedPath = Path.Combine(outputRoot, "redact-redacted.pdf");
 
         PdfDocument source = PdfDocument.Create();
-        SampleCommandHelpers.ConfigureDefaultTextOptions(source);
-        source.AddTextPage("Customer SSN: 111-22-3333");
+        source.AddTextPage("Customer SSN: 111-22-3333\nSupport phone: 555-123-4567");
         source.Save(originalPath);
 
         PdfDocument editable = PdfDocument.Open(originalPath);
-        int replacements = editable.RedactText("111-22-3333", "[REDACTED]");
+        int hardRedactions = editable.HardRedactText("111-22-3333");
+        int softRedactions = editable.SoftRedactText(
+            @"\b(\d{3})-(\d{3})-(\d{4})\b",
+            static _ => PdfSoftRedactionDirective.KeepSuffix(3));
         editable.Save(redactedPath);
 
         Console.WriteLine($"Original: {originalPath}");
         Console.WriteLine($"Redacted: {redactedPath}");
-        Console.WriteLine($"Replacements applied: {replacements}");
+        Console.WriteLine($"Hard redactions applied: {hardRedactions}");
+        Console.WriteLine($"Soft redactions applied: {softRedactions}");
         Console.WriteLine($"Redacted text: {PdfDocument.Open(redactedPath).ExtractText()}");
     }
 }

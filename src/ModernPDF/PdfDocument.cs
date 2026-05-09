@@ -13,6 +13,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace ModernPDF;
 
@@ -279,6 +280,46 @@ public sealed class PdfDocument
     public string ExtractText(int pageIndex)
     {
         return PdfTextExtractor.ExtractPage(_file, _model, pageIndex);
+    }
+
+    /// <summary>
+    /// Extracts text regions with coordinates from every page.
+    /// </summary>
+    public IReadOnlyList<PdfTextRegion> ExtractTextRegions()
+    {
+        return ExtractTextRegionsCore(pageIndex: null);
+    }
+
+    /// <summary>
+    /// Extracts text regions with coordinates from a single page.
+    /// </summary>
+    public IReadOnlyList<PdfTextRegion> ExtractTextRegions(int pageIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+        return ExtractTextRegionsCore(pageIndex);
+    }
+
+    /// <summary>
+    /// Finds regex matches in extracted text regions across all pages.
+    /// </summary>
+    public IReadOnlyList<PdfTextMatch> FindText(string pattern, RegexOptions regexOptions = RegexOptions.None)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        Regex regex = new(pattern, regexOptions);
+        return BuildTextMatches(ExtractTextRegionsCore(pageIndex: null), regex);
+    }
+
+    /// <summary>
+    /// Finds regex matches in extracted text regions on a specific page.
+    /// </summary>
+    public IReadOnlyList<PdfTextMatch> FindText(int pageIndex, string pattern, RegexOptions regexOptions = RegexOptions.None)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _model.Pages.Count);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        Regex regex = new(pattern, regexOptions);
+        return BuildTextMatches(ExtractTextRegionsCore(pageIndex), regex);
     }
 
     /// <summary>
@@ -2454,6 +2495,22 @@ public sealed class PdfDocument
         List<PdfPageResourceEntry> ResourceEntries,
         List<PdfObjectId> DirtyObjectIds);
 
+    private readonly record struct PdfRedactionRectangle(
+        int PageIndex,
+        double X,
+        double Y,
+        double Width,
+        double Height);
+
+    private readonly record struct PdfTextAnchorKey(
+        int StreamObjectNumber,
+        int StreamObjectGeneration,
+        int StringTokenIndex);
+
+    private readonly record struct PdfTextSelectionRange(
+        int Start,
+        int Length);
+
     private readonly record struct DssValidationEvidence(
         IReadOnlyList<X509Certificate2> Certificates,
         IReadOnlyList<CrlEvidence> Crls,
@@ -3790,9 +3847,17 @@ public sealed class PdfDocument
     }
 
     /// <summary>
-    /// Performs destructive content-stream text replacement across all pages and returns replacement count.
+    /// Performs destructive text replacement in text-showing operators and returns replacement count.
     /// </summary>
     public int RedactText(string target, string replacement = "")
+    {
+        return SoftRedactText(target, replacement);
+    }
+
+    /// <summary>
+    /// Performs destructive text replacement in text-showing operators and returns replacement count.
+    /// </summary>
+    public int SoftRedactText(string target, string replacement = "")
     {
         if (string.IsNullOrEmpty(target))
         {
@@ -3800,58 +3865,216 @@ public sealed class PdfDocument
         }
 
         ArgumentNullException.ThrowIfNull(replacement);
-
-        List<PdfIndirectObject> objects = [.. _file.Objects];
-        HashSet<PdfObjectId> processedStreamIds = [];
-        HashSet<PdfObjectId> changedStreamIds = [];
-        int totalRedactions = 0;
-
-        foreach (PdfPageModel page in _model.Pages)
-        {
-            foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
+        return RewriteTextInContentStreams(
+            segment =>
             {
-                if (!processedStreamIds.Add(streamId))
+                int replacements = CountOccurrences(segment, target);
+                return replacements == 0
+                    ? (segment, 0)
+                    : (segment.Replace(target, replacement, StringComparison.Ordinal), replacements);
+            },
+            hardTarget: null,
+            hardOptions: null,
+            rewriteWithLayout: (segment, fontSize) => TryBuildLiteralSoftRedactionParts(segment, target, replacement, fontSize),
+            rewriteWithLayoutAndRectangles: null,
+            out _);
+    }
+
+    /// <summary>
+    /// Performs pattern-based destructive text replacement in text-showing operators and returns replacement count.
+    /// </summary>
+    public int SoftRedactText(string pattern, MatchEvaluator evaluator, RegexOptions regexOptions = RegexOptions.None)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        ArgumentNullException.ThrowIfNull(evaluator);
+
+        Regex regex = new(pattern, regexOptions);
+        return RewriteTextInContentStreams(
+            segment =>
+            {
+                MatchCollection matches = regex.Matches(segment);
+                if (matches.Count == 0)
                 {
-                    continue;
+                    return (segment, 0);
                 }
 
-                PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
-                string content = System.Text.Encoding.ASCII.GetString(stream.Data.Span);
-                int replacements = CountOccurrences(content, target);
-                if (replacements == 0)
-                {
-                    continue;
-                }
+                return (regex.Replace(segment, evaluator), matches.Count);
+            },
+            hardTarget: null,
+            hardOptions: null,
+            rewriteWithLayout: (segment, fontSize) => TryBuildRegexSoftRedactionParts(segment, regex, evaluator, fontSize),
+            rewriteWithLayoutAndRectangles: null,
+            out _);
+    }
 
-                string redactedContent = content.Replace(target, replacement, StringComparison.Ordinal);
-                PdfStreamObject updated = new(stream.Dictionary, System.Text.Encoding.ASCII.GetBytes(redactedContent));
-                ReplaceObject(objects, streamId, updated);
-                changedStreamIds.Add(streamId);
+    /// <summary>
+    /// Performs pattern-based soft redaction by keeping only directive-selected text elements and boxing hidden spans.
+    /// </summary>
+    public int SoftRedactText(
+        string pattern,
+        Func<Match, PdfSoftRedactionDirective> directiveSelector,
+        RegexOptions regexOptions = RegexOptions.None,
+        PdfHardRedactionOptions? options = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        ArgumentNullException.ThrowIfNull(directiveSelector);
 
-                totalRedactions += replacements;
-            }
+        PdfHardRedactionOptions effectiveOptions = options ?? new PdfHardRedactionOptions();
+        ValidateHardRedactionOptions(effectiveOptions);
+        Regex regex = new(pattern, regexOptions);
+
+        int replacements = RewriteTextInContentStreams(
+            static segment => (segment, 0),
+            hardTarget: null,
+            hardOptions: null,
+            rewriteWithLayout: null,
+            rewriteWithLayoutAndRectangles: (segment, fontSize, textX, textY, lineHeight, pageIndex) =>
+                TryBuildDirectiveSoftRedactionParts(
+                    segment,
+                    regex,
+                    directiveSelector,
+                    effectiveOptions,
+                    fontSize,
+                    textX,
+                    textY,
+                    lineHeight,
+                    pageIndex),
+            out List<PdfRedactionRectangle> rectangles);
+
+        if (replacements == 0 || rectangles.Count == 0)
+        {
+            return replacements;
         }
 
-        if (totalRedactions == 0)
+        PdfShapeOptions boxStyle = new()
+        {
+            StrokeColor = null,
+            FillColor = effectiveOptions.FillColor,
+        };
+
+        foreach (PdfRedactionRectangle rectangle in rectangles)
+        {
+            AddPageRectangle(rectangle.PageIndex, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height, boxStyle);
+        }
+
+        return replacements;
+    }
+
+    /// <summary>
+    /// Performs irreversible hard redaction by erasing matched text operators and overlaying opaque blackout rectangles.
+    /// </summary>
+    public int HardRedactText(string target, PdfHardRedactionOptions? options = null)
+    {
+        if (string.IsNullOrEmpty(target))
+        {
+            throw new ArgumentException("Redaction target cannot be null or empty.", nameof(target));
+        }
+
+        PdfHardRedactionOptions effectiveOptions = options ?? new PdfHardRedactionOptions();
+        ValidateHardRedactionOptions(effectiveOptions);
+
+        int replacements = RewriteTextInContentStreams(
+            static segment => (segment, 0),
+            target,
+            effectiveOptions,
+            rewriteWithLayout: null,
+            rewriteWithLayoutAndRectangles: null,
+            out List<PdfRedactionRectangle> rectangles);
+
+        if (replacements == 0 || rectangles.Count == 0)
+        {
+            return replacements;
+        }
+
+        PdfShapeOptions boxStyle = new()
+        {
+            StrokeColor = null,
+            FillColor = effectiveOptions.FillColor,
+        };
+
+        foreach (PdfRedactionRectangle rectangle in rectangles)
+        {
+            AddPageRectangle(rectangle.PageIndex, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height, boxStyle);
+        }
+
+        return replacements;
+    }
+
+    /// <summary>
+    /// Performs irreversible hard redaction for exact matches returned by <see cref="FindText(string, RegexOptions)"/>.
+    /// </summary>
+    public int HardRedactText(IReadOnlyList<PdfTextMatch> matches, PdfHardRedactionOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(matches);
+
+        PdfHardRedactionOptions effectiveOptions = options ?? new PdfHardRedactionOptions();
+        ValidateHardRedactionOptions(effectiveOptions);
+        if (matches.Count == 0)
         {
             return 0;
         }
 
-        _file = new PdfFile(
-            _file.Version,
-            objects,
-            _file.Trailer,
-            _file.SourceBytes,
-            _file.StartXrefOffset,
-            _file.XrefEntries);
-        _model = PdfDocumentModelBuilder.Build(_file);
-
-        foreach (PdfObjectId streamId in changedStreamIds)
+        Dictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> rangesByAnchor = BuildRedactionRangesByAnchor(matches);
+        if (rangesByAnchor.Count == 0)
         {
-            MarkDirty(streamId);
+            return 0;
         }
 
-        return totalRedactions;
+        int replacements = RewriteAnchoredHardRedactionsInContentStreams(
+            rangesByAnchor,
+            effectiveOptions,
+            out List<PdfRedactionRectangle> rectangles);
+        if (replacements == 0 || rectangles.Count == 0)
+        {
+            return replacements;
+        }
+
+        PdfShapeOptions boxStyle = new()
+        {
+            StrokeColor = null,
+            FillColor = effectiveOptions.FillColor,
+        };
+
+        foreach (PdfRedactionRectangle rectangle in rectangles)
+        {
+            AddPageRectangle(rectangle.PageIndex, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height, boxStyle);
+        }
+
+        return replacements;
+    }
+
+    /// <summary>
+    /// Applies an irreversible hard redaction rectangle to explicit page bounds.
+    /// </summary>
+    public void HardRedactBounds(int pageIndex, double x, double y, double width, double height, PdfShapeOptions? options = null)
+    {
+        PdfShapeOptions effectiveOptions = options ?? new PdfShapeOptions
+        {
+            StrokeColor = null,
+            FillColor = PdfRgbColor.Black,
+        };
+
+        if (effectiveOptions.FillLinearGradient is not null)
+        {
+            throw new ArgumentException("Hard redaction bounds do not support gradient fills.", nameof(options));
+        }
+
+        if (effectiveOptions.FillColor is null)
+        {
+            throw new ArgumentException("Hard redaction bounds require a solid FillColor.", nameof(options));
+        }
+
+        if (effectiveOptions.FillOpacity is double opacity && opacity < 1)
+        {
+            throw new ArgumentException("Hard redaction bounds require fully opaque fill.", nameof(options));
+        }
+
+        if (effectiveOptions.BlendMode != PdfBlendMode.Normal)
+        {
+            throw new ArgumentException("Hard redaction bounds require PdfBlendMode.Normal.", nameof(options));
+        }
+
+        AddPageRectangle(pageIndex, x, y, width, height, effectiveOptions);
     }
 
     private int AddPageCore(PdfPageOptions pageOptions, string? text, PdfTextOptions? textOptions)
@@ -5221,6 +5444,1876 @@ public sealed class PdfDocument
         }
 
         return count;
+    }
+
+    private List<PdfTextRegion> ExtractTextRegionsCore(int? pageIndex)
+    {
+        List<PdfTextRegion> regions = [];
+        int startPage = pageIndex ?? 0;
+        int endPage = pageIndex is null ? _model.Pages.Count : pageIndex.Value + 1;
+
+        for (int currentPageIndex = startPage; currentPageIndex < endPage; currentPageIndex++)
+        {
+            PdfPageModel page = _model.Pages[currentPageIndex];
+            foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
+            {
+                PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
+                string content = Encoding.ASCII.GetString(stream.Data.Span);
+                regions.AddRange(ExtractTextRegionsFromStream(content, currentPageIndex, streamId));
+            }
+        }
+
+        return regions;
+    }
+
+    private static List<PdfTextRegion> ExtractTextRegionsFromStream(string content, int pageIndex, PdfObjectId streamId)
+    {
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(Encoding.ASCII.GetBytes(content));
+        List<PdfTextRegion> regions = [];
+
+        bool inTextObject = false;
+        double fontSize = 12;
+        double textX = 0;
+        double textY = 0;
+        double lineHeightEstimate = fontSize * 1.2;
+        double? lastShownBaselineY = null;
+        int index = 0;
+
+        while (index < tokens.Count)
+        {
+            PdfToken token = tokens[index];
+            if (token.Kind == PdfTokenKind.Keyword)
+            {
+                if (string.Equals(token.Lexeme, "BT", StringComparison.Ordinal))
+                {
+                    inTextObject = true;
+                    textX = 0;
+                    textY = 0;
+                    lineHeightEstimate = fontSize * 1.2;
+                    lastShownBaselineY = null;
+                }
+                else if (string.Equals(token.Lexeme, "ET", StringComparison.Ordinal))
+                {
+                    inTextObject = false;
+                }
+            }
+
+            if (inTextObject
+                && token.Kind == PdfTokenKind.Name
+                && index + 2 < tokens.Count
+                && TryParseTokenDouble(tokens[index + 1], out double parsedFontSize)
+                && tokens[index + 2].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 2].Lexeme, "Tf", StringComparison.Ordinal))
+            {
+                fontSize = Math.Abs(parsedFontSize);
+                lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
+                index += 3;
+                continue;
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 2 < tokens.Count
+                && IsNumberToken(tokens[index + 1])
+                && tokens[index + 2].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 2].Lexeme, "Td", StringComparison.Ordinal))
+            {
+                if (TryParseTokenDouble(token, out double tx) && TryParseTokenDouble(tokens[index + 1], out double ty))
+                {
+                    textX += tx;
+                    textY += ty;
+                    if (Math.Abs(ty) > 0.01)
+                    {
+                        lineHeightEstimate = Math.Abs(ty);
+                    }
+                }
+
+                index += 3;
+                continue;
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 6 < tokens.Count
+                && IsNumberToken(tokens[index + 1])
+                && IsNumberToken(tokens[index + 2])
+                && IsNumberToken(tokens[index + 3])
+                && IsNumberToken(tokens[index + 4])
+                && IsNumberToken(tokens[index + 5])
+                && tokens[index + 6].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 6].Lexeme, "Tm", StringComparison.Ordinal))
+            {
+                if (TryParseTokenDouble(tokens[index + 4], out double matrixX)
+                    && TryParseTokenDouble(tokens[index + 5], out double matrixY))
+                {
+                    double deltaY = Math.Abs(matrixY - textY);
+                    textX = matrixX;
+                    textY = matrixY;
+                    if (lastShownBaselineY is not null && deltaY > 0.01)
+                    {
+                        lineHeightEstimate = deltaY;
+                    }
+                }
+
+                index += 7;
+                continue;
+            }
+
+            if (inTextObject
+                && token.Kind == PdfTokenKind.String
+                && index + 1 < tokens.Count
+                && tokens[index + 1].Kind == PdfTokenKind.Keyword
+                && IsSingleStringTextOperator(tokens[index + 1].Lexeme))
+            {
+                string segment = token.Lexeme;
+                if (lastShownBaselineY is double previousBaselineY)
+                {
+                    double shownDelta = Math.Abs(textY - previousBaselineY);
+                    if (shownDelta > 0.01)
+                    {
+                        lineHeightEstimate = shownDelta;
+                    }
+                }
+
+                double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
+                AddTextRegion(regions, pageIndex, segment, textX, textY, fontSize, effectiveLineHeight, streamId, index);
+                textX += EstimateRedactionTextWidth(segment, fontSize);
+                lastShownBaselineY = textY;
+                index += 2;
+                continue;
+            }
+
+            if (inTextObject && token.Kind == PdfTokenKind.StartArray)
+            {
+                int depth = 1;
+                int arrayEndIndex = index + 1;
+
+                while (arrayEndIndex < tokens.Count && depth > 0)
+                {
+                    PdfToken itemToken = tokens[arrayEndIndex];
+                    if (itemToken.Kind == PdfTokenKind.StartArray)
+                    {
+                        depth++;
+                    }
+                    else if (itemToken.Kind == PdfTokenKind.EndArray)
+                    {
+                        depth--;
+                    }
+
+                    arrayEndIndex++;
+                }
+
+                if (depth != 0)
+                {
+                    throw new PdfFormatException("Unterminated array in content stream.");
+                }
+
+                if (arrayEndIndex < tokens.Count
+                    && tokens[arrayEndIndex].Kind == PdfTokenKind.Keyword
+                    && string.Equals(tokens[arrayEndIndex].Lexeme, "TJ", StringComparison.Ordinal))
+                {
+                    int nestedDepth = 1;
+                    for (int itemIndex = index + 1; itemIndex < arrayEndIndex; itemIndex++)
+                    {
+                        PdfToken item = tokens[itemIndex];
+                        if (item.Kind == PdfTokenKind.StartArray)
+                        {
+                            nestedDepth++;
+                            continue;
+                        }
+
+                        if (item.Kind == PdfTokenKind.EndArray)
+                        {
+                            nestedDepth--;
+                            continue;
+                        }
+
+                        if (nestedDepth != 1)
+                        {
+                            continue;
+                        }
+
+                        if (item.Kind == PdfTokenKind.String)
+                        {
+                            string segment = item.Lexeme;
+                            if (lastShownBaselineY is double previousBaselineY)
+                            {
+                                double shownDelta = Math.Abs(textY - previousBaselineY);
+                                if (shownDelta > 0.01)
+                                {
+                                    lineHeightEstimate = shownDelta;
+                                }
+                            }
+
+                            double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
+                            AddTextRegion(regions, pageIndex, segment, textX, textY, fontSize, effectiveLineHeight, streamId, itemIndex);
+                            textX += EstimateRedactionTextWidth(segment, fontSize);
+                            lastShownBaselineY = textY;
+                        }
+                        else if (IsNumberToken(item) && TryParseTokenDouble(item, out double adjustment))
+                        {
+                            textX -= adjustment * fontSize / 1000.0;
+                        }
+                    }
+
+                    index = arrayEndIndex + 1;
+                    continue;
+                }
+            }
+
+            index++;
+        }
+
+        return regions;
+    }
+
+    private static void AddTextRegion(
+        List<PdfTextRegion> regions,
+        int pageIndex,
+        string segment,
+        double textX,
+        double textY,
+        double fontSize,
+        double lineHeight,
+        PdfObjectId streamId,
+        int stringTokenIndex)
+    {
+        if (string.IsNullOrEmpty(segment))
+        {
+            return;
+        }
+
+        double width = EstimateRedactionTextWidth(segment, fontSize);
+        if (width <= 0)
+        {
+            return;
+        }
+
+        (double y, double height) = ComputeTextRegionVerticalPlacement(textY, fontSize, lineHeight);
+        if (height <= 0)
+        {
+            return;
+        }
+
+        regions.Add(new PdfTextRegion(
+            pageIndex,
+            segment,
+            textX,
+            y,
+            width,
+            height,
+            streamId.ObjectNumber,
+            streamId.GenerationNumber,
+            stringTokenIndex,
+            fontSize));
+    }
+
+    private static List<PdfTextMatch> BuildTextMatches(IReadOnlyList<PdfTextRegion> regions, Regex regex)
+    {
+        List<PdfTextMatch> matches = [];
+
+        foreach (PdfTextRegion region in regions)
+        {
+            MatchCollection regionMatches = regex.Matches(region.Text);
+            foreach (Match match in regionMatches)
+            {
+                if (!match.Success || match.Length == 0)
+                {
+                    continue;
+                }
+
+                double matchX = region.X + EstimateRedactionTextWidth(region.Text[..match.Index], region.FontSize);
+                double matchWidth = EstimateRedactionTextWidth(match.Value, region.FontSize);
+                matches.Add(new PdfTextMatch(
+                    region.PageIndex,
+                    match.Value,
+                    matchX,
+                    region.Y,
+                    matchWidth,
+                    region.Height,
+                    region.StreamObjectNumber,
+                    region.StreamObjectGeneration,
+                    region.StringTokenIndex,
+                    match.Index,
+                    match.Length));
+            }
+        }
+
+        return matches;
+    }
+
+    private Dictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> BuildRedactionRangesByAnchor(IReadOnlyList<PdfTextMatch> matches)
+    {
+        Dictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> rangesByAnchor = [];
+
+        foreach (PdfTextMatch match in matches)
+        {
+            ArgumentNullException.ThrowIfNull(match);
+            if (match.StartIndex < 0 || match.Length <= 0)
+            {
+                throw new ArgumentException("Each text match must include a positive-length segment.", nameof(matches));
+            }
+
+            if (match.PageIndex < 0 || match.PageIndex >= _model.Pages.Count)
+            {
+                throw new ArgumentException("Text matches must target valid document page indexes.", nameof(matches));
+            }
+
+            PdfTextAnchorKey key = new(
+                match.StreamObjectNumber,
+                match.StreamObjectGeneration,
+                match.StringTokenIndex);
+            if (!rangesByAnchor.TryGetValue(key, out List<PdfTextSelectionRange>? ranges))
+            {
+                ranges = [];
+                rangesByAnchor.Add(key, ranges);
+            }
+
+            ranges.Add(new PdfTextSelectionRange(match.StartIndex, match.Length));
+        }
+
+        foreach (List<PdfTextSelectionRange> ranges in rangesByAnchor.Values)
+        {
+            ranges.Sort(static (left, right) =>
+            {
+                int startComparison = left.Start.CompareTo(right.Start);
+                return startComparison != 0 ? startComparison : left.Length.CompareTo(right.Length);
+            });
+
+            if (ranges.Count == 0)
+            {
+                continue;
+            }
+
+            List<PdfTextSelectionRange> normalized = [ranges[0]];
+            for (int index = 1; index < ranges.Count; index++)
+            {
+                PdfTextSelectionRange current = ranges[index];
+                PdfTextSelectionRange previous = normalized[^1];
+
+                int previousEnd;
+                int currentEnd;
+                try
+                {
+                    previousEnd = checked(previous.Start + previous.Length);
+                    currentEnd = checked(current.Start + current.Length);
+                }
+                catch (OverflowException)
+                {
+                    throw new ArgumentException("Text match offsets are out of supported range.", nameof(matches));
+                }
+
+                if (current.Start <= previousEnd)
+                {
+                    int mergedEnd = Math.Max(previousEnd, currentEnd);
+                    normalized[^1] = new PdfTextSelectionRange(previous.Start, mergedEnd - previous.Start);
+                }
+                else
+                {
+                    normalized.Add(current);
+                }
+            }
+
+            ranges.Clear();
+            ranges.AddRange(normalized);
+        }
+
+        return rangesByAnchor;
+    }
+
+    private int RewriteAnchoredHardRedactionsInContentStreams(
+        IReadOnlyDictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> rangesByAnchor,
+        PdfHardRedactionOptions options,
+        out List<PdfRedactionRectangle> redactionRectangles)
+    {
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        HashSet<PdfObjectId> processedStreamIds = [];
+        HashSet<PdfObjectId> changedStreamIds = [];
+        redactionRectangles = [];
+        int totalReplacements = 0;
+
+        for (int pageIndex = 0; pageIndex < _model.Pages.Count; pageIndex++)
+        {
+            PdfPageModel page = _model.Pages[pageIndex];
+            foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
+            {
+                PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
+                string content = Encoding.ASCII.GetString(stream.Data.Span);
+
+                if (!processedStreamIds.Add(streamId))
+                {
+                    (_, _, List<PdfRedactionRectangle> duplicateRectangles) = RewriteAnchoredHardRedactionsInStream(
+                        content,
+                        pageIndex,
+                        streamId,
+                        rangesByAnchor,
+                        options);
+                    if (duplicateRectangles.Count > 0)
+                    {
+                        redactionRectangles.AddRange(duplicateRectangles);
+                    }
+
+                    continue;
+                }
+
+                (string updatedContent, int replacements, List<PdfRedactionRectangle> streamRectangles) = RewriteAnchoredHardRedactionsInStream(
+                    content,
+                    pageIndex,
+                    streamId,
+                    rangesByAnchor,
+                    options);
+                totalReplacements += replacements;
+                if (streamRectangles.Count > 0)
+                {
+                    redactionRectangles.AddRange(streamRectangles);
+                }
+
+                if (!string.Equals(updatedContent, content, StringComparison.Ordinal))
+                {
+                    ReplaceObject(objects, streamId, new PdfStreamObject(stream.Dictionary, Encoding.ASCII.GetBytes(updatedContent)));
+                    changedStreamIds.Add(streamId);
+                }
+            }
+        }
+
+        if (changedStreamIds.Count == 0)
+        {
+            return totalReplacements;
+        }
+
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
+        _model = PdfDocumentModelBuilder.Build(_file);
+
+        foreach (PdfObjectId streamId in changedStreamIds)
+        {
+            MarkDirty(streamId);
+        }
+
+        return totalReplacements;
+    }
+
+    private static (string UpdatedContent, int Replacements, List<PdfRedactionRectangle> Rectangles) RewriteAnchoredHardRedactionsInStream(
+        string content,
+        int pageIndex,
+        PdfObjectId streamId,
+        IReadOnlyDictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> rangesByAnchor,
+        PdfHardRedactionOptions options)
+    {
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(Encoding.ASCII.GetBytes(content));
+        Dictionary<int, string> rawTokenOverrides = [];
+        HashSet<int> removedTokenIndices = [];
+        List<PdfRedactionRectangle> rectangles = [];
+        int replacements = 0;
+
+        bool inTextObject = false;
+        double fontSize = 12;
+        double textX = 0;
+        double textY = 0;
+        double lineHeightEstimate = fontSize * 1.2;
+        double? lastShownBaselineY = null;
+        int index = 0;
+
+        while (index < tokens.Count)
+        {
+            PdfToken token = tokens[index];
+            if (token.Kind == PdfTokenKind.Keyword)
+            {
+                if (string.Equals(token.Lexeme, "BT", StringComparison.Ordinal))
+                {
+                    inTextObject = true;
+                    textX = 0;
+                    textY = 0;
+                    lineHeightEstimate = fontSize * 1.2;
+                    lastShownBaselineY = null;
+                }
+                else if (string.Equals(token.Lexeme, "ET", StringComparison.Ordinal))
+                {
+                    inTextObject = false;
+                }
+            }
+
+            if (inTextObject
+                && token.Kind == PdfTokenKind.Name
+                && index + 2 < tokens.Count
+                && TryParseTokenDouble(tokens[index + 1], out double parsedFontSize)
+                && tokens[index + 2].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 2].Lexeme, "Tf", StringComparison.Ordinal))
+            {
+                fontSize = Math.Abs(parsedFontSize);
+                lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
+                index += 3;
+                continue;
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 2 < tokens.Count
+                && IsNumberToken(tokens[index + 1])
+                && tokens[index + 2].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 2].Lexeme, "Td", StringComparison.Ordinal))
+            {
+                if (TryParseTokenDouble(token, out double tx) && TryParseTokenDouble(tokens[index + 1], out double ty))
+                {
+                    textX += tx;
+                    textY += ty;
+                    if (Math.Abs(ty) > 0.01)
+                    {
+                        lineHeightEstimate = Math.Abs(ty);
+                    }
+                }
+
+                index += 3;
+                continue;
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 6 < tokens.Count
+                && IsNumberToken(tokens[index + 1])
+                && IsNumberToken(tokens[index + 2])
+                && IsNumberToken(tokens[index + 3])
+                && IsNumberToken(tokens[index + 4])
+                && IsNumberToken(tokens[index + 5])
+                && tokens[index + 6].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 6].Lexeme, "Tm", StringComparison.Ordinal))
+            {
+                if (TryParseTokenDouble(tokens[index + 4], out double matrixX)
+                    && TryParseTokenDouble(tokens[index + 5], out double matrixY))
+                {
+                    double deltaY = Math.Abs(matrixY - textY);
+                    textX = matrixX;
+                    textY = matrixY;
+                    if (lastShownBaselineY is not null && deltaY > 0.01)
+                    {
+                        lineHeightEstimate = deltaY;
+                    }
+                }
+
+                index += 7;
+                continue;
+            }
+
+            if (inTextObject
+                && token.Kind == PdfTokenKind.String
+                && index + 1 < tokens.Count
+                && tokens[index + 1].Kind == PdfTokenKind.Keyword
+                && IsSingleStringTextOperator(tokens[index + 1].Lexeme))
+            {
+                string segment = token.Lexeme;
+                string textOperator = tokens[index + 1].Lexeme;
+                if (lastShownBaselineY is double previousBaselineY)
+                {
+                    double shownDelta = Math.Abs(textY - previousBaselineY);
+                    if (shownDelta > 0.01)
+                    {
+                        lineHeightEstimate = shownDelta;
+                    }
+                }
+
+                PdfTextAnchorKey anchorKey = new(streamId.ObjectNumber, streamId.GenerationNumber, index);
+                double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
+                if (rangesByAnchor.TryGetValue(anchorKey, out List<PdfTextSelectionRange>? ranges)
+                    && TryBuildAnchoredHardRedactionParts(
+                        segment,
+                        ranges,
+                        fontSize,
+                        textX,
+                        textY,
+                        effectiveLineHeight,
+                        pageIndex,
+                        options,
+                        out string hardParts,
+                        out int rangeReplacements,
+                        out List<PdfRedactionRectangle> rangeRectangles))
+                {
+                    replacements += rangeReplacements;
+                    if (rangeRectangles.Count > 0)
+                    {
+                        rectangles.AddRange(rangeRectangles);
+                    }
+
+                    if (string.Equals(textOperator, "Tj", StringComparison.Ordinal))
+                    {
+                        rawTokenOverrides[index] = $"[{hardParts}] TJ";
+                        removedTokenIndices.Add(index + 1);
+                    }
+                    else if (string.Equals(textOperator, "'", StringComparison.Ordinal))
+                    {
+                        rawTokenOverrides[index] = $"T* [{hardParts}] TJ";
+                        removedTokenIndices.Add(index + 1);
+                    }
+                    else if (string.Equals(textOperator, "\"", StringComparison.Ordinal))
+                    {
+                        if (index < 2
+                            || !IsNumberToken(tokens[index - 2])
+                            || !IsNumberToken(tokens[index - 1]))
+                        {
+                            throw new NotSupportedException("Hard redaction for the '\"' text operator requires preceding word and character spacing operands.");
+                        }
+
+                        rawTokenOverrides[index - 2] = $"{tokens[index - 2].Lexeme} Tw {tokens[index - 1].Lexeme} Tc T* [{hardParts}] TJ";
+                        removedTokenIndices.Add(index - 1);
+                        removedTokenIndices.Add(index);
+                        removedTokenIndices.Add(index + 1);
+                    }
+                }
+
+                textX += EstimateRedactionTextWidth(segment, fontSize);
+                lastShownBaselineY = textY;
+                index += 2;
+                continue;
+            }
+
+            if (inTextObject && token.Kind == PdfTokenKind.StartArray)
+            {
+                int depth = 1;
+                int arrayEndIndex = index + 1;
+
+                while (arrayEndIndex < tokens.Count && depth > 0)
+                {
+                    PdfToken itemToken = tokens[arrayEndIndex];
+                    if (itemToken.Kind == PdfTokenKind.StartArray)
+                    {
+                        depth++;
+                    }
+                    else if (itemToken.Kind == PdfTokenKind.EndArray)
+                    {
+                        depth--;
+                    }
+
+                    arrayEndIndex++;
+                }
+
+                if (depth != 0)
+                {
+                    throw new PdfFormatException("Unterminated array in content stream.");
+                }
+
+                if (arrayEndIndex < tokens.Count
+                    && tokens[arrayEndIndex].Kind == PdfTokenKind.Keyword
+                    && string.Equals(tokens[arrayEndIndex].Lexeme, "TJ", StringComparison.Ordinal))
+                {
+                    int nestedDepth = 1;
+                    for (int itemIndex = index + 1; itemIndex < arrayEndIndex; itemIndex++)
+                    {
+                        PdfToken item = tokens[itemIndex];
+                        if (item.Kind == PdfTokenKind.StartArray)
+                        {
+                            nestedDepth++;
+                            continue;
+                        }
+
+                        if (item.Kind == PdfTokenKind.EndArray)
+                        {
+                            nestedDepth--;
+                            continue;
+                        }
+
+                        if (nestedDepth != 1)
+                        {
+                            continue;
+                        }
+
+                        if (item.Kind == PdfTokenKind.String)
+                        {
+                            string segment = item.Lexeme;
+                            if (lastShownBaselineY is double previousBaselineY)
+                            {
+                                double shownDelta = Math.Abs(textY - previousBaselineY);
+                                if (shownDelta > 0.01)
+                                {
+                                    lineHeightEstimate = shownDelta;
+                                }
+                            }
+
+                            PdfTextAnchorKey anchorKey = new(streamId.ObjectNumber, streamId.GenerationNumber, itemIndex);
+                            double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
+                            if (rangesByAnchor.TryGetValue(anchorKey, out List<PdfTextSelectionRange>? ranges)
+                                && TryBuildAnchoredHardRedactionParts(
+                                    segment,
+                                    ranges,
+                                    fontSize,
+                                    textX,
+                                    textY,
+                                    effectiveLineHeight,
+                                    pageIndex,
+                                    options,
+                                    out string hardParts,
+                                    out int rangeReplacements,
+                                    out List<PdfRedactionRectangle> rangeRectangles))
+                            {
+                                replacements += rangeReplacements;
+                                if (rangeRectangles.Count > 0)
+                                {
+                                    rectangles.AddRange(rangeRectangles);
+                                }
+
+                                rawTokenOverrides[itemIndex] = hardParts;
+                            }
+
+                            textX += EstimateRedactionTextWidth(segment, fontSize);
+                            lastShownBaselineY = textY;
+                        }
+                        else if (IsNumberToken(item) && TryParseTokenDouble(item, out double adjustment))
+                        {
+                            textX -= adjustment * fontSize / 1000.0;
+                        }
+                    }
+
+                    index = arrayEndIndex + 1;
+                    continue;
+                }
+            }
+
+            index++;
+        }
+
+        if (rawTokenOverrides.Count == 0 && removedTokenIndices.Count == 0)
+        {
+            return (content, replacements, rectangles);
+        }
+
+        return (SerializeContentTokens(tokens, [], rawTokenOverrides, removedTokenIndices), replacements, rectangles);
+    }
+
+    private static bool TryBuildAnchoredHardRedactionParts(
+        string segment,
+        IReadOnlyList<PdfTextSelectionRange> ranges,
+        double fontSize,
+        double textX,
+        double textY,
+        double lineHeight,
+        int pageIndex,
+        PdfHardRedactionOptions options,
+        out string parts,
+        out int replacements,
+        out List<PdfRedactionRectangle> rectangles)
+    {
+        StringBuilder builder = new();
+        rectangles = [];
+        replacements = 0;
+        int cursor = 0;
+
+        foreach (PdfTextSelectionRange range in ranges)
+        {
+            if (range.Start < 0 || range.Length <= 0 || range.Start >= segment.Length)
+            {
+                continue;
+            }
+
+            int clampedLength = Math.Min(range.Length, segment.Length - range.Start);
+            int clampedStart = Math.Max(cursor, range.Start);
+            int clampedEnd = clampedStart + clampedLength;
+            if (clampedEnd <= clampedStart)
+            {
+                continue;
+            }
+
+            if (clampedStart > cursor)
+            {
+                if (builder.Length > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                builder.Append('(');
+                builder.Append(EscapeLiteralString(segment[cursor..clampedStart]));
+                builder.Append(')');
+            }
+
+            string removedText = segment[clampedStart..clampedEnd];
+            double removedWidth = EstimateRedactionTextWidth(removedText, fontSize);
+            if (removedWidth > 0 && fontSize > 0)
+            {
+                if (builder.Length > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                double kerningAdjustment = -(removedWidth * 1000.0 / fontSize);
+                builder.Append(kerningAdjustment.ToString("0.###", CultureInfo.InvariantCulture));
+            }
+
+            double removedX = textX + EstimateRedactionTextWidth(segment[..clampedStart], fontSize) - options.HorizontalPadding;
+            double removedRectWidth = removedWidth + (options.HorizontalPadding * 2);
+            (double removedY, double removedHeight) = ComputeRedactionVerticalPlacement(textY, fontSize, lineHeight, options);
+            if (removedRectWidth > 0 && removedHeight > 0)
+            {
+                rectangles.Add(new PdfRedactionRectangle(pageIndex, removedX, removedY, removedRectWidth, removedHeight));
+            }
+
+            replacements++;
+            cursor = clampedEnd;
+        }
+
+        if (replacements == 0)
+        {
+            parts = string.Empty;
+            rectangles.Clear();
+            return false;
+        }
+
+        if (cursor < segment.Length)
+        {
+            if (builder.Length > 0)
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append('(');
+            builder.Append(EscapeLiteralString(segment[cursor..]));
+            builder.Append(')');
+        }
+
+        if (builder.Length == 0)
+        {
+            builder.Append("()");
+        }
+
+        parts = builder.ToString();
+        return true;
+    }
+
+    private int RewriteTextInContentStreams(
+        Func<string, (string Updated, int Replacements)> rewriteSegment,
+        string? hardTarget,
+        PdfHardRedactionOptions? hardOptions,
+        Func<string, double, (bool Matched, string Parts, int Replacements)>? rewriteWithLayout,
+        Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles,
+        out List<PdfRedactionRectangle> hardRectangles)
+    {
+        List<PdfIndirectObject> objects = [.. _file.Objects];
+        HashSet<PdfObjectId> processedStreamIds = [];
+        HashSet<PdfObjectId> changedStreamIds = [];
+        hardRectangles = [];
+        int totalReplacements = 0;
+
+        for (int pageIndex = 0; pageIndex < _model.Pages.Count; pageIndex++)
+        {
+            PdfPageModel page = _model.Pages[pageIndex];
+            foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
+            {
+                PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
+                string content = Encoding.ASCII.GetString(stream.Data.Span);
+
+                if (!processedStreamIds.Add(streamId))
+                {
+                    if (hardTarget is not null && hardOptions is not null)
+                    {
+                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget, hardOptions, rewriteWithLayoutAndRectangles: null));
+                    }
+                    else if (rewriteWithLayoutAndRectangles is not null)
+                    {
+                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget: null, hardOptions: null, rewriteWithLayoutAndRectangles));
+                    }
+
+                    continue;
+                }
+
+                (string updatedContent, int replacements, List<PdfRedactionRectangle> rectangles) = RewriteTextOperatorsInStream(
+                    content,
+                    rewriteSegment,
+                    pageIndex,
+                    hardTarget,
+                    hardOptions,
+                    rewriteWithLayout,
+                    rewriteWithLayoutAndRectangles);
+
+                totalReplacements += replacements;
+                if (rectangles.Count > 0)
+                {
+                    hardRectangles.AddRange(rectangles);
+                }
+
+                if (!string.Equals(updatedContent, content, StringComparison.Ordinal))
+                {
+                    ReplaceObject(objects, streamId, new PdfStreamObject(stream.Dictionary, Encoding.ASCII.GetBytes(updatedContent)));
+                    changedStreamIds.Add(streamId);
+                }
+            }
+        }
+
+        if (changedStreamIds.Count == 0)
+        {
+            return totalReplacements;
+        }
+
+        _file = new PdfFile(
+            _file.Version,
+            objects,
+            _file.Trailer,
+            _file.SourceBytes,
+            _file.StartXrefOffset,
+            _file.XrefEntries);
+        _model = PdfDocumentModelBuilder.Build(_file);
+
+        foreach (PdfObjectId streamId in changedStreamIds)
+        {
+            MarkDirty(streamId);
+        }
+
+        return totalReplacements;
+    }
+
+    private static (string UpdatedContent, int Replacements, List<PdfRedactionRectangle> Rectangles) RewriteTextOperatorsInStream(
+        string content,
+        Func<string, (string Updated, int Replacements)> rewriteSegment,
+        int pageIndex,
+        string? hardTarget,
+        PdfHardRedactionOptions? hardOptions,
+        Func<string, double, (bool Matched, string Parts, int Replacements)>? rewriteWithLayout,
+        Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles)
+    {
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(Encoding.ASCII.GetBytes(content));
+        Dictionary<int, string> rewrittenStringTokens = [];
+        Dictionary<int, string> rawTokenOverrides = [];
+        HashSet<int> removedTokenIndices = [];
+        List<PdfRedactionRectangle> rectangles = [];
+        int replacements = 0;
+
+        bool inTextObject = false;
+        double fontSize = 12;
+        double textX = 0;
+        double textY = 0;
+        double lineHeightEstimate = fontSize * 1.2;
+        double? lastShownBaselineY = null;
+        int index = 0;
+
+        while (index < tokens.Count)
+        {
+            PdfToken token = tokens[index];
+            if (token.Kind == PdfTokenKind.Keyword)
+            {
+                if (string.Equals(token.Lexeme, "BT", StringComparison.Ordinal))
+                {
+                    inTextObject = true;
+                    textX = 0;
+                    textY = 0;
+                    lineHeightEstimate = fontSize * 1.2;
+                    lastShownBaselineY = null;
+                }
+                else if (string.Equals(token.Lexeme, "ET", StringComparison.Ordinal))
+                {
+                    inTextObject = false;
+                }
+            }
+
+            if (inTextObject
+                && token.Kind == PdfTokenKind.Name
+                && index + 2 < tokens.Count
+                && TryParseTokenDouble(tokens[index + 1], out double parsedFontSize)
+                && tokens[index + 2].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 2].Lexeme, "Tf", StringComparison.Ordinal))
+            {
+                fontSize = Math.Abs(parsedFontSize);
+                lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
+                index += 3;
+                continue;
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 2 < tokens.Count
+                && IsNumberToken(tokens[index + 1])
+                && tokens[index + 2].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 2].Lexeme, "Td", StringComparison.Ordinal))
+            {
+                if (TryParseTokenDouble(token, out double tx) && TryParseTokenDouble(tokens[index + 1], out double ty))
+                {
+                    textX += tx;
+                    textY += ty;
+                    if (Math.Abs(ty) > 0.01)
+                    {
+                        lineHeightEstimate = Math.Abs(ty);
+                    }
+                }
+
+                index += 3;
+                continue;
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 6 < tokens.Count
+                && IsNumberToken(tokens[index + 1])
+                && IsNumberToken(tokens[index + 2])
+                && IsNumberToken(tokens[index + 3])
+                && IsNumberToken(tokens[index + 4])
+                && IsNumberToken(tokens[index + 5])
+                && tokens[index + 6].Kind == PdfTokenKind.Keyword
+                && string.Equals(tokens[index + 6].Lexeme, "Tm", StringComparison.Ordinal))
+            {
+                if (TryParseTokenDouble(tokens[index + 4], out double matrixX)
+                    && TryParseTokenDouble(tokens[index + 5], out double matrixY))
+                {
+                    double deltaY = Math.Abs(matrixY - textY);
+                    textX = matrixX;
+                    textY = matrixY;
+                    if (lastShownBaselineY is not null && deltaY > 0.01)
+                    {
+                        lineHeightEstimate = deltaY;
+                    }
+                }
+
+                index += 7;
+                continue;
+            }
+
+            if (inTextObject
+                && token.Kind == PdfTokenKind.String
+                && index + 1 < tokens.Count
+                && tokens[index + 1].Kind == PdfTokenKind.Keyword
+                && IsSingleStringTextOperator(tokens[index + 1].Lexeme))
+            {
+                string segment = token.Lexeme;
+                string textOperator = tokens[index + 1].Lexeme;
+                if (lastShownBaselineY is double previousBaselineY)
+                {
+                    double shownDelta = Math.Abs(textY - previousBaselineY);
+                    if (shownDelta > 0.01)
+                    {
+                        lineHeightEstimate = shownDelta;
+                    }
+                }
+
+                double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
+                if (hardTarget is not null && hardOptions is not null)
+                {
+                    AddHardRedactionRectanglesForSegment(
+                        rectangles,
+                        pageIndex,
+                        segment,
+                        hardTarget,
+                        textX,
+                        textY,
+                        fontSize,
+                        effectiveLineHeight,
+                        hardOptions);
+
+                    if (TryBuildHardRedactionParts(segment, hardTarget, fontSize, out string hardParts, out int hardMatches))
+                    {
+                        replacements += hardMatches;
+                        if (string.Equals(textOperator, "Tj", StringComparison.Ordinal))
+                        {
+                            rawTokenOverrides[index] = $"[{hardParts}] TJ";
+                            removedTokenIndices.Add(index + 1);
+                        }
+                        else if (string.Equals(textOperator, "'", StringComparison.Ordinal))
+                        {
+                            rawTokenOverrides[index] = $"T* [{hardParts}] TJ";
+                            removedTokenIndices.Add(index + 1);
+                        }
+                        else if (string.Equals(textOperator, "\"", StringComparison.Ordinal))
+                        {
+                            if (index < 2
+                                || !IsNumberToken(tokens[index - 2])
+                                || !IsNumberToken(tokens[index - 1]))
+                            {
+                                throw new NotSupportedException("Hard redaction for the '\"' text operator requires preceding word and character spacing operands.");
+                            }
+
+                            rawTokenOverrides[index - 2] = $"{tokens[index - 2].Lexeme} Tw {tokens[index - 1].Lexeme} Tc T* [{hardParts}] TJ";
+                            removedTokenIndices.Add(index - 1);
+                            removedTokenIndices.Add(index);
+                            removedTokenIndices.Add(index + 1);
+                        }
+
+                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        index += 2;
+                        continue;
+                    }
+                }
+                else if (rewriteWithLayout is not null)
+                {
+                    (bool matched, string parts, int layoutReplacements) = rewriteWithLayout(segment, fontSize);
+                    if (matched)
+                    {
+                        replacements += layoutReplacements;
+                        if (string.Equals(textOperator, "Tj", StringComparison.Ordinal))
+                        {
+                            rawTokenOverrides[index] = $"[{parts}] TJ";
+                            removedTokenIndices.Add(index + 1);
+                        }
+                        else if (string.Equals(textOperator, "'", StringComparison.Ordinal))
+                        {
+                            rawTokenOverrides[index] = $"T* [{parts}] TJ";
+                            removedTokenIndices.Add(index + 1);
+                        }
+                        else if (string.Equals(textOperator, "\"", StringComparison.Ordinal))
+                        {
+                            if (index < 2
+                                || !IsNumberToken(tokens[index - 2])
+                                || !IsNumberToken(tokens[index - 1]))
+                            {
+                                throw new NotSupportedException("Soft redaction for the '\"' text operator requires preceding word and character spacing operands.");
+                            }
+
+                            rawTokenOverrides[index - 2] = $"{tokens[index - 2].Lexeme} Tw {tokens[index - 1].Lexeme} Tc T* [{parts}] TJ";
+                            removedTokenIndices.Add(index - 1);
+                            removedTokenIndices.Add(index);
+                            removedTokenIndices.Add(index + 1);
+                        }
+
+                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        index += 2;
+                        continue;
+                    }
+                }
+                else if (rewriteWithLayoutAndRectangles is not null)
+                {
+                    (bool matched, string parts, int layoutReplacements, List<PdfRedactionRectangle> segmentRectangles) =
+                        rewriteWithLayoutAndRectangles(segment, fontSize, textX, textY, effectiveLineHeight, pageIndex);
+                    if (matched)
+                    {
+                        replacements += layoutReplacements;
+                        if (segmentRectangles.Count > 0)
+                        {
+                            rectangles.AddRange(segmentRectangles);
+                        }
+
+                        if (string.Equals(textOperator, "Tj", StringComparison.Ordinal))
+                        {
+                            rawTokenOverrides[index] = $"[{parts}] TJ";
+                            removedTokenIndices.Add(index + 1);
+                        }
+                        else if (string.Equals(textOperator, "'", StringComparison.Ordinal))
+                        {
+                            rawTokenOverrides[index] = $"T* [{parts}] TJ";
+                            removedTokenIndices.Add(index + 1);
+                        }
+                        else if (string.Equals(textOperator, "\"", StringComparison.Ordinal))
+                        {
+                            if (index < 2
+                                || !IsNumberToken(tokens[index - 2])
+                                || !IsNumberToken(tokens[index - 1]))
+                            {
+                                throw new NotSupportedException("Soft redaction for the '\"' text operator requires preceding word and character spacing operands.");
+                            }
+
+                            rawTokenOverrides[index - 2] = $"{tokens[index - 2].Lexeme} Tw {tokens[index - 1].Lexeme} Tc T* [{parts}] TJ";
+                            removedTokenIndices.Add(index - 1);
+                            removedTokenIndices.Add(index);
+                            removedTokenIndices.Add(index + 1);
+                        }
+
+                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        index += 2;
+                        continue;
+                    }
+                }
+
+                (string updatedSegment, int segmentReplacements) = rewriteSegment(segment);
+                replacements += segmentReplacements;
+                if (!string.Equals(updatedSegment, segment, StringComparison.Ordinal))
+                {
+                    rewrittenStringTokens[index] = updatedSegment;
+                }
+
+                textX += EstimateRedactionTextWidth(segment, fontSize);
+                lastShownBaselineY = textY;
+                index += 2;
+                continue;
+            }
+
+            if (inTextObject && token.Kind == PdfTokenKind.StartArray)
+            {
+                int depth = 1;
+                int arrayEndIndex = index + 1;
+                while (arrayEndIndex < tokens.Count && depth > 0)
+                {
+                    PdfToken item = tokens[arrayEndIndex];
+                    if (item.Kind == PdfTokenKind.StartArray)
+                    {
+                        depth++;
+                    }
+                    else if (item.Kind == PdfTokenKind.EndArray)
+                    {
+                        depth--;
+                    }
+
+                    arrayEndIndex++;
+                }
+
+                if (depth != 0)
+                {
+                    throw new PdfFormatException("Unterminated array in content stream.");
+                }
+
+                if (arrayEndIndex < tokens.Count
+                    && tokens[arrayEndIndex].Kind == PdfTokenKind.Keyword
+                    && string.Equals(tokens[arrayEndIndex].Lexeme, "TJ", StringComparison.Ordinal))
+                {
+                    int nestedDepth = 1;
+                    for (int itemIndex = index + 1; itemIndex < arrayEndIndex; itemIndex++)
+                    {
+                        PdfToken item = tokens[itemIndex];
+                        if (item.Kind == PdfTokenKind.StartArray)
+                        {
+                            nestedDepth++;
+                            continue;
+                        }
+
+                        if (item.Kind == PdfTokenKind.EndArray)
+                        {
+                            nestedDepth--;
+                            continue;
+                        }
+
+                        if (nestedDepth != 1)
+                        {
+                            continue;
+                        }
+
+                        if (item.Kind == PdfTokenKind.String)
+                        {
+                            string segment = item.Lexeme;
+                            if (lastShownBaselineY is double previousBaselineY)
+                            {
+                                double shownDelta = Math.Abs(textY - previousBaselineY);
+                                if (shownDelta > 0.01)
+                                {
+                                    lineHeightEstimate = shownDelta;
+                                }
+                            }
+
+                            double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
+                            if (hardTarget is not null && hardOptions is not null)
+                            {
+                                AddHardRedactionRectanglesForSegment(
+                                    rectangles,
+                                    pageIndex,
+                                    segment,
+                                    hardTarget,
+                                    textX,
+                                    textY,
+                                    fontSize,
+                                    effectiveLineHeight,
+                                    hardOptions);
+
+                                if (TryBuildHardRedactionParts(segment, hardTarget, fontSize, out string hardParts, out int hardMatches))
+                                {
+                                    replacements += hardMatches;
+                                    rawTokenOverrides[itemIndex] = hardParts;
+                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    continue;
+                                }
+                            }
+                            else if (rewriteWithLayout is not null)
+                            {
+                                (bool matched, string parts, int layoutReplacements) = rewriteWithLayout(segment, fontSize);
+                                if (matched)
+                                {
+                                    replacements += layoutReplacements;
+                                    rawTokenOverrides[itemIndex] = parts;
+                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    continue;
+                                }
+                            }
+                            else if (rewriteWithLayoutAndRectangles is not null)
+                            {
+                                (bool matched, string parts, int layoutReplacements, List<PdfRedactionRectangle> segmentRectangles) =
+                                    rewriteWithLayoutAndRectangles(segment, fontSize, textX, textY, effectiveLineHeight, pageIndex);
+                                if (matched)
+                                {
+                                    replacements += layoutReplacements;
+                                    if (segmentRectangles.Count > 0)
+                                    {
+                                        rectangles.AddRange(segmentRectangles);
+                                    }
+
+                                    rawTokenOverrides[itemIndex] = parts;
+                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    continue;
+                                }
+                            }
+
+                            (string updatedSegment, int segmentReplacements) = rewriteSegment(segment);
+                            replacements += segmentReplacements;
+                            if (!string.Equals(updatedSegment, segment, StringComparison.Ordinal))
+                            {
+                                rewrittenStringTokens[itemIndex] = updatedSegment;
+                            }
+
+                            textX += EstimateRedactionTextWidth(segment, fontSize);
+                            lastShownBaselineY = textY;
+                        }
+                        else if (IsNumberToken(item) && TryParseTokenDouble(item, out double adjustment))
+                        {
+                            textX -= adjustment * fontSize / 1000.0;
+                        }
+                    }
+
+                    index = arrayEndIndex + 1;
+                    continue;
+                }
+            }
+
+            index++;
+        }
+
+        if (rewrittenStringTokens.Count == 0
+            && rawTokenOverrides.Count == 0
+            && removedTokenIndices.Count == 0)
+        {
+            return (content, replacements, rectangles);
+        }
+
+        return (SerializeContentTokens(tokens, rewrittenStringTokens, rawTokenOverrides, removedTokenIndices), replacements, rectangles);
+    }
+
+    private static List<PdfRedactionRectangle> CollectRedactionRectangles(
+        string content,
+        int pageIndex,
+        string? hardTarget,
+        PdfHardRedactionOptions? hardOptions,
+        Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles)
+    {
+        (_, _, List<PdfRedactionRectangle> rectangles) = RewriteTextOperatorsInStream(
+            content,
+            static segment => (segment, 0),
+            pageIndex,
+            hardTarget,
+            hardOptions,
+            rewriteWithLayout: null,
+            rewriteWithLayoutAndRectangles: rewriteWithLayoutAndRectangles);
+        return rectangles;
+    }
+
+    private static void AddHardRedactionRectanglesForSegment(
+        List<PdfRedactionRectangle> rectangles,
+        int pageIndex,
+        string segment,
+        string target,
+        double textX,
+        double textY,
+        double fontSize,
+        double lineHeight,
+        PdfHardRedactionOptions options)
+    {
+        int index = 0;
+        while (index < segment.Length)
+        {
+            int found = segment.IndexOf(target, index, StringComparison.Ordinal);
+            if (found < 0)
+            {
+                break;
+            }
+
+            double matchX = textX + EstimateRedactionTextWidth(segment[..found], fontSize);
+            double matchWidth = EstimateRedactionTextWidth(target, fontSize);
+            double x = matchX - options.HorizontalPadding;
+            double width = matchWidth + (options.HorizontalPadding * 2);
+            (double y, double height) = ComputeRedactionVerticalPlacement(textY, fontSize, lineHeight, options);
+            if (width > 0 && height > 0)
+            {
+                rectangles.Add(new PdfRedactionRectangle(pageIndex, x, y, width, height));
+            }
+
+            index = found + target.Length;
+        }
+    }
+
+    private static bool TryBuildHardRedactionParts(
+        string segment,
+        string target,
+        double fontSize,
+        out string parts,
+        out int replacements)
+    {
+        replacements = 0;
+        StringBuilder builder = new();
+        int cursor = 0;
+
+        while (cursor <= segment.Length)
+        {
+            int found = segment.IndexOf(target, cursor, StringComparison.Ordinal);
+            if (found < 0)
+            {
+                break;
+            }
+
+            replacements++;
+            if (found > cursor)
+            {
+                if (builder.Length > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                builder.Append('(');
+                builder.Append(EscapeLiteralString(segment[cursor..found]));
+                builder.Append(')');
+            }
+
+            double removedWidth = EstimateRedactionTextWidth(target, fontSize);
+            if (removedWidth > 0 && fontSize > 0)
+            {
+                if (builder.Length > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                double kerningAdjustment = -(removedWidth * 1000.0 / fontSize);
+                builder.Append(kerningAdjustment.ToString("0.###", CultureInfo.InvariantCulture));
+            }
+
+            cursor = found + target.Length;
+        }
+
+        if (replacements == 0)
+        {
+            parts = string.Empty;
+            return false;
+        }
+
+        if (cursor < segment.Length)
+        {
+            if (builder.Length > 0)
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append('(');
+            builder.Append(EscapeLiteralString(segment[cursor..]));
+            builder.Append(')');
+        }
+
+        if (builder.Length == 0)
+        {
+            builder.Append("()");
+        }
+
+        parts = builder.ToString();
+        return true;
+    }
+
+    private static (bool Matched, string Parts, int Replacements) TryBuildLiteralSoftRedactionParts(
+        string segment,
+        string target,
+        string replacement,
+        double fontSize)
+    {
+        StringBuilder builder = new();
+        int replacements = 0;
+        int cursor = 0;
+
+        while (cursor <= segment.Length)
+        {
+            int found = segment.IndexOf(target, cursor, StringComparison.Ordinal);
+            if (found < 0)
+            {
+                break;
+            }
+
+            replacements++;
+            AppendTjArrayStringPart(builder, segment[cursor..found]);
+            AppendTjArrayStringPart(builder, replacement);
+            AppendTjArrayCompensation(builder, EstimateRedactionTextWidth(target, fontSize), EstimateRedactionTextWidth(replacement, fontSize), fontSize);
+            cursor = found + target.Length;
+        }
+
+        if (replacements == 0)
+        {
+            return (false, string.Empty, 0);
+        }
+
+        AppendTjArrayStringPart(builder, segment[cursor..]);
+        if (builder.Length == 0)
+        {
+            builder.Append("()");
+        }
+
+        return (true, builder.ToString(), replacements);
+    }
+
+    private static (bool Matched, string Parts, int Replacements) TryBuildRegexSoftRedactionParts(
+        string segment,
+        Regex regex,
+        MatchEvaluator evaluator,
+        double fontSize)
+    {
+        MatchCollection matches = regex.Matches(segment);
+        if (matches.Count == 0)
+        {
+            return (false, string.Empty, 0);
+        }
+
+        StringBuilder builder = new();
+        int cursor = 0;
+        int replacements = 0;
+
+        foreach (Match match in matches)
+        {
+            if (!match.Success || match.Length == 0 || match.Index < cursor)
+            {
+                continue;
+            }
+
+            string replacement = evaluator(match) ?? string.Empty;
+            replacements++;
+            AppendTjArrayStringPart(builder, segment[cursor..match.Index]);
+            AppendTjArrayStringPart(builder, replacement);
+            AppendTjArrayCompensation(builder, EstimateRedactionTextWidth(match.Value, fontSize), EstimateRedactionTextWidth(replacement, fontSize), fontSize);
+            cursor = match.Index + match.Length;
+        }
+
+        if (replacements == 0)
+        {
+            return (false, string.Empty, 0);
+        }
+
+        AppendTjArrayStringPart(builder, segment[cursor..]);
+        if (builder.Length == 0)
+        {
+            builder.Append("()");
+        }
+
+        return (true, builder.ToString(), replacements);
+    }
+
+    private static (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles) TryBuildDirectiveSoftRedactionParts(
+        string segment,
+        Regex regex,
+        Func<Match, PdfSoftRedactionDirective> directiveSelector,
+        PdfHardRedactionOptions options,
+        double fontSize,
+        double textX,
+        double textY,
+        double lineHeight,
+        int pageIndex)
+    {
+        MatchCollection matches = regex.Matches(segment);
+        if (matches.Count == 0)
+        {
+            return (false, string.Empty, 0, []);
+        }
+
+        StringBuilder builder = new();
+        List<PdfRedactionRectangle> rectangles = [];
+        int cursor = 0;
+        int replacements = 0;
+
+        foreach (Match match in matches)
+        {
+            if (!match.Success || match.Length == 0 || match.Index < cursor)
+            {
+                continue;
+            }
+
+            PdfSoftRedactionDirective directive = directiveSelector(match)
+                ?? throw new ArgumentException("Soft redaction directive selector returned null.", nameof(directiveSelector));
+            ValidateSoftRedactionDirective(directive);
+            ApplySoftRedactionDirective(
+                match.Value,
+                directive,
+                out string keptPrefixText,
+                out string keptSuffixText,
+                out string removedText);
+
+            AppendTjArrayStringPart(builder, segment[cursor..match.Index]);
+            AppendTjArrayStringPart(builder, keptPrefixText);
+
+            if (removedText.Length > 0)
+            {
+                replacements++;
+                AppendTjArrayCompensation(builder, EstimateRedactionTextWidth(removedText, fontSize), 0, fontSize);
+
+                double matchX = textX + EstimateRedactionTextWidth(segment[..match.Index], fontSize);
+                double removedX = matchX + EstimateRedactionTextWidth(keptPrefixText, fontSize) - options.HorizontalPadding;
+                double removedWidth = EstimateRedactionTextWidth(removedText, fontSize) + (options.HorizontalPadding * 2);
+                (double removedY, double removedHeight) = ComputeRedactionVerticalPlacement(textY, fontSize, lineHeight, options);
+                if (removedWidth > 0 && removedHeight > 0)
+                {
+                    rectangles.Add(new PdfRedactionRectangle(pageIndex, removedX, removedY, removedWidth, removedHeight));
+                }
+            }
+
+            AppendTjArrayStringPart(builder, keptSuffixText);
+            cursor = match.Index + match.Length;
+        }
+
+        if (replacements == 0)
+        {
+            return (false, string.Empty, 0, []);
+        }
+
+        AppendTjArrayStringPart(builder, segment[cursor..]);
+        if (builder.Length == 0)
+        {
+            builder.Append("()");
+        }
+
+        return (true, builder.ToString(), replacements, rectangles);
+    }
+
+    private static void ApplySoftRedactionDirective(
+        string value,
+        PdfSoftRedactionDirective directive,
+        out string keptPrefixText,
+        out string keptSuffixText,
+        out string removedText)
+    {
+        List<string> elements = EnumerateTextElements(value);
+        int keepPrefix = Math.Min(directive.KeepPrefixCharacters, elements.Count);
+        int keepSuffix = Math.Min(directive.KeepSuffixCharacters, Math.Max(0, elements.Count - keepPrefix));
+        int removedCount = Math.Max(0, elements.Count - keepPrefix - keepSuffix);
+
+        keptPrefixText = string.Concat(elements.Take(keepPrefix));
+        keptSuffixText = string.Concat(elements.Skip(elements.Count - keepSuffix));
+        removedText = removedCount > 0
+            ? string.Concat(elements.Skip(keepPrefix).Take(removedCount))
+            : string.Empty;
+    }
+
+    private static void ValidateSoftRedactionDirective(PdfSoftRedactionDirective directive)
+    {
+        if (directive.KeepPrefixCharacters < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(directive), "KeepPrefixCharacters must be greater than or equal to zero.");
+        }
+
+        if (directive.KeepSuffixCharacters < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(directive), "KeepSuffixCharacters must be greater than or equal to zero.");
+        }
+    }
+
+    private static void AppendTjArrayStringPart(StringBuilder builder, string value)
+    {
+        if (value.Length == 0)
+        {
+            return;
+        }
+
+        if (builder.Length > 0)
+        {
+            builder.Append(' ');
+        }
+
+        builder.Append('(');
+        builder.Append(EscapeLiteralString(value));
+        builder.Append(')');
+    }
+
+    private static void AppendTjArrayCompensation(StringBuilder builder, double originalWidth, double replacementWidth, double fontSize)
+    {
+        if (fontSize <= 0 || !double.IsFinite(originalWidth) || !double.IsFinite(replacementWidth))
+        {
+            return;
+        }
+
+        double widthDelta = originalWidth - replacementWidth;
+        if (Math.Abs(widthDelta) < 0.0001)
+        {
+            return;
+        }
+
+        if (builder.Length > 0)
+        {
+            builder.Append(' ');
+        }
+
+        double kerningAdjustment = -(widthDelta * 1000.0 / fontSize);
+        builder.Append(kerningAdjustment.ToString("0.###", CultureInfo.InvariantCulture));
+    }
+
+    private static (double Y, double Height) ComputeRedactionVerticalPlacement(
+        double baselineY,
+        double fontSize,
+        double lineHeight,
+        PdfHardRedactionOptions options)
+    {
+        (double textBandY, double textBandHeight) = ComputeTextRegionVerticalPlacement(baselineY, fontSize, lineHeight);
+        double boxHeight = textBandHeight + (options.VerticalPadding * 2);
+        double y = textBandY - options.VerticalPadding;
+        double height = boxHeight;
+        return (y, height);
+    }
+
+    private static (double Y, double Height) ComputeTextRegionVerticalPlacement(
+        double baselineY,
+        double fontSize,
+        double lineHeight)
+    {
+        double descent = fontSize * 0.30;
+        double textBandHeight = fontSize * 0.80;
+        double effectiveLineHeight = Math.Max(lineHeight, textBandHeight);
+        double lineBottom = baselineY - descent;
+        double centeredOffset = Math.Min((effectiveLineHeight - textBandHeight) / 2, fontSize * 0.20);
+        double y = lineBottom + centeredOffset;
+        return (y, textBandHeight);
+    }
+
+    private static double ResolveRedactionLineHeight(double fontSize, double lineHeightEstimate)
+    {
+        if (!double.IsFinite(lineHeightEstimate) || lineHeightEstimate <= 0)
+        {
+            return fontSize * 1.2;
+        }
+
+        return Math.Max(lineHeightEstimate, fontSize * 0.9);
+    }
+
+    private static double EstimateRedactionTextWidth(string text, double fontSize)
+    {
+        double widthUnits = 0;
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            widthUnits += GetApproximateRedactionHelveticaWidth(rune);
+        }
+
+        return widthUnits * fontSize / 1000.0;
+    }
+
+    private static int GetApproximateRedactionHelveticaWidth(Rune rune)
+    {
+        if (rune.Value <= 0x20)
+        {
+            return rune.Value == 0x20 ? 278 : 0;
+        }
+
+        if (!rune.IsAscii)
+        {
+            return GetApproximateHelveticaWidth(rune);
+        }
+
+        char character = (char)rune.Value;
+        return character switch
+        {
+            >= 'A' and <= 'Z' => 667,
+            >= '0' and <= '9' => 556,
+            >= 'a' and <= 'z' => character switch
+            {
+                'r' => 333,
+                't' => 278,
+                'f' => 278,
+                'i' or 'j' or 'l' => 222,
+                'm' => 833,
+                'w' => 722,
+                'c' or 'k' or 's' or 'v' or 'x' or 'y' or 'z' => 500,
+                _ => 556,
+            },
+            '.' or ',' or ':' or ';' => 278,
+            '!' => 278,
+            '?' => 556,
+            '-' => 333,
+            '*' => 389,
+            '"' => 355,
+            '\'' => 191,
+            '(' or ')' or '[' or ']' => 333,
+            '/' or '\\' => 278,
+            '+' or '=' or '<' or '>' => 584,
+            '@' => 1015,
+            _ => GetApproximateHelveticaWidth(rune),
+        };
+    }
+
+    private static void ValidateHardRedactionOptions(PdfHardRedactionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (!double.IsFinite(options.HorizontalPadding) || options.HorizontalPadding < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Hard redaction HorizontalPadding must be a finite number greater than or equal to zero.");
+        }
+
+        if (!double.IsFinite(options.VerticalPadding) || options.VerticalPadding < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Hard redaction VerticalPadding must be a finite number greater than or equal to zero.");
+        }
+    }
+
+    private static string SerializeContentTokens(
+        IReadOnlyList<PdfToken> tokens,
+        Dictionary<int, string> rewrittenStringTokens,
+        Dictionary<int, string> rawTokenOverrides,
+        HashSet<int> removedTokenIndices)
+    {
+        StringBuilder builder = new();
+        for (int index = 0; index < tokens.Count; index++)
+        {
+            if (removedTokenIndices.Contains(index))
+            {
+                continue;
+            }
+
+            string? rendered = null;
+            if (rawTokenOverrides.TryGetValue(index, out string? rawToken))
+            {
+                rendered = rawToken;
+            }
+            else if (rewrittenStringTokens.TryGetValue(index, out string? rewrittenLiteral))
+            {
+                rendered = $"({EscapeLiteralString(rewrittenLiteral)})";
+            }
+            else
+            {
+                rendered = SerializeContentToken(tokens[index]);
+            }
+
+            if (string.IsNullOrEmpty(rendered))
+            {
+                continue;
+            }
+
+            if (builder.Length > 0)
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append(rendered);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string SerializeContentToken(PdfToken token)
+    {
+        return token.Kind switch
+        {
+            PdfTokenKind.Integer or PdfTokenKind.Real => token.Lexeme,
+            PdfTokenKind.Name => $"/{token.Lexeme}",
+            PdfTokenKind.String => $"({EscapeLiteralString(token.Lexeme)})",
+            PdfTokenKind.HexString => $"<{token.Lexeme}>",
+            PdfTokenKind.BooleanTrue => "true",
+            PdfTokenKind.BooleanFalse => "false",
+            PdfTokenKind.Null => "null",
+            PdfTokenKind.Keyword => token.Lexeme,
+            PdfTokenKind.StartArray => "[",
+            PdfTokenKind.EndArray => "]",
+            PdfTokenKind.StartDictionary => "<<",
+            PdfTokenKind.EndDictionary => ">>",
+            _ => throw new PdfFormatException($"Unsupported token kind '{token.Kind}'."),
+        };
+    }
+
+    private static bool IsSingleStringTextOperator(string lexeme)
+    {
+        return string.Equals(lexeme, "Tj", StringComparison.Ordinal)
+            || string.Equals(lexeme, "'", StringComparison.Ordinal)
+            || string.Equals(lexeme, "\"", StringComparison.Ordinal);
+    }
+
+    private static bool IsNumberToken(PdfToken token)
+    {
+        return token.Kind is PdfTokenKind.Integer or PdfTokenKind.Real;
+    }
+
+    private static bool TryParseTokenDouble(PdfToken token, out double value)
+    {
+        if (IsNumberToken(token)
+            && double.TryParse(token.Lexeme, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+        {
+            return true;
+        }
+
+        value = 0;
+        return false;
     }
 
     private static int GetNextObjectNumber(IReadOnlyList<PdfIndirectObject> objects)
@@ -6985,6 +9078,7 @@ public sealed class PdfDocument
                 '.' or ',' or ':' or ';' => 278,
                 '!' or '?' => 333,
                 '-' => 333,
+                '*' => 389,
                 '"' or '\'' => 222,
                 '(' or ')' or '[' or ']' or '{' or '}' => 333,
                 '/' or '\\' => 278,
