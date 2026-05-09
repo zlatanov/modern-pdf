@@ -51,15 +51,10 @@ jobs:
         run: cat artifacts/coverage/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage artifacts
+        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: artifacts/coverage
-          if-no-files-found: error
-
-      - name: Upload raw coverage files
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-raw
-          path: '**/TestResults/coverage.cobertura.xml'
+          retention-days: 7
           if-no-files-found: error
