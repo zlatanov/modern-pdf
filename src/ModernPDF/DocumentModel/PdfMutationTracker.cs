@@ -2,6 +2,9 @@ using ModernPDF.Primitives;
 
 namespace ModernPDF.DocumentModel;
 
+/// <summary>
+/// Tracks object IDs changed since the last rebase/save boundary.
+/// </summary>
 internal sealed class PdfMutationTracker
 {
     private readonly HashSet<PdfObjectId> _dirtyObjects = [];

@@ -2,8 +2,14 @@ using System.Text;
 
 namespace ModernPDF.Format;
 
+/// <summary>
+/// Tokenizes PDF content/object bytes into lexical tokens used by parsers and text extraction.
+/// </summary>
 internal static class PdfTokenizer
 {
+    /// <summary>
+    /// Performs a single-pass lexical scan over PDF bytes.
+    /// </summary>
     public static IReadOnlyList<PdfToken> Tokenize(ReadOnlySpan<byte> data)
     {
         List<PdfToken> tokens = [];

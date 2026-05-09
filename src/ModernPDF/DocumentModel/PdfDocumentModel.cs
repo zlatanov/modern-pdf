@@ -2,6 +2,9 @@ using ModernPDF.Primitives;
 
 namespace ModernPDF.DocumentModel;
 
+/// <summary>
+/// Internal snapshot of resolved document structure and mutation tracking state.
+/// </summary>
 internal sealed class PdfDocumentModel
 {
     public PdfDocumentModel(

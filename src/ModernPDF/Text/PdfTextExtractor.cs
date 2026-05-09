@@ -8,8 +8,14 @@ using System.Globalization;
 
 namespace ModernPDF.Text;
 
+/// <summary>
+/// Extracts textual content from page content streams using a tokenizer-based operator scan.
+/// </summary>
 internal static class PdfTextExtractor
 {
+    /// <summary>
+    /// Extracts text from every page in reading order.
+    /// </summary>
     public static string ExtractAll(PdfFile file, PdfDocumentModel model)
     {
         ArgumentNullException.ThrowIfNull(file);
@@ -37,6 +43,9 @@ internal static class PdfTextExtractor
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Extracts text from a specific page.
+    /// </summary>
     public static string ExtractPage(PdfFile file, PdfDocumentModel model, int pageIndex)
     {
         ArgumentNullException.ThrowIfNull(file);
@@ -124,6 +133,8 @@ internal static class PdfTextExtractor
         ReadOnlySpan<byte> content,
         IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
     {
+        // This is intentionally operator-driven (Tf/Tj/TJ) rather than a full graphics-state interpreter.
+        // It keeps extraction predictable for common text streams while remaining resilient to malformed content.
         IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(content);
         StringBuilder builder = new();
         IReadOnlyDictionary<int, string>? activeToUnicode = null;

@@ -6,8 +6,14 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace ModernPDF.DocumentModel;
 
+/// <summary>
+/// Builds a navigable document model from low-level PDF objects.
+/// </summary>
 internal static class PdfDocumentModelBuilder
 {
+    /// <summary>
+    /// Resolves catalog/page-tree objects and flattens effective page state into <see cref="PdfDocumentModel"/>.
+    /// </summary>
     public static PdfDocumentModel Build(PdfFile file)
     {
         ArgumentNullException.ThrowIfNull(file);

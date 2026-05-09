@@ -16,6 +16,9 @@ using System.Text;
 
 namespace ModernPDF;
 
+/// <summary>
+/// Represents an in-memory PDF document that supports reading, editing, and writing.
+/// </summary>
 public sealed class PdfDocument
 {
     private static readonly HashSet<string> SupportedCmsSubFilters =
@@ -48,6 +51,9 @@ public sealed class PdfDocument
         _openedEncryptedFile = openedEncryptedFile;
     }
 
+    /// <summary>
+    /// Creates a new empty PDF document.
+    /// </summary>
     public static PdfDocument Create()
     {
         PdfFile file = CreateEmptyFile();
@@ -60,12 +66,18 @@ public sealed class PdfDocument
             openedEncryptedFile: null);
     }
 
+    /// <summary>
+    /// Opens a PDF document from bytes.
+    /// </summary>
     public static PdfDocument Open(byte[] data)
     {
         ArgumentNullException.ThrowIfNull(data);
         return Open(data.AsSpan(), password: null);
     }
 
+    /// <summary>
+    /// Opens an encrypted PDF document from bytes using the provided password.
+    /// </summary>
     public static PdfDocument Open(byte[] data, string password)
     {
         ArgumentNullException.ThrowIfNull(data);
@@ -73,11 +85,17 @@ public sealed class PdfDocument
         return Open(data.AsSpan(), password);
     }
 
+    /// <summary>
+    /// Opens a PDF document from a read-only byte span.
+    /// </summary>
     public static PdfDocument Open(ReadOnlySpan<byte> data)
     {
         return Open(data, password: null);
     }
 
+    /// <summary>
+    /// Opens a PDF document from a read-only byte span, optionally decrypting it with a password.
+    /// </summary>
     public static PdfDocument Open(ReadOnlySpan<byte> data, string? password)
     {
         PdfFile file = PdfFileReader.Read(data);
@@ -105,12 +123,18 @@ public sealed class PdfDocument
         return new PdfDocument(file, model, openedEncrypted, openedSecurityOptions, encryptedFile);
     }
 
+    /// <summary>
+    /// Opens a PDF document from disk.
+    /// </summary>
     public static PdfDocument Open(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         return Open(File.ReadAllBytes(path));
     }
 
+    /// <summary>
+    /// Opens an encrypted PDF document from disk using the provided password.
+    /// </summary>
     public static PdfDocument Open(string path, string password)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -118,28 +142,46 @@ public sealed class PdfDocument
         return Open(File.ReadAllBytes(path), password);
     }
 
+    /// <summary>
+    /// Reads encryption metadata from PDF bytes without opening the document.
+    /// </summary>
     public static PdfEncryptionInfo? InspectEncryption(byte[] data)
     {
         ArgumentNullException.ThrowIfNull(data);
         return InspectEncryption(data.AsSpan());
     }
 
+    /// <summary>
+    /// Reads encryption metadata from PDF bytes without opening the document.
+    /// </summary>
     public static PdfEncryptionInfo? InspectEncryption(ReadOnlySpan<byte> data)
     {
         PdfFile file = PdfFileReader.Read(data);
         return PdfStandardSecurityProcessor.TryReadEncryptionInfo(file, out PdfEncryptionInfo? info) ? info : null;
     }
 
+    /// <summary>
+    /// Reads encryption metadata from a PDF file without opening the document.
+    /// </summary>
     public static PdfEncryptionInfo? InspectEncryption(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         return InspectEncryption(File.ReadAllBytes(path));
     }
 
+    /// <summary>
+    /// Gets the PDF version string currently associated with the in-memory file model.
+    /// </summary>
     public string Version => _file.Version;
 
+    /// <summary>
+    /// Gets the current number of pages in the document.
+    /// </summary>
     public int PageCount => _model.Pages.Count;
 
+    /// <summary>
+    /// Gets or sets default text options used by text-writing APIs when per-call options are omitted.
+    /// </summary>
     public PdfTextOptions DefaultTextOptions
     {
         get => _defaultTextOptions;
@@ -151,12 +193,18 @@ public sealed class PdfDocument
         }
     }
 
+    /// <summary>
+    /// Appends a blank page and returns its zero-based page index.
+    /// </summary>
     public int AddPage(PdfPageOptions? options = null)
     {
         PdfPageOptions pageOptions = options ?? new PdfPageOptions();
         return AddPageCore(pageOptions, text: null, textOptions: null);
     }
 
+    /// <summary>
+    /// Appends a page with text content and returns its zero-based page index.
+    /// </summary>
     public int AddTextPage(string text, PdfPageOptions? pageOptions = null, PdfTextOptions? textOptions = null)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -166,6 +214,9 @@ public sealed class PdfDocument
         return AddPageCore(effectivePageOptions, text, effectiveTextOptions);
     }
 
+    /// <summary>
+    /// Appends a page populated from rich text spans and returns its zero-based page index.
+    /// </summary>
     public int AddRichTextPage(
         IReadOnlyList<PdfTextSpan> spans,
         PdfPageOptions? pageOptions = null,
@@ -178,6 +229,9 @@ public sealed class PdfDocument
         return pageIndex;
     }
 
+    /// <summary>
+    /// Appends an image-only page from raster bytes and returns its zero-based page index.
+    /// </summary>
     public int AddImagePage(byte[] imageBytes, PdfPageOptions? pageOptions = null, PdfImageOptions? imageOptions = null)
     {
         ArgumentNullException.ThrowIfNull(imageBytes);
@@ -202,22 +256,34 @@ public sealed class PdfDocument
         return pageIndex;
     }
 
+    /// <summary>
+    /// Appends an image-only page from an image file path and returns its zero-based page index.
+    /// </summary>
     public int AddImagePage(string imagePath, PdfPageOptions? pageOptions = null, PdfImageOptions? imageOptions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
         return AddImagePage(File.ReadAllBytes(imagePath), pageOptions, imageOptions);
     }
 
+    /// <summary>
+    /// Extracts text from all pages and concatenates page results with newline separators.
+    /// </summary>
     public string ExtractText()
     {
         return PdfTextExtractor.ExtractAll(_file, _model);
     }
 
+    /// <summary>
+    /// Extracts text from a single page.
+    /// </summary>
     public string ExtractText(int pageIndex)
     {
         return PdfTextExtractor.ExtractPage(_file, _model, pageIndex);
     }
 
+    /// <summary>
+    /// Serializes the document to PDF bytes using the provided save options.
+    /// </summary>
     public byte[] Save(PdfSaveOptions? options = null)
     {
         PdfSaveOptions effectiveOptions = options ?? new PdfSaveOptions();
@@ -276,12 +342,18 @@ public sealed class PdfDocument
         return fullBytes;
     }
 
+    /// <summary>
+    /// Serializes the document and writes it to disk.
+    /// </summary>
     public void Save(string path, PdfSaveOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         File.WriteAllBytes(path, Save(options));
     }
 
+    /// <summary>
+    /// Creates a detached signature placeholder, invokes <paramref name="signer"/>, and persists signed bytes.
+    /// </summary>
     public byte[] SaveSignedDetached(Func<ReadOnlyMemory<byte>, byte[]> signer, PdfSignatureOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(signer);
@@ -301,6 +373,9 @@ public sealed class PdfDocument
         return signedBytes;
     }
 
+    /// <summary>
+    /// Validates all detached signatures using default validation options.
+    /// </summary>
     public IReadOnlyList<PdfDetachedSignatureValidationResult> ValidateDetachedSignatures(bool verifyCertificateChain = false)
     {
         return ValidateDetachedSignatures(
@@ -310,6 +385,9 @@ public sealed class PdfDocument
             });
     }
 
+    /// <summary>
+    /// Validates all detached signatures using the specified validation options.
+    /// </summary>
     public IReadOnlyList<PdfDetachedSignatureValidationResult> ValidateDetachedSignatures(PdfDetachedSignatureValidationOptions? options)
     {
         PdfDetachedSignatureValidationOptions effectiveOptions = options ?? new PdfDetachedSignatureValidationOptions();
@@ -2819,6 +2897,9 @@ public sealed class PdfDocument
         _model.Mutations.MarkDirty(objectId);
     }
 
+    /// <summary>
+    /// Replaces the page content stream with raw PDF content operators.
+    /// </summary>
     public void ReplacePageContents(int pageIndex, string rawContentStream)
     {
         ArgumentNullException.ThrowIfNull(rawContentStream);
@@ -2849,6 +2930,9 @@ public sealed class PdfDocument
         MarkDirty(page.ObjectId);
     }
 
+    /// <summary>
+    /// Replaces page content with a single raster image.
+    /// </summary>
     public void ReplacePageImage(int pageIndex, byte[] imageBytes, PdfImageOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(imageBytes);
@@ -2937,12 +3021,18 @@ public sealed class PdfDocument
         MarkDirty(resourcesId);
     }
 
+    /// <summary>
+    /// Replaces page content with a single raster image loaded from disk.
+    /// </summary>
     public void ReplacePageImage(int pageIndex, string imagePath, PdfImageOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
         ReplacePageImage(pageIndex, File.ReadAllBytes(imagePath), options);
     }
 
+    /// <summary>
+    /// Appends a raster image overlay to an existing page while preserving current content.
+    /// </summary>
     public void AddPageImage(int pageIndex, byte[] imageBytes, PdfImageOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(imageBytes);
@@ -3022,12 +3112,18 @@ public sealed class PdfDocument
         MarkDirty(appendedContentId);
     }
 
+    /// <summary>
+    /// Appends a raster image overlay to an existing page using an image file path.
+    /// </summary>
     public void AddPageImage(int pageIndex, string imagePath, PdfImageOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
         AddPageImage(pageIndex, File.ReadAllBytes(imagePath), options);
     }
 
+    /// <summary>
+    /// Draws a line on an existing page.
+    /// </summary>
     public void AddPageLine(
         int pageIndex,
         double startX,
@@ -3065,6 +3161,9 @@ public sealed class PdfDocument
             names => BuildLineContentStream(startX, startY, endX, endY, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws a rectangle on an existing page.
+    /// </summary>
     public void AddPageRectangle(
         int pageIndex,
         double x,
@@ -3102,6 +3201,9 @@ public sealed class PdfDocument
             names => BuildRectangleContentStream(x, y, width, height, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws a circle on an existing page.
+    /// </summary>
     public void AddPageCircle(
         int pageIndex,
         double centerX,
@@ -3133,6 +3235,9 @@ public sealed class PdfDocument
             names => BuildCircleContentStream(centerX, centerY, radius, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws an ellipse on an existing page.
+    /// </summary>
     public void AddPageEllipse(
         int pageIndex,
         double centerX,
@@ -3170,6 +3275,9 @@ public sealed class PdfDocument
             names => BuildEllipseContentStream(centerX, centerY, radiusX, radiusY, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws a polygon/polyline on an existing page.
+    /// </summary>
     public void AddPagePolygon(
         int pageIndex,
         IReadOnlyList<PdfShapePoint> points,
@@ -3191,6 +3299,9 @@ public sealed class PdfDocument
             names => BuildPolygonContentStream(points, closePath, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws a custom path on an existing page.
+    /// </summary>
     public void AddPagePath(
         int pageIndex,
         IReadOnlyList<PdfPathCommand> commands,
@@ -3206,6 +3317,9 @@ public sealed class PdfDocument
             names => BuildPathContentStream(commands, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws a rounded rectangle on an existing page.
+    /// </summary>
     public void AddPageRoundedRectangle(
         int pageIndex,
         double x,
@@ -3255,6 +3369,9 @@ public sealed class PdfDocument
             names => BuildRoundedRectangleContentStream(x, y, width, height, radiusX, radiusY, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws an open arc path on an existing page.
+    /// </summary>
     public void AddPageArc(
         int pageIndex,
         double centerX,
@@ -3303,6 +3420,9 @@ public sealed class PdfDocument
             names => BuildPathContentStream(commands, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws a closed sector (pie slice) on an existing page.
+    /// </summary>
     public void AddPageSector(
         int pageIndex,
         double centerX,
@@ -3350,6 +3470,9 @@ public sealed class PdfDocument
             names => BuildPathContentStream(commands, effectiveOptions, names));
     }
 
+    /// <summary>
+    /// Draws a custom path using an explicit transform matrix.
+    /// </summary>
     public void AddPagePathTransformed(
         int pageIndex,
         IReadOnlyList<PdfPathCommand> commands,
@@ -3360,6 +3483,9 @@ public sealed class PdfDocument
         AddPagePath(pageIndex, commands, mergedOptions);
     }
 
+    /// <summary>
+    /// Draws a custom path constrained by a clipping path.
+    /// </summary>
     public void AddPagePathClipped(
         int pageIndex,
         IReadOnlyList<PdfPathCommand> clipPath,
@@ -3371,6 +3497,9 @@ public sealed class PdfDocument
         AddPagePath(pageIndex, commands, mergedOptions);
     }
 
+    /// <summary>
+    /// Returns unique shape IDs found on a page in first-seen order.
+    /// </summary>
     public IReadOnlyList<string> GetPageShapeIds(int pageIndex)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
@@ -3395,6 +3524,9 @@ public sealed class PdfDocument
         return ids;
     }
 
+    /// <summary>
+    /// Removes shape content associated with a previously assigned shape ID.
+    /// </summary>
     public void RemovePageShape(int pageIndex, string shapeId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(shapeId);
@@ -3420,6 +3552,9 @@ public sealed class PdfDocument
         MarkDirty(page.ObjectId);
     }
 
+    /// <summary>
+    /// Replaces a shape identified by ID with a new path and style.
+    /// </summary>
     public void ReplacePageShape(int pageIndex, string shapeId, IReadOnlyList<PdfPathCommand> commands, PdfShapeOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(shapeId);
@@ -3428,6 +3563,9 @@ public sealed class PdfDocument
         AddPagePath(pageIndex, commands, mergedOptions);
     }
 
+    /// <summary>
+    /// Replaces page text content with a single text block.
+    /// </summary>
     public void ReplacePageText(int pageIndex, string text, PdfTextOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -3485,6 +3623,9 @@ public sealed class PdfDocument
         }
     }
 
+    /// <summary>
+    /// Replaces page text content with rich text spans.
+    /// </summary>
     public void ReplacePageRichText(int pageIndex, IReadOnlyList<PdfTextSpan> spans, PdfTextOptions? options = null)
     {
         ValidateTextSpans(spans);
@@ -3572,6 +3713,9 @@ public sealed class PdfDocument
         }
     }
 
+    /// <summary>
+    /// Sets the document Info dictionary <c>/Producer</c> entry.
+    /// </summary>
     public void SetInfoProducer(string producer)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(producer);
@@ -3626,6 +3770,9 @@ public sealed class PdfDocument
         MarkDirty(infoId);
     }
 
+    /// <summary>
+    /// Gets the document Info dictionary <c>/Producer</c> entry, if present.
+    /// </summary>
     public string? GetInfoProducer()
     {
         if (_model.InfoObjectId is not PdfObjectId infoId)
@@ -3642,6 +3789,9 @@ public sealed class PdfDocument
         return producerObject is PdfStringObject producer ? producer.Value : null;
     }
 
+    /// <summary>
+    /// Performs destructive content-stream text replacement across all pages and returns replacement count.
+    /// </summary>
     public int RedactText(string target, string replacement = "")
     {
         if (string.IsNullOrEmpty(target))

@@ -9,6 +9,9 @@ using ModernPDF.Primitives;
 
 namespace ModernPDF.Security;
 
+/// <summary>
+/// Implements Standard security handler encryption/decryption and incremental encrypted writes.
+/// </summary>
 internal static class PdfStandardSecurityProcessor
 {
     private const string SupportedProfilesMessage = "Only Standard security handler profiles V=1/R=2 (40-bit RC4), V=2/R=3 (128-bit RC4), V=4/R=4 (128-bit AES), and V=5/R=6 (256-bit AES) are supported.";
@@ -24,6 +27,9 @@ internal static class PdfStandardSecurityProcessor
     private static readonly byte[] AesObjectKeySalt = [0x73, 0x41, 0x6C, 0x54];
     private static readonly byte[] ZeroIv = new byte[16];
 
+    /// <summary>
+    /// Encrypts all encryptable objects and appends a new <c>/Encrypt</c> dictionary.
+    /// </summary>
     public static PdfFile Encrypt(PdfFile file, PdfSecurityOptions options)
     {
         ArgumentNullException.ThrowIfNull(file);
@@ -54,11 +60,17 @@ internal static class PdfStandardSecurityProcessor
         return new PdfFile(file.Version, objects, trailer);
     }
 
+    /// <summary>
+    /// Decrypts an encrypted PDF using a user or owner password.
+    /// </summary>
     public static PdfFile Decrypt(PdfFile file, string password)
     {
         return Decrypt(file, password, out _);
     }
 
+    /// <summary>
+    /// Decrypts an encrypted PDF and returns effective security settings resolved from the descriptor.
+    /// </summary>
     public static PdfFile Decrypt(PdfFile file, string password, out PdfSecurityOptions securityOptions)
     {
         ArgumentNullException.ThrowIfNull(file);
@@ -96,6 +108,9 @@ internal static class PdfStandardSecurityProcessor
         return new PdfFile(file.Version, decryptedObjects, trailer);
     }
 
+    /// <summary>
+    /// Tries to read high-level encryption metadata without decrypting content.
+    /// </summary>
     public static bool TryReadEncryptionInfo(PdfFile file, out PdfEncryptionInfo? info)
     {
         info = null;
@@ -114,6 +129,9 @@ internal static class PdfStandardSecurityProcessor
         return true;
     }
 
+    /// <summary>
+    /// Returns whether the file uses a Standard handler profile supported by this implementation.
+    /// </summary>
     public static bool IsSupportedStandardHandler(PdfFile file)
     {
         if (!TryReadDescriptor(file, out EncryptionDescriptor descriptor))
@@ -124,6 +142,9 @@ internal static class PdfStandardSecurityProcessor
         return IsSupportedDescriptor(descriptor);
     }
 
+    /// <summary>
+    /// Produces an encrypted object set for incremental save by rewriting only dirty/new objects.
+    /// </summary>
     public static PdfFile PrepareIncrementalEncryptedFile(
         PdfFile encryptedBaseFile,
         PdfFile decryptedCurrentFile,

@@ -7,6 +7,9 @@ using ModernPDF.Format;
 
 namespace ModernPDF.Fonts;
 
+/// <summary>
+/// Shaped glyph output emitted by the internal TrueType/OpenType pipeline.
+/// </summary>
 internal readonly record struct PdfShapedGlyph(
     int Cid,
     int Cluster,
@@ -15,6 +18,9 @@ internal readonly record struct PdfShapedGlyph(
     int XOffset,
     int YOffset);
 
+/// <summary>
+/// Internal container for an embedded font program plus glyph/metrics maps used by writer code.
+/// </summary>
 internal sealed class PdfEmbeddedTrueTypeFont
 {
     public required string BaseFontName { get; init; }
@@ -48,8 +54,14 @@ internal sealed class PdfEmbeddedTrueTypeFont
     public required int YMax { get; init; }
 }
 
+/// <summary>
+/// Parses TrueType/OpenType files and builds embedded font programs for PDF text rendering.
+/// </summary>
 internal static class PdfTrueTypeFontEmbedder
 {
+    /// <summary>
+    /// Returns whether the font can fully shape and render the supplied text.
+    /// </summary>
     public static bool CanRenderText(string fontPath, string text, PdfTextDirection direction)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fontPath);
@@ -65,6 +77,9 @@ internal static class PdfTrueTypeFontEmbedder
         return font.CanRenderText(text, direction);
     }
 
+    /// <summary>
+    /// Returns whether every code point in <paramref name="text"/> has a glyph mapping in the font cmap.
+    /// </summary>
     public static bool CanMapText(string fontPath, string text)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fontPath);
@@ -80,6 +95,9 @@ internal static class PdfTrueTypeFontEmbedder
         return font.CanMapText(text);
     }
 
+    /// <summary>
+    /// Builds an embeddable font payload and shaped run metadata for PDF content generation.
+    /// </summary>
     public static PdfEmbeddedTrueTypeFont Build(string fontPath, string text, bool subsetFont, PdfTextDirection direction)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fontPath);

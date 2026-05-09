@@ -1,7 +1,13 @@
 namespace ModernPDF;
 
+/// <summary>
+/// A 2D point used by polygon APIs.
+/// </summary>
 public readonly struct PdfShapePoint
 {
+    /// <summary>
+    /// Initializes a shape point.
+    /// </summary>
     public PdfShapePoint(double x, double y)
     {
         if (!double.IsFinite(x))
@@ -18,7 +24,9 @@ public readonly struct PdfShapePoint
         Y = y;
     }
 
+    /// <summary>X coordinate in user units.</summary>
     public double X { get; }
 
+    /// <summary>Y coordinate in user units.</summary>
     public double Y { get; }
 }
