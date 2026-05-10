@@ -65,7 +65,8 @@ internal static class PdfTextExtractor
 
         foreach (PdfStreamObject streamObject in ResolveContentStreams(page.Contents, objectMap))
         {
-            builder.Append(ExtractTextFromContentStream(streamObject.Data.Span, toUnicodeByFont));
+            byte[] decodedContent = PdfFileReader.DecodeStreamDataForExtraction(streamObject, context: "Page content stream");
+            builder.Append(ExtractTextFromContentStream(decodedContent, toUnicodeByFont));
         }
 
         return builder.ToString();
@@ -318,7 +319,10 @@ internal static class PdfTextExtractor
                 continue;
             }
 
-            maps[fontEntry.Key] = ParseToUnicodeMap(resolvedToUnicodeStream.Data.Span);
+            byte[] decodedToUnicode = PdfFileReader.DecodeStreamDataForExtraction(
+                resolvedToUnicodeStream,
+                context: $"ToUnicode stream for font /{fontEntry.Key}");
+            maps[fontEntry.Key] = ParseToUnicodeMap(decodedToUnicode);
         }
 
         return maps;

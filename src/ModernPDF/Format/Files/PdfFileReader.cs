@@ -757,6 +757,13 @@ internal static class PdfFileReader
         return data;
     }
 
+    internal static byte[] DecodeStreamDataForExtraction(PdfStreamObject streamObject, string context)
+    {
+        ArgumentNullException.ThrowIfNull(streamObject);
+        ValidateDecodeParameters(streamObject.Dictionary, context);
+        return DecodeStreamData(streamObject, context);
+    }
+
     private static byte[] DecodeFlateData(byte[] data, string context)
     {
         try
