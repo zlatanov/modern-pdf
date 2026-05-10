@@ -7,6 +7,7 @@
     <PackageVersion>$(VersionPrefix)</PackageVersion>
     <PackageVersion Condition="'$(VersionSuffix)' != ''">$(VersionPrefix)-$(VersionSuffix)</PackageVersion>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageTags>pdf;dotnet;csharp;text-extraction;redaction;digital-signatures;truetype-fonts</PackageTags>
     <RepositoryUrl>https://github.com/zlatanov/modern-pdf</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
