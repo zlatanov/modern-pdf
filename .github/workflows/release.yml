@@ -67,19 +67,19 @@ jobs:
             exit 1
           fi
           VERSION="$VERSION" python - <<'PY'
-import json
-import os
-import sys
-
-version = os.environ["VERSION"].lower()
-with open("nuget-index.json", "r", encoding="utf-8") as f:
-    data = json.load(f)
-versions = {v.lower() for v in data.get("versions", [])}
-if version in versions:
-    print(f"Version {os.environ['VERSION']} is already published on NuGet.")
-    sys.exit(1)
-print(f"Version {os.environ['VERSION']} is not published on NuGet.")
-PY
+          import json
+          import os
+          import sys
+          
+          version = os.environ["VERSION"].lower()
+          with open("nuget-index.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+          versions = {v.lower() for v in data.get("versions", [])}
+          if version in versions:
+              print(f"Version {os.environ['VERSION']} is already published on NuGet.")
+              sys.exit(1)
+          print(f"Version {os.environ['VERSION']} is not published on NuGet.")
+          PY
 
       - name: Build
         run: dotnet build ModernPDF.slnx --configuration Release
