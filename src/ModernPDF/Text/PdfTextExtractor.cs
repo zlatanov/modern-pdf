@@ -328,41 +328,152 @@ internal static class PdfTextExtractor
     {
         IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(bytes);
         Dictionary<int, string> map = [];
-        bool inBfChar = false;
 
         for (int index = 0; index < tokens.Count; index++)
         {
             PdfToken token = tokens[index];
-            if (token.Kind == PdfTokenKind.Keyword && string.Equals(token.Lexeme, "beginbfchar", StringComparison.Ordinal))
-            {
-                inBfChar = true;
-                continue;
-            }
-
-            if (token.Kind == PdfTokenKind.Keyword && string.Equals(token.Lexeme, "endbfchar", StringComparison.Ordinal))
-            {
-                inBfChar = false;
-                continue;
-            }
-
-            if (!inBfChar
-                || token.Kind != PdfTokenKind.HexString
-                || index + 1 >= tokens.Count
-                || tokens[index + 1].Kind != PdfTokenKind.HexString)
+            if (token.Kind != PdfTokenKind.Keyword)
             {
                 continue;
             }
 
-            if (!int.TryParse(token.Lexeme, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int cid))
+            if (string.Equals(token.Lexeme, "beginbfchar", StringComparison.Ordinal))
             {
+                ParseBfCharSection(tokens, map, ref index);
                 continue;
             }
 
-            map[cid] = DecodeToUnicodeHexString(tokens[index + 1].Lexeme);
-            index++;
+            if (string.Equals(token.Lexeme, "beginbfrange", StringComparison.Ordinal))
+            {
+                ParseBfRangeSection(tokens, map, ref index);
+            }
         }
 
         return map;
+    }
+
+    private static void ParseBfCharSection(IReadOnlyList<PdfToken> tokens, Dictionary<int, string> map, ref int index)
+    {
+        index++;
+        while (index < tokens.Count)
+        {
+            PdfToken token = tokens[index];
+            if (token.Kind == PdfTokenKind.Keyword && string.Equals(token.Lexeme, "endbfchar", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (token.Kind == PdfTokenKind.HexString
+                && index + 1 < tokens.Count
+                && tokens[index + 1].Kind == PdfTokenKind.HexString
+                && TryParseCid(token.Lexeme, out int cid))
+            {
+                map[cid] = DecodeToUnicodeHexString(tokens[index + 1].Lexeme);
+                index += 2;
+                continue;
+            }
+
+            index++;
+        }
+    }
+
+    private static void ParseBfRangeSection(IReadOnlyList<PdfToken> tokens, Dictionary<int, string> map, ref int index)
+    {
+        index++;
+        while (index < tokens.Count)
+        {
+            PdfToken token = tokens[index];
+            if (token.Kind == PdfTokenKind.Keyword && string.Equals(token.Lexeme, "endbfrange", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (token.Kind == PdfTokenKind.HexString
+                && index + 2 < tokens.Count
+                && tokens[index + 1].Kind == PdfTokenKind.HexString
+                && TryParseCid(token.Lexeme, out int startCid)
+                && TryParseCid(tokens[index + 1].Lexeme, out int endCid)
+                && startCid <= endCid)
+            {
+                PdfToken destination = tokens[index + 2];
+                if (destination.Kind == PdfTokenKind.HexString)
+                {
+                    AddSequentialBfRangeMappings(map, startCid, endCid, destination.Lexeme);
+                    index += 3;
+                    continue;
+                }
+
+                if (destination.Kind == PdfTokenKind.StartArray)
+                {
+                    index = ParseBfRangeArrayMappings(tokens, map, index + 3, startCid, endCid);
+                    continue;
+                }
+            }
+
+            index++;
+        }
+    }
+
+    private static int ParseBfRangeArrayMappings(
+        IReadOnlyList<PdfToken> tokens,
+        Dictionary<int, string> map,
+        int index,
+        int startCid,
+        int endCid)
+    {
+        int cid = startCid;
+        while (index < tokens.Count)
+        {
+            PdfToken token = tokens[index];
+            if (token.Kind == PdfTokenKind.EndArray)
+            {
+                return index + 1;
+            }
+
+            if (token.Kind == PdfTokenKind.HexString && cid <= endCid)
+            {
+                map[cid] = DecodeToUnicodeHexString(token.Lexeme);
+                cid++;
+            }
+
+            index++;
+        }
+
+        return index;
+    }
+
+    private static void AddSequentialBfRangeMappings(
+        Dictionary<int, string> map,
+        int startCid,
+        int endCid,
+        string destinationStartHex)
+    {
+        byte[] destinationBytes;
+        try
+        {
+            destinationBytes = Convert.FromHexString(destinationStartHex);
+        }
+        catch (FormatException)
+        {
+            return;
+        }
+
+        if (destinationBytes.Length == 0)
+        {
+            return;
+        }
+
+        byte[] current = [.. destinationBytes];
+        for (int cid = startCid; cid <= endCid; cid++)
+        {
+            map[cid] = DecodeToUnicodeBytes(current);
+            IncrementBigEndian(current);
+        }
+    }
+
+    private static bool TryParseCid(string hex, out int cid)
+    {
+        return int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out cid);
     }
 
     private static string DecodeToUnicodeHexString(string hex)
@@ -382,9 +493,28 @@ internal static class PdfTextExtractor
             return string.Empty;
         }
 
+        return DecodeToUnicodeBytes(bytes);
+    }
+
+    private static string DecodeToUnicodeBytes(ReadOnlySpan<byte> bytes)
+    {
         return (bytes.Length & 1) == 0
             ? Encoding.BigEndianUnicode.GetString(bytes)
             : Encoding.ASCII.GetString(bytes);
+    }
+
+    private static void IncrementBigEndian(byte[] bytes)
+    {
+        for (int index = bytes.Length - 1; index >= 0; index--)
+        {
+            if (bytes[index] < byte.MaxValue)
+            {
+                bytes[index]++;
+                return;
+            }
+
+            bytes[index] = 0;
+        }
     }
 
     private static bool TryGetDictionaryEntry(PdfDictionaryObject dictionary, string key, out PdfObject? value)
