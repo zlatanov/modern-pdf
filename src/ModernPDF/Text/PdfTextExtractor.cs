@@ -61,7 +61,7 @@ internal static class PdfTextExtractor
     {
         StringBuilder builder = new();
         IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont =
-            BuildToUnicodeMaps(page.Resources, objectMap);
+            BuildToUnicodeMapsForPage(page.Resources, objectMap);
 
         foreach (PdfStreamObject streamObject in ResolveContentStreams(page.Contents, objectMap))
         {
@@ -118,7 +118,7 @@ internal static class PdfTextExtractor
             ?? throw new PdfFormatException($"Referenced /Contents object {reference.ObjectId} is not a stream.");
     }
 
-    private static Dictionary<PdfObjectId, PdfIndirectObject> BuildObjectMap(IEnumerable<PdfIndirectObject> objects)
+    internal static Dictionary<PdfObjectId, PdfIndirectObject> BuildObjectMap(IEnumerable<PdfIndirectObject> objects)
     {
         Dictionary<PdfObjectId, PdfIndirectObject> map = [];
 
@@ -227,7 +227,7 @@ internal static class PdfTextExtractor
             || string.Equals(lexeme, "\"", StringComparison.Ordinal);
     }
 
-    private static bool IsTextStringToken(PdfToken token)
+    internal static bool IsTextStringToken(PdfToken token)
     {
         return token.Kind is PdfTokenKind.String or PdfTokenKind.HexString;
     }
@@ -237,7 +237,7 @@ internal static class PdfTextExtractor
         return token.Kind is PdfTokenKind.Integer or PdfTokenKind.Real;
     }
 
-    private static string DecodeTextToken(PdfToken token, IReadOnlyDictionary<int, string>? cidToUnicode)
+    internal static string DecodeTextToken(PdfToken token, IReadOnlyDictionary<int, string>? cidToUnicode)
     {
         if (token.Kind == PdfTokenKind.String)
         {
@@ -286,7 +286,7 @@ internal static class PdfTextExtractor
         return Encoding.ASCII.GetString(bytes);
     }
 
-    private static Dictionary<string, IReadOnlyDictionary<int, string>> BuildToUnicodeMaps(
+    internal static Dictionary<string, IReadOnlyDictionary<int, string>> BuildToUnicodeMapsForPage(
         PdfObject? resourcesObject,
         IReadOnlyDictionary<PdfObjectId, PdfIndirectObject> objectMap)
     {

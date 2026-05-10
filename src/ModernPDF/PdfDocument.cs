@@ -3975,31 +3975,13 @@ public sealed class PdfDocument
         PdfHardRedactionOptions effectiveOptions = options ?? new PdfHardRedactionOptions();
         ValidateHardRedactionOptions(effectiveOptions);
 
-        int replacements = RewriteTextInContentStreams(
-            static segment => (segment, 0),
-            target,
-            effectiveOptions,
-            rewriteWithLayout: null,
-            rewriteWithLayoutAndRectangles: null,
-            out List<PdfRedactionRectangle> rectangles);
-
-        if (replacements == 0 || rectangles.Count == 0)
+        IReadOnlyList<PdfTextMatch> matches = FindText(Regex.Escape(target));
+        if (matches.Count == 0)
         {
-            return replacements;
+            return 0;
         }
 
-        PdfShapeOptions boxStyle = new()
-        {
-            StrokeColor = null,
-            FillColor = effectiveOptions.FillColor,
-        };
-
-        foreach (PdfRedactionRectangle rectangle in rectangles)
-        {
-            AddPageRectangle(rectangle.PageIndex, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height, boxStyle);
-        }
-
-        return replacements;
+        return HardRedactText(matches, effectiveOptions);
     }
 
     /// <summary>
@@ -5518,6 +5500,7 @@ public sealed class PdfDocument
 
     private List<PdfTextRegion> ExtractTextRegionsCore(int? pageIndex)
     {
+        Dictionary<PdfObjectId, PdfIndirectObject> objectMap = PdfTextExtractor.BuildObjectMap(_file.Objects);
         List<PdfTextRegion> regions = [];
         int startPage = pageIndex ?? 0;
         int endPage = pageIndex is null ? _model.Pages.Count : pageIndex.Value + 1;
@@ -5525,23 +5508,30 @@ public sealed class PdfDocument
         for (int currentPageIndex = startPage; currentPageIndex < endPage; currentPageIndex++)
         {
             PdfPageModel page = _model.Pages[currentPageIndex];
+            IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont =
+                PdfTextExtractor.BuildToUnicodeMapsForPage(page.Resources, objectMap);
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
                 string content = DecodeContentStreamText(stream, $"Page content stream {streamId}");
-                regions.AddRange(ExtractTextRegionsFromStream(content, currentPageIndex, streamId));
+                regions.AddRange(ExtractTextRegionsFromStream(content, currentPageIndex, streamId, toUnicodeByFont));
             }
         }
 
         return regions;
     }
 
-    private static List<PdfTextRegion> ExtractTextRegionsFromStream(string content, int pageIndex, PdfObjectId streamId)
+    private static List<PdfTextRegion> ExtractTextRegionsFromStream(
+        string content,
+        int pageIndex,
+        PdfObjectId streamId,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
     {
         IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         List<PdfTextRegion> regions = [];
 
         bool inTextObject = false;
+        IReadOnlyDictionary<int, string>? activeToUnicode = null;
         double fontSize = 12;
         double textX = 0;
         double textY = 0;
@@ -5575,6 +5565,9 @@ public sealed class PdfDocument
                 && tokens[index + 2].Kind == PdfTokenKind.Keyword
                 && string.Equals(tokens[index + 2].Lexeme, "Tf", StringComparison.Ordinal))
             {
+                activeToUnicode = toUnicodeByFont.TryGetValue(token.Lexeme, out IReadOnlyDictionary<int, string>? map)
+                    ? map
+                    : null;
                 fontSize = Math.Abs(parsedFontSize);
                 lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
                 index += 3;
@@ -5630,12 +5623,12 @@ public sealed class PdfDocument
             }
 
             if (inTextObject
-                && token.Kind == PdfTokenKind.String
+                && PdfTextExtractor.IsTextStringToken(token)
                 && index + 1 < tokens.Count
                 && tokens[index + 1].Kind == PdfTokenKind.Keyword
                 && IsSingleStringTextOperator(tokens[index + 1].Lexeme))
             {
-                string segment = token.Lexeme;
+                string segment = PdfTextExtractor.DecodeTextToken(token, activeToUnicode);
                 if (lastShownBaselineY is double previousBaselineY)
                 {
                     double shownDelta = Math.Abs(textY - previousBaselineY);
@@ -5703,9 +5696,9 @@ public sealed class PdfDocument
                             continue;
                         }
 
-                        if (item.Kind == PdfTokenKind.String)
+                        if (PdfTextExtractor.IsTextStringToken(item))
                         {
-                            string segment = item.Lexeme;
+                            string segment = PdfTextExtractor.DecodeTextToken(item, activeToUnicode);
                             if (lastShownBaselineY is double previousBaselineY)
                             {
                                 double shownDelta = Math.Abs(textY - previousBaselineY);
@@ -5781,31 +5774,77 @@ public sealed class PdfDocument
     private static List<PdfTextMatch> BuildTextMatches(IReadOnlyList<PdfTextRegion> regions, Regex regex)
     {
         List<PdfTextMatch> matches = [];
-
-        foreach (PdfTextRegion region in regions)
+        foreach (IGrouping<int, PdfTextRegion> pageGroup in regions.GroupBy(static region => region.PageIndex))
         {
-            MatchCollection regionMatches = regex.Matches(region.Text);
-            foreach (Match match in regionMatches)
+            List<(PdfTextRegion Region, int Start, int Length)> spans = [];
+            StringBuilder pageTextBuilder = new();
+            foreach (PdfTextRegion region in pageGroup)
             {
-                if (!match.Success || match.Length == 0)
+                if (string.IsNullOrEmpty(region.Text))
                 {
                     continue;
                 }
 
-                double matchX = region.X + EstimateRedactionTextWidth(region.Text[..match.Index], region.FontSize);
-                double matchWidth = EstimateRedactionTextWidth(match.Value, region.FontSize);
-                matches.Add(new PdfTextMatch(
-                    region.PageIndex,
-                    match.Value,
-                    matchX,
-                    region.Y,
-                    matchWidth,
-                    region.Height,
-                    region.StreamObjectNumber,
-                    region.StreamObjectGeneration,
-                    region.StringTokenIndex,
-                    match.Index,
-                    match.Length));
+                int start = pageTextBuilder.Length;
+                pageTextBuilder.Append(region.Text);
+                spans.Add((region, start, region.Text.Length));
+            }
+
+            if (spans.Count == 0)
+            {
+                continue;
+            }
+
+            string pageText = pageTextBuilder.ToString();
+            MatchCollection pageMatches = regex.Matches(pageText);
+            foreach (Match pageMatch in pageMatches)
+            {
+                if (!pageMatch.Success || pageMatch.Length == 0)
+                {
+                    continue;
+                }
+
+                int matchStart = pageMatch.Index;
+                int matchEnd = checked(pageMatch.Index + pageMatch.Length);
+                foreach ((PdfTextRegion region, int regionStart, int regionLength) in spans)
+                {
+                    int regionEnd = checked(regionStart + regionLength);
+                    if (regionEnd <= matchStart)
+                    {
+                        continue;
+                    }
+
+                    if (regionStart >= matchEnd)
+                    {
+                        break;
+                    }
+
+                    int overlapStart = Math.Max(matchStart, regionStart);
+                    int overlapEnd = Math.Min(matchEnd, regionEnd);
+                    if (overlapEnd <= overlapStart)
+                    {
+                        continue;
+                    }
+
+                    int segmentStart = overlapStart - regionStart;
+                    int segmentLength = overlapEnd - overlapStart;
+                    string segmentText = region.Text.Substring(segmentStart, segmentLength);
+                    double matchX = region.X + EstimateRedactionTextWidth(region.Text[..segmentStart], region.FontSize);
+                    double matchWidth = EstimateRedactionTextWidth(segmentText, region.FontSize);
+
+                    matches.Add(new PdfTextMatch(
+                        region.PageIndex,
+                        segmentText,
+                        matchX,
+                        region.Y,
+                        matchWidth,
+                        region.Height,
+                        region.StreamObjectNumber,
+                        region.StreamObjectGeneration,
+                        region.StringTokenIndex,
+                        segmentStart,
+                        segmentLength));
+                }
             }
         }
 
@@ -5896,6 +5935,7 @@ public sealed class PdfDocument
         PdfHardRedactionOptions options,
         out List<PdfRedactionRectangle> redactionRectangles)
     {
+        Dictionary<PdfObjectId, PdfIndirectObject> objectMap = PdfTextExtractor.BuildObjectMap(_file.Objects);
         List<PdfIndirectObject> objects = [.. _file.Objects];
         HashSet<PdfObjectId> processedStreamIds = [];
         HashSet<PdfObjectId> changedStreamIds = [];
@@ -5905,6 +5945,8 @@ public sealed class PdfDocument
         for (int pageIndex = 0; pageIndex < _model.Pages.Count; pageIndex++)
         {
             PdfPageModel page = _model.Pages[pageIndex];
+            IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont =
+                PdfTextExtractor.BuildToUnicodeMapsForPage(page.Resources, objectMap);
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
@@ -5917,7 +5959,8 @@ public sealed class PdfDocument
                         pageIndex,
                         streamId,
                         rangesByAnchor,
-                        options);
+                        options,
+                        toUnicodeByFont);
                     if (duplicateRectangles.Count > 0)
                     {
                         redactionRectangles.AddRange(duplicateRectangles);
@@ -5931,7 +5974,8 @@ public sealed class PdfDocument
                     pageIndex,
                     streamId,
                     rangesByAnchor,
-                    options);
+                    options,
+                    toUnicodeByFont);
                 totalReplacements += replacements;
                 if (streamRectangles.Count > 0)
                 {
@@ -5973,7 +6017,8 @@ public sealed class PdfDocument
         int pageIndex,
         PdfObjectId streamId,
         IReadOnlyDictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> rangesByAnchor,
-        PdfHardRedactionOptions options)
+        PdfHardRedactionOptions options,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
     {
         IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         Dictionary<int, string> rawTokenOverrides = [];
@@ -5982,6 +6027,7 @@ public sealed class PdfDocument
         int replacements = 0;
 
         bool inTextObject = false;
+        IReadOnlyDictionary<int, string>? activeToUnicode = null;
         double fontSize = 12;
         double textX = 0;
         double textY = 0;
@@ -6015,6 +6061,9 @@ public sealed class PdfDocument
                 && tokens[index + 2].Kind == PdfTokenKind.Keyword
                 && string.Equals(tokens[index + 2].Lexeme, "Tf", StringComparison.Ordinal))
             {
+                activeToUnicode = toUnicodeByFont.TryGetValue(token.Lexeme, out IReadOnlyDictionary<int, string>? map)
+                    ? map
+                    : null;
                 fontSize = Math.Abs(parsedFontSize);
                 lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
                 index += 3;
@@ -6070,12 +6119,12 @@ public sealed class PdfDocument
             }
 
             if (inTextObject
-                && token.Kind == PdfTokenKind.String
+                && PdfTextExtractor.IsTextStringToken(token)
                 && index + 1 < tokens.Count
                 && tokens[index + 1].Kind == PdfTokenKind.Keyword
                 && IsSingleStringTextOperator(tokens[index + 1].Lexeme))
             {
-                string segment = token.Lexeme;
+                string segment = PdfTextExtractor.DecodeTextToken(token, activeToUnicode);
                 string textOperator = tokens[index + 1].Lexeme;
                 if (lastShownBaselineY is double previousBaselineY)
                 {
@@ -6190,9 +6239,9 @@ public sealed class PdfDocument
                             continue;
                         }
 
-                        if (item.Kind == PdfTokenKind.String)
+                        if (PdfTextExtractor.IsTextStringToken(item))
                         {
-                            string segment = item.Lexeme;
+                            string segment = PdfTextExtractor.DecodeTextToken(item, activeToUnicode);
                             if (lastShownBaselineY is double previousBaselineY)
                             {
                                 double shownDelta = Math.Abs(textY - previousBaselineY);
@@ -6358,6 +6407,7 @@ public sealed class PdfDocument
         Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles,
         out List<PdfRedactionRectangle> hardRectangles)
     {
+        Dictionary<PdfObjectId, PdfIndirectObject> objectMap = PdfTextExtractor.BuildObjectMap(_file.Objects);
         List<PdfIndirectObject> objects = [.. _file.Objects];
         HashSet<PdfObjectId> processedStreamIds = [];
         HashSet<PdfObjectId> changedStreamIds = [];
@@ -6367,6 +6417,8 @@ public sealed class PdfDocument
         for (int pageIndex = 0; pageIndex < _model.Pages.Count; pageIndex++)
         {
             PdfPageModel page = _model.Pages[pageIndex];
+            IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont =
+                PdfTextExtractor.BuildToUnicodeMapsForPage(page.Resources, objectMap);
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
@@ -6376,11 +6428,11 @@ public sealed class PdfDocument
                 {
                     if (hardTarget is not null && hardOptions is not null)
                     {
-                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget, hardOptions, rewriteWithLayoutAndRectangles: null));
+                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget, hardOptions, rewriteWithLayoutAndRectangles: null, toUnicodeByFont));
                     }
                     else if (rewriteWithLayoutAndRectangles is not null)
                     {
-                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget: null, hardOptions: null, rewriteWithLayoutAndRectangles));
+                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget: null, hardOptions: null, rewriteWithLayoutAndRectangles, toUnicodeByFont));
                     }
 
                     continue;
@@ -6393,7 +6445,8 @@ public sealed class PdfDocument
                     hardTarget,
                     hardOptions,
                     rewriteWithLayout,
-                    rewriteWithLayoutAndRectangles);
+                    rewriteWithLayoutAndRectangles,
+                    toUnicodeByFont);
 
                 totalReplacements += replacements;
                 if (rectangles.Count > 0)
@@ -6438,7 +6491,8 @@ public sealed class PdfDocument
         string? hardTarget,
         PdfHardRedactionOptions? hardOptions,
         Func<string, double, (bool Matched, string Parts, int Replacements)>? rewriteWithLayout,
-        Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles)
+        Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
     {
         IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         Dictionary<int, string> rewrittenStringTokens = [];
@@ -6448,6 +6502,7 @@ public sealed class PdfDocument
         int replacements = 0;
 
         bool inTextObject = false;
+        IReadOnlyDictionary<int, string>? activeToUnicode = null;
         double fontSize = 12;
         double textX = 0;
         double textY = 0;
@@ -6481,6 +6536,9 @@ public sealed class PdfDocument
                 && tokens[index + 2].Kind == PdfTokenKind.Keyword
                 && string.Equals(tokens[index + 2].Lexeme, "Tf", StringComparison.Ordinal))
             {
+                activeToUnicode = toUnicodeByFont.TryGetValue(token.Lexeme, out IReadOnlyDictionary<int, string>? map)
+                    ? map
+                    : null;
                 fontSize = Math.Abs(parsedFontSize);
                 lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
                 index += 3;
@@ -6536,12 +6594,13 @@ public sealed class PdfDocument
             }
 
             if (inTextObject
-                && token.Kind == PdfTokenKind.String
+                && PdfTextExtractor.IsTextStringToken(token)
                 && index + 1 < tokens.Count
                 && tokens[index + 1].Kind == PdfTokenKind.Keyword
                 && IsSingleStringTextOperator(tokens[index + 1].Lexeme))
             {
-                string segment = token.Lexeme;
+                bool supportsLiteralRewrite = token.Kind == PdfTokenKind.String;
+                string segment = PdfTextExtractor.DecodeTextToken(token, activeToUnicode);
                 string textOperator = tokens[index + 1].Lexeme;
                 if (lastShownBaselineY is double previousBaselineY)
                 {
@@ -6601,6 +6660,14 @@ public sealed class PdfDocument
                 }
                 else if (rewriteWithLayout is not null)
                 {
+                    if (!supportsLiteralRewrite)
+                    {
+                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        lastShownBaselineY = textY;
+                        index += 2;
+                        continue;
+                    }
+
                     (bool matched, string parts, int layoutReplacements) = rewriteWithLayout(segment, fontSize);
                     if (matched)
                     {
@@ -6637,6 +6704,14 @@ public sealed class PdfDocument
                 }
                 else if (rewriteWithLayoutAndRectangles is not null)
                 {
+                    if (!supportsLiteralRewrite)
+                    {
+                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        lastShownBaselineY = textY;
+                        index += 2;
+                        continue;
+                    }
+
                     (bool matched, string parts, int layoutReplacements, List<PdfRedactionRectangle> segmentRectangles) =
                         rewriteWithLayoutAndRectangles(segment, fontSize, textX, textY, effectiveLineHeight, pageIndex);
                     if (matched)
@@ -6676,6 +6751,14 @@ public sealed class PdfDocument
                         index += 2;
                         continue;
                     }
+                }
+
+                if (!supportsLiteralRewrite)
+                {
+                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                    lastShownBaselineY = textY;
+                    index += 2;
+                    continue;
                 }
 
                 (string updatedSegment, int segmentReplacements) = rewriteSegment(segment);
@@ -6740,9 +6823,10 @@ public sealed class PdfDocument
                             continue;
                         }
 
-                        if (item.Kind == PdfTokenKind.String)
+                        if (PdfTextExtractor.IsTextStringToken(item))
                         {
-                            string segment = item.Lexeme;
+                            bool supportsLiteralRewrite = item.Kind == PdfTokenKind.String;
+                            string segment = PdfTextExtractor.DecodeTextToken(item, activeToUnicode);
                             if (lastShownBaselineY is double previousBaselineY)
                             {
                                 double shownDelta = Math.Abs(textY - previousBaselineY);
@@ -6776,6 +6860,13 @@ public sealed class PdfDocument
                             }
                             else if (rewriteWithLayout is not null)
                             {
+                                if (!supportsLiteralRewrite)
+                                {
+                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    lastShownBaselineY = textY;
+                                    continue;
+                                }
+
                                 (bool matched, string parts, int layoutReplacements) = rewriteWithLayout(segment, fontSize);
                                 if (matched)
                                 {
@@ -6787,6 +6878,13 @@ public sealed class PdfDocument
                             }
                             else if (rewriteWithLayoutAndRectangles is not null)
                             {
+                                if (!supportsLiteralRewrite)
+                                {
+                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    lastShownBaselineY = textY;
+                                    continue;
+                                }
+
                                 (bool matched, string parts, int layoutReplacements, List<PdfRedactionRectangle> segmentRectangles) =
                                     rewriteWithLayoutAndRectangles(segment, fontSize, textX, textY, effectiveLineHeight, pageIndex);
                                 if (matched)
@@ -6801,6 +6899,13 @@ public sealed class PdfDocument
                                     textX += EstimateRedactionTextWidth(segment, fontSize);
                                     continue;
                                 }
+                            }
+
+                            if (!supportsLiteralRewrite)
+                            {
+                                textX += EstimateRedactionTextWidth(segment, fontSize);
+                                lastShownBaselineY = textY;
+                                continue;
                             }
 
                             (string updatedSegment, int segmentReplacements) = rewriteSegment(segment);
@@ -6842,7 +6947,8 @@ public sealed class PdfDocument
         int pageIndex,
         string? hardTarget,
         PdfHardRedactionOptions? hardOptions,
-        Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles)
+        Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
     {
         (_, _, List<PdfRedactionRectangle> rectangles) = RewriteTextOperatorsInStream(
             content,
@@ -6851,7 +6957,8 @@ public sealed class PdfDocument
             hardTarget,
             hardOptions,
             rewriteWithLayout: null,
-            rewriteWithLayoutAndRectangles: rewriteWithLayoutAndRectangles);
+            rewriteWithLayoutAndRectangles: rewriteWithLayoutAndRectangles,
+            toUnicodeByFont);
         return rectangles;
     }
 
