@@ -303,6 +303,17 @@ public sealed class PdfFileReaderTests
     }
 
     [Fact]
+    public void ReadParsesStreamObjectWithoutWhitespaceBeforeStreamKeyword()
+    {
+        byte[] bytes = CreateSingleObjectPdf("<< /Length 4 >>stream\nDATA\nendstream");
+
+        PdfFile parsed = PdfFileReader.Read(bytes);
+
+        PdfStreamObject stream = Assert.IsType<PdfStreamObject>(parsed.Objects[0].Value);
+        Assert.Equal("DATA", System.Text.Encoding.ASCII.GetString(stream.Data.Span));
+    }
+
+    [Fact]
     public void ReadMergesHistoricalXrefEntriesViaPrevChain()
     {
         byte[] bytes = CreateSparseIncrementalPdf();

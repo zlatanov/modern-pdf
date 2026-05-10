@@ -497,7 +497,16 @@ internal static class PdfFileReader
                 throw new PdfFormatException($"Invalid xref offset for object {objectNumber}.");
             }
 
-            PdfIndirectObject parsed = ParseIndirectObjectAtOffset(bytes, entry.Offset);
+            PdfIndirectObject parsed;
+            try
+            {
+                parsed = ParseIndirectObjectAtOffset(bytes, entry.Offset);
+            }
+            catch (PdfFormatException ex)
+            {
+                throw new PdfFormatException(
+                    $"Failed to parse object {objectNumber} at xref offset {entry.Offset}: {ex.Message}");
+            }
             if (parsed.ObjectId.ObjectNumber != objectNumber || parsed.ObjectId.GenerationNumber != entry.Generation)
             {
                 throw new PdfFormatException($"Object header mismatch for object {objectNumber}.");
@@ -699,7 +708,9 @@ internal static class PdfFileReader
                 return -1;
             }
 
-            bool validPrefix = match == 0 || char.IsWhiteSpace(objectTail[match - 1]);
+            bool validPrefix = match == 0
+                || char.IsWhiteSpace(objectTail[match - 1])
+                || objectTail[match - 1] == '>';
             bool validSuffix = match + "stream".Length >= objectTail.Length || char.IsWhiteSpace(objectTail[match + "stream".Length]);
             if (validPrefix && validSuffix)
             {
