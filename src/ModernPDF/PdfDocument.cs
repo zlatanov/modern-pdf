@@ -9,6 +9,7 @@ using ModernPDF.Security;
 using ModernPDF.Text;
 using System.Formats.Asn1;
 using System.Globalization;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
@@ -29,6 +30,7 @@ public sealed class PdfDocument
         "adbe.pkcs7.sha1",
         "ETSI.RFC3161",
     ];
+    private static readonly Encoding ContentStreamEncoding = Encoding.Latin1;
 
     private PdfFile _file;
     private PdfDocumentModel _model;
@@ -3568,7 +3570,7 @@ public sealed class PdfDocument
         foreach (PdfObjectId contentId in EnumerateContentStreamReferences(page.Contents))
         {
             PdfStreamObject stream = RequireStreamObject(contentId, "Page contents");
-            string contentText = Encoding.ASCII.GetString(stream.Data.Span);
+            string contentText = DecodeContentStreamText(stream, $"Page content stream {contentId}");
             foreach (string shapeId in EnumerateShapeMarkers(contentText))
             {
                 if (seen.Add(shapeId))
@@ -5005,7 +5007,7 @@ public sealed class PdfDocument
         foreach (PdfObjectId contentId in EnumerateContentStreamReferences(page.Contents))
         {
             PdfStreamObject stream = RequireStreamObject(contentId, "Page contents");
-            string contentText = Encoding.ASCII.GetString(stream.Data.Span);
+            string contentText = DecodeContentStreamText(stream, $"Page content stream {contentId}");
             if (contentText.Contains($"%MP_SHAPE_BEGIN:{shapeId}", StringComparison.Ordinal))
             {
                 return contentId;
@@ -5446,6 +5448,74 @@ public sealed class PdfDocument
         return count;
     }
 
+    private static string DecodeContentStreamText(PdfStreamObject streamObject, string context)
+    {
+        byte[] decodedContent = PdfFileReader.DecodeStreamDataForExtraction(streamObject, context);
+        return ContentStreamEncoding.GetString(decodedContent);
+    }
+
+    private static ReadOnlyMemory<byte> EncodeContentStreamText(PdfStreamObject streamObject, string content, string context)
+    {
+        byte[] encodedContent = ContentStreamEncoding.GetBytes(content);
+        List<string> filters = GetContentStreamFilterNames(streamObject.Dictionary);
+        for (int index = filters.Count - 1; index >= 0; index--)
+        {
+            string filter = filters[index];
+            if (string.Equals(filter, "FlateDecode", StringComparison.Ordinal)
+                || string.Equals(filter, "Fl", StringComparison.Ordinal))
+            {
+                encodedContent = EncodeFlateData(encodedContent);
+                continue;
+            }
+
+            throw new PdfFormatException($"Unsupported stream filter '/{filter}' in {context}.");
+        }
+
+        return encodedContent;
+    }
+
+    private static List<string> GetContentStreamFilterNames(PdfDictionaryObject dictionary)
+    {
+        if (!TryGetDictionaryEntry(dictionary, "Filter", out PdfObject? filterObject))
+        {
+            return [];
+        }
+
+        switch (filterObject)
+        {
+            case PdfNameObject filterName:
+                return [filterName.Value];
+            case PdfArrayObject filterArray:
+            {
+                List<string> names = [];
+                foreach (PdfObject item in filterArray.Items)
+                {
+                    if (item is not PdfNameObject nameObject)
+                    {
+                        throw new PdfFormatException("Stream '/Filter' array entries must be names.");
+                    }
+
+                    names.Add(nameObject.Value);
+                }
+
+                return names;
+            }
+            default:
+                throw new PdfFormatException("Stream '/Filter' must be a name or an array of names.");
+        }
+    }
+
+    private static byte[] EncodeFlateData(byte[] data)
+    {
+        using MemoryStream output = new();
+        using (ZLibStream stream = new(output, CompressionLevel.SmallestSize, leaveOpen: true))
+        {
+            stream.Write(data, 0, data.Length);
+        }
+
+        return output.ToArray();
+    }
+
     private List<PdfTextRegion> ExtractTextRegionsCore(int? pageIndex)
     {
         List<PdfTextRegion> regions = [];
@@ -5458,7 +5528,7 @@ public sealed class PdfDocument
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
-                string content = Encoding.ASCII.GetString(stream.Data.Span);
+                string content = DecodeContentStreamText(stream, $"Page content stream {streamId}");
                 regions.AddRange(ExtractTextRegionsFromStream(content, currentPageIndex, streamId));
             }
         }
@@ -5468,7 +5538,7 @@ public sealed class PdfDocument
 
     private static List<PdfTextRegion> ExtractTextRegionsFromStream(string content, int pageIndex, PdfObjectId streamId)
     {
-        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(Encoding.ASCII.GetBytes(content));
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         List<PdfTextRegion> regions = [];
 
         bool inTextObject = false;
@@ -5838,7 +5908,7 @@ public sealed class PdfDocument
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
-                string content = Encoding.ASCII.GetString(stream.Data.Span);
+                string content = DecodeContentStreamText(stream, $"Page content stream {streamId}");
 
                 if (!processedStreamIds.Add(streamId))
                 {
@@ -5870,7 +5940,7 @@ public sealed class PdfDocument
 
                 if (!string.Equals(updatedContent, content, StringComparison.Ordinal))
                 {
-                    ReplaceObject(objects, streamId, new PdfStreamObject(stream.Dictionary, Encoding.ASCII.GetBytes(updatedContent)));
+                    ReplaceObject(objects, streamId, new PdfStreamObject(stream.Dictionary, EncodeContentStreamText(stream, updatedContent, $"Page content stream {streamId}")));
                     changedStreamIds.Add(streamId);
                 }
             }
@@ -5905,7 +5975,7 @@ public sealed class PdfDocument
         IReadOnlyDictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> rangesByAnchor,
         PdfHardRedactionOptions options)
     {
-        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(Encoding.ASCII.GetBytes(content));
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         Dictionary<int, string> rawTokenOverrides = [];
         HashSet<int> removedTokenIndices = [];
         List<PdfRedactionRectangle> rectangles = [];
@@ -6300,7 +6370,7 @@ public sealed class PdfDocument
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
-                string content = Encoding.ASCII.GetString(stream.Data.Span);
+                string content = DecodeContentStreamText(stream, $"Page content stream {streamId}");
 
                 if (!processedStreamIds.Add(streamId))
                 {
@@ -6333,7 +6403,7 @@ public sealed class PdfDocument
 
                 if (!string.Equals(updatedContent, content, StringComparison.Ordinal))
                 {
-                    ReplaceObject(objects, streamId, new PdfStreamObject(stream.Dictionary, Encoding.ASCII.GetBytes(updatedContent)));
+                    ReplaceObject(objects, streamId, new PdfStreamObject(stream.Dictionary, EncodeContentStreamText(stream, updatedContent, $"Page content stream {streamId}")));
                     changedStreamIds.Add(streamId);
                 }
             }
@@ -6370,7 +6440,7 @@ public sealed class PdfDocument
         Func<string, double, (bool Matched, string Parts, int Replacements)>? rewriteWithLayout,
         Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles)
     {
-        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(Encoding.ASCII.GetBytes(content));
+        IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         Dictionary<int, string> rewrittenStringTokens = [];
         Dictionary<int, string> rawTokenOverrides = [];
         HashSet<int> removedTokenIndices = [];
