@@ -3999,13 +3999,18 @@ public sealed class PdfDocument
         PdfHardRedactionOptions effectiveOptions = options ?? new PdfHardRedactionOptions();
         ValidateHardRedactionOptions(effectiveOptions);
 
-        IReadOnlyList<PdfTextMatch> matches = FindText(Regex.Escape(target));
+        Regex regex = new(Regex.Escape(target));
+        (List<PdfTextMatch> matches, List<PdfTextMatchGroup> groups) = BuildTextMatchesWithGroups(ExtractTextRegionsCore(pageIndex: null), regex);
         if (matches.Count == 0)
         {
             return 0;
         }
 
-        return HardRedactText(matches, effectiveOptions);
+        List<PdfRedactionRectangle>? whitespaceCoverage = ContainsWhitespace(target)
+            ? BuildPhraseCoverageRectangles(groups, effectiveOptions)
+            : null;
+
+        return HardRedactTextCore(matches, effectiveOptions, whitespaceCoverage);
     }
 
     /// <summary>
@@ -4022,6 +4027,17 @@ public sealed class PdfDocument
             return 0;
         }
 
+        return HardRedactTextCore(matches, effectiveOptions, extraRectangles: null);
+    }
+
+    private int HardRedactTextCore(
+        IReadOnlyList<PdfTextMatch> matches,
+        PdfHardRedactionOptions options,
+        IReadOnlyList<PdfRedactionRectangle>? extraRectangles)
+    {
+        ArgumentNullException.ThrowIfNull(matches);
+        ArgumentNullException.ThrowIfNull(options);
+
         Dictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> rangesByAnchor = BuildRedactionRangesByAnchor(matches);
         if (rangesByAnchor.Count == 0)
         {
@@ -4030,8 +4046,13 @@ public sealed class PdfDocument
 
         int replacements = RewriteAnchoredHardRedactionsInContentStreams(
             rangesByAnchor,
-            effectiveOptions,
+            options,
             out List<PdfRedactionRectangle> rectangles);
+        if (extraRectangles is not null && extraRectangles.Count > 0)
+        {
+            rectangles.AddRange(extraRectangles);
+        }
+
         if (replacements == 0 || rectangles.Count == 0)
         {
             return replacements;
@@ -4041,7 +4062,7 @@ public sealed class PdfDocument
         PdfShapeOptions boxStyle = new()
         {
             StrokeColor = null,
-            FillColor = effectiveOptions.FillColor,
+            FillColor = options.FillColor,
         };
 
         foreach (PdfRedactionRectangle rectangle in mergedRectangles)
@@ -6135,9 +6156,20 @@ public sealed class PdfDocument
             fontSize));
     }
 
+    private readonly record struct PdfTextMatchGroup(int PageIndex, List<PdfTextMatch> Segments);
+
     private static List<PdfTextMatch> BuildTextMatches(IReadOnlyList<PdfTextRegion> regions, Regex regex)
     {
+        (List<PdfTextMatch> matches, _) = BuildTextMatchesWithGroups(regions, regex);
+        return matches;
+    }
+
+    private static (List<PdfTextMatch> Matches, List<PdfTextMatchGroup> Groups) BuildTextMatchesWithGroups(
+        IReadOnlyList<PdfTextRegion> regions,
+        Regex regex)
+    {
         List<PdfTextMatch> matches = [];
+        List<PdfTextMatchGroup> groups = [];
         foreach (IGrouping<int, PdfTextRegion> pageGroup in regions.GroupBy(static region => region.PageIndex))
         {
             List<(PdfTextRegion Region, int Start, int Length)> spans = [];
@@ -6170,6 +6202,7 @@ public sealed class PdfDocument
 
                 int matchStart = pageMatch.Index;
                 int matchEnd = checked(pageMatch.Index + pageMatch.Length);
+                List<PdfTextMatch> groupSegments = [];
                 foreach ((PdfTextRegion region, int regionStart, int regionLength) in spans)
                 {
                     int regionEnd = checked(regionStart + regionLength);
@@ -6196,7 +6229,7 @@ public sealed class PdfDocument
                     double matchX = region.X + EstimateRedactionTextWidth(region.Text[..segmentStart], region.FontSize);
                     double matchWidth = EstimateRedactionTextWidth(segmentText, region.FontSize);
 
-                    matches.Add(new PdfTextMatch(
+                    PdfTextMatch match = new(
                         region.PageIndex,
                         segmentText,
                         matchX,
@@ -6207,12 +6240,19 @@ public sealed class PdfDocument
                         region.StreamObjectGeneration,
                         region.StringTokenIndex,
                         segmentStart,
-                        segmentLength));
+                        segmentLength);
+                    matches.Add(match);
+                    groupSegments.Add(match);
+                }
+
+                if (groupSegments.Count > 0)
+                {
+                    groups.Add(new PdfTextMatchGroup(pageGroup.Key, groupSegments));
                 }
             }
         }
 
-        return matches;
+        return (matches, groups);
     }
 
     private Dictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> BuildRedactionRangesByAnchor(IReadOnlyList<PdfTextMatch> matches)
@@ -6292,6 +6332,96 @@ public sealed class PdfDocument
         }
 
         return rangesByAnchor;
+    }
+
+    private static List<PdfRedactionRectangle> BuildPhraseCoverageRectangles(
+        IReadOnlyList<PdfTextMatchGroup> groups,
+        PdfHardRedactionOptions options)
+    {
+        List<PdfRedactionRectangle> rectangles = [];
+        foreach (PdfTextMatchGroup group in groups)
+        {
+            if (group.Segments.Count == 0)
+            {
+                continue;
+            }
+
+            List<PdfTextMatch> orderedSegments = [.. group.Segments
+                .Where(static segment => segment.Width > 0 && segment.Height > 0)
+                .OrderBy(static segment => segment.Y)
+                .ThenBy(static segment => segment.X)];
+            if (orderedSegments.Count == 0)
+            {
+                continue;
+            }
+
+            double lineTolerance = Math.Max(0.5, orderedSegments.Max(static segment => segment.Height) * 0.35);
+            List<PdfTextMatch> currentLine = [];
+            double currentLineCenterY = 0;
+
+            void FlushCurrentLine()
+            {
+                if (currentLine.Count == 0)
+                {
+                    return;
+                }
+
+                double minX = currentLine.Min(static segment => segment.X);
+                double maxX = currentLine.Max(static segment => segment.X + segment.Width);
+                double minY = currentLine.Min(static segment => segment.Y);
+                double maxY = currentLine.Max(static segment => segment.Y + segment.Height);
+
+                double x = minX - options.HorizontalPadding;
+                double y = minY - options.VerticalPadding;
+                double width = (maxX - minX) + (options.HorizontalPadding * 2);
+                double height = (maxY - minY) + (options.VerticalPadding * 2);
+                if (width > 0 && height > 0)
+                {
+                    rectangles.Add(new PdfRedactionRectangle(group.PageIndex, x, y, width, height));
+                }
+
+                currentLine.Clear();
+            }
+
+            foreach (PdfTextMatch segment in orderedSegments)
+            {
+                double segmentCenterY = segment.Y + (segment.Height / 2);
+                if (currentLine.Count == 0)
+                {
+                    currentLine.Add(segment);
+                    currentLineCenterY = segmentCenterY;
+                    continue;
+                }
+
+                if (Math.Abs(segmentCenterY - currentLineCenterY) > lineTolerance)
+                {
+                    FlushCurrentLine();
+                    currentLine.Add(segment);
+                    currentLineCenterY = segmentCenterY;
+                    continue;
+                }
+
+                currentLine.Add(segment);
+                currentLineCenterY = ((currentLineCenterY * (currentLine.Count - 1)) + segmentCenterY) / currentLine.Count;
+            }
+
+            FlushCurrentLine();
+        }
+
+        return rectangles;
+    }
+
+    private static bool ContainsWhitespace(string value)
+    {
+        foreach (char character in value)
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private int RewriteAnchoredHardRedactionsInContentStreams(

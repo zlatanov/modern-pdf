@@ -110,6 +110,23 @@ public sealed class PdfDocumentFindTextToUnicodeTests
         Assert.InRange(maxRectWidth, 21.0, 22.2);
     }
 
+    [Fact]
+    public void HardRedactTextForMultiWordTargetCoversInterWordGap()
+    {
+        const string phrase = "Alpha Beta";
+        byte[] pdf = CreateLiteralWordGapPdf();
+        PdfDocument document = PdfDocument.Open(pdf);
+
+        int replacements = document.HardRedactText(phrase);
+        byte[] saved = document.Save();
+        string ascii = Encoding.ASCII.GetString(saved);
+        string extracted = PdfDocument.Open(saved).ExtractText();
+
+        Assert.True(replacements > 0);
+        Assert.Equal(1, CountOccurrences(ascii, " re "));
+        Assert.DoesNotContain(phrase, extracted, StringComparison.Ordinal);
+    }
+
     private static byte[] CreateHexEncodedToUnicodePdf(string name, string identifier)
     {
         Dictionary<char, int> cidByCharacter = [];
@@ -333,6 +350,39 @@ public sealed class PdfDocumentFindTextToUnicodeTests
         }
 
         AppendAscii(stream, "trailer\n<< /Size 8 /Root 1 0 R >>\n");
+        AppendAscii(stream, $"startxref\n{xrefOffset}\n%%EOF");
+        return stream.ToArray();
+    }
+
+    private static byte[] CreateLiteralWordGapPdf()
+    {
+        const string first = "Alpha ";
+        const string second = "Beta";
+        string content = $"BT /F1 12 Tf 72 720 Td ({first}) Tj 120 0 Td ({second}) Tj ET";
+
+        using MemoryStream stream = new();
+        List<long> objectOffsets = [];
+
+        AppendAscii(stream, "%PDF-1.4\n");
+        objectOffsets.Add(stream.Position);
+        AppendAscii(stream, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        objectOffsets.Add(stream.Position);
+        AppendAscii(stream, "2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n");
+        objectOffsets.Add(stream.Position);
+        AppendAscii(stream, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 500 300] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n");
+        objectOffsets.Add(stream.Position);
+        AppendAscii(stream, "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n");
+        objectOffsets.Add(stream.Position);
+        AppendAscii(stream, $"5 0 obj\n<< /Length {content.Length} >>\nstream\n{content}\nendstream\nendobj\n");
+
+        long xrefOffset = stream.Position;
+        AppendAscii(stream, "xref\n0 6\n0000000000 65535 f \n");
+        foreach (long objectOffset in objectOffsets)
+        {
+            AppendAscii(stream, $"{objectOffset:D10} 00000 n \n");
+        }
+
+        AppendAscii(stream, "trailer\n<< /Size 6 /Root 1 0 R >>\n");
         AppendAscii(stream, $"startxref\n{xrefOffset}\n%%EOF");
         return stream.ToArray();
     }
