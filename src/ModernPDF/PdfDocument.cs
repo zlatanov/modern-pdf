@@ -32,6 +32,29 @@ public sealed class PdfDocument
     ];
     private static readonly Encoding ContentStreamEncoding = Encoding.Latin1;
 
+    private sealed class PdfFontGlyphWidths
+    {
+        private readonly IReadOnlyDictionary<int, double> _glyphWidths;
+
+        public PdfFontGlyphWidths(bool isComposite, IReadOnlyDictionary<int, double> glyphWidths, double defaultWidthUnits)
+        {
+            IsComposite = isComposite;
+            _glyphWidths = glyphWidths;
+            DefaultWidthUnits = defaultWidthUnits;
+        }
+
+        public bool IsComposite { get; }
+
+        public double DefaultWidthUnits { get; }
+
+        public double GetGlyphWidthUnits(int characterCode)
+        {
+            return _glyphWidths.TryGetValue(characterCode, out double width)
+                ? width
+                : DefaultWidthUnits;
+        }
+    }
+
     private PdfFile _file;
     private PdfDocumentModel _model;
     private PdfTextOptions _defaultTextOptions = new();
@@ -3948,13 +3971,14 @@ public sealed class PdfDocument
             return replacements;
         }
 
+        List<PdfRedactionRectangle> mergedRectangles = MergeRedactionRectangles(rectangles);
         PdfShapeOptions boxStyle = new()
         {
             StrokeColor = null,
             FillColor = effectiveOptions.FillColor,
         };
 
-        foreach (PdfRedactionRectangle rectangle in rectangles)
+        foreach (PdfRedactionRectangle rectangle in mergedRectangles)
         {
             AddPageRectangle(rectangle.PageIndex, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height, boxStyle);
         }
@@ -4013,13 +4037,14 @@ public sealed class PdfDocument
             return replacements;
         }
 
+        List<PdfRedactionRectangle> mergedRectangles = MergeRedactionRectangles(rectangles);
         PdfShapeOptions boxStyle = new()
         {
             StrokeColor = null,
             FillColor = effectiveOptions.FillColor,
         };
 
-        foreach (PdfRedactionRectangle rectangle in rectangles)
+        foreach (PdfRedactionRectangle rectangle in mergedRectangles)
         {
             AddPageRectangle(rectangle.PageIndex, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height, boxStyle);
         }
@@ -5379,6 +5404,275 @@ public sealed class PdfDocument
         return false;
     }
 
+    private static Dictionary<string, PdfFontGlyphWidths> BuildFontWidthMapsForPage(
+        PdfObject? resourcesObject,
+        IReadOnlyDictionary<PdfObjectId, PdfIndirectObject> objectMap)
+    {
+        if (!TryResolveDictionaryFromMap(resourcesObject, objectMap, out PdfDictionaryObject? resolvedResources)
+            || resolvedResources is null)
+        {
+            return new Dictionary<string, PdfFontGlyphWidths>(StringComparer.Ordinal);
+        }
+
+        if (!TryGetDictionaryEntry(resolvedResources, "Font", out PdfObject? fontObject)
+            || !TryResolveDictionaryFromMap(fontObject, objectMap, out PdfDictionaryObject? resolvedFonts)
+            || resolvedFonts is null)
+        {
+            return new Dictionary<string, PdfFontGlyphWidths>(StringComparer.Ordinal);
+        }
+
+        Dictionary<string, PdfFontGlyphWidths> maps = new(StringComparer.Ordinal);
+        foreach (PdfDictionaryEntry fontEntry in resolvedFonts.Entries)
+        {
+            if (!TryResolveDictionaryFromMap(fontEntry.Value, objectMap, out PdfDictionaryObject? resolvedFontDictionary)
+                || resolvedFontDictionary is null)
+            {
+                continue;
+            }
+
+            if (TryCreateFontGlyphWidths(resolvedFontDictionary, objectMap, out PdfFontGlyphWidths? widths))
+            {
+                maps[fontEntry.Key] = widths;
+            }
+        }
+
+        return maps;
+    }
+
+    private static bool TryCreateFontGlyphWidths(
+        PdfDictionaryObject fontDictionary,
+        IReadOnlyDictionary<PdfObjectId, PdfIndirectObject> objectMap,
+        out PdfFontGlyphWidths widths)
+    {
+        widths = null!;
+        if (!TryGetDictionaryEntry(fontDictionary, "Subtype", out PdfObject? subtypeObject)
+            || subtypeObject is not PdfNameObject subtypeName)
+        {
+            return false;
+        }
+
+        string subtype = subtypeName.Value;
+        if (string.Equals(subtype, "Type0", StringComparison.Ordinal))
+        {
+            if (!TryGetDictionaryEntry(fontDictionary, "DescendantFonts", out PdfObject? descendantFontsObject)
+                || !TryResolveArrayFromMap(descendantFontsObject, objectMap, out PdfArrayObject? descendantFontsArray)
+                || descendantFontsArray is null
+                || descendantFontsArray.Items.Count == 0
+                || !TryResolveDictionaryFromMap(descendantFontsArray.Items[0], objectMap, out PdfDictionaryObject? descendantFont)
+                || descendantFont is null)
+            {
+                return false;
+            }
+
+            double defaultWidth = 1000;
+            if (TryGetDictionaryEntry(descendantFont, "DW", out PdfObject? defaultWidthObject)
+                && defaultWidthObject is not null
+                && TryReadNumber(defaultWidthObject, out double parsedDefaultWidth))
+            {
+                defaultWidth = parsedDefaultWidth;
+            }
+
+            Dictionary<int, double> glyphWidths = [];
+            if (TryGetDictionaryEntry(descendantFont, "W", out PdfObject? widthsObject)
+                && TryResolveArrayFromMap(widthsObject, objectMap, out PdfArrayObject? widthsArray)
+                && widthsArray is not null)
+            {
+                ParseCidWidthArray(widthsArray, objectMap, glyphWidths);
+            }
+
+            widths = new PdfFontGlyphWidths(isComposite: true, glyphWidths, defaultWidth);
+            return true;
+        }
+
+        if (string.Equals(subtype, "Type1", StringComparison.Ordinal)
+            || string.Equals(subtype, "TrueType", StringComparison.Ordinal)
+            || string.Equals(subtype, "MMType1", StringComparison.Ordinal))
+        {
+            if (!TryGetDictionaryEntry(fontDictionary, "FirstChar", out PdfObject? firstCharObject)
+                || firstCharObject is null
+                || !TryReadInteger(firstCharObject, out int firstChar))
+            {
+                return false;
+            }
+
+            if (!TryGetDictionaryEntry(fontDictionary, "Widths", out PdfObject? widthsObject)
+                || !TryResolveArrayFromMap(widthsObject, objectMap, out PdfArrayObject? widthsArray)
+                || widthsArray is null)
+            {
+                return false;
+            }
+
+            double defaultWidth = 0;
+            if (TryGetDictionaryEntry(fontDictionary, "FontDescriptor", out PdfObject? descriptorObject)
+                && TryResolveDictionaryFromMap(descriptorObject, objectMap, out PdfDictionaryObject? descriptorDictionary)
+                && descriptorDictionary is not null
+                && TryGetDictionaryEntry(descriptorDictionary, "MissingWidth", out PdfObject? missingWidthObject)
+                && missingWidthObject is not null
+                && TryReadNumber(missingWidthObject, out double missingWidth))
+            {
+                defaultWidth = missingWidth;
+            }
+
+            Dictionary<int, double> glyphWidths = [];
+            for (int index = 0; index < widthsArray.Items.Count; index++)
+            {
+                if (!TryReadNumber(widthsArray.Items[index], out double width))
+                {
+                    continue;
+                }
+
+                glyphWidths[firstChar + index] = width;
+            }
+
+            widths = new PdfFontGlyphWidths(isComposite: false, glyphWidths, defaultWidth);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void ParseCidWidthArray(
+        PdfArrayObject widthsArray,
+        IReadOnlyDictionary<PdfObjectId, PdfIndirectObject> objectMap,
+        Dictionary<int, double> glyphWidths)
+    {
+        int index = 0;
+        while (index < widthsArray.Items.Count)
+        {
+            if (!TryReadInteger(widthsArray.Items[index], out int startCid))
+            {
+                index++;
+                continue;
+            }
+
+            index++;
+            if (index >= widthsArray.Items.Count)
+            {
+                break;
+            }
+
+            if (TryResolveArrayFromMap(widthsArray.Items[index], objectMap, out PdfArrayObject? contiguousWidths)
+                && contiguousWidths is not null)
+            {
+                for (int widthIndex = 0; widthIndex < contiguousWidths.Items.Count; widthIndex++)
+                {
+                    if (TryReadNumber(contiguousWidths.Items[widthIndex], out double width))
+                    {
+                        glyphWidths[startCid + widthIndex] = width;
+                    }
+                }
+
+                index++;
+                continue;
+            }
+
+            if (TryReadInteger(widthsArray.Items[index], out int endCid)
+                && index + 1 < widthsArray.Items.Count
+                && TryReadNumber(widthsArray.Items[index + 1], out double rangeWidth))
+            {
+                for (int cid = startCid; cid <= endCid; cid++)
+                {
+                    glyphWidths[cid] = rangeWidth;
+                }
+
+                index += 2;
+                continue;
+            }
+
+            index++;
+        }
+    }
+
+    private static bool TryReadNumber(PdfObject value, out double number)
+    {
+        if (value is PdfNumberObject numberObject)
+        {
+            number = numberObject.Value;
+            return true;
+        }
+
+        number = 0;
+        return false;
+    }
+
+    private static bool TryReadInteger(PdfObject value, out int integer)
+    {
+        integer = 0;
+        if (!TryReadNumber(value, out double number))
+        {
+            return false;
+        }
+
+        if (!double.IsFinite(number))
+        {
+            return false;
+        }
+
+        if (number < int.MinValue || number > int.MaxValue)
+        {
+            return false;
+        }
+
+        integer = (int)Math.Round(number, MidpointRounding.AwayFromZero);
+        return true;
+    }
+
+    private static bool TryResolveObjectFromMap(
+        PdfObject? source,
+        IReadOnlyDictionary<PdfObjectId, PdfIndirectObject> objectMap,
+        out PdfObject? resolved)
+    {
+        resolved = source;
+        if (resolved is null)
+        {
+            return false;
+        }
+
+        HashSet<PdfObjectId> visited = [];
+        while (resolved is PdfReferenceObject reference)
+        {
+            if (!visited.Add(reference.ObjectId) || !objectMap.TryGetValue(reference.ObjectId, out PdfIndirectObject? indirectObject))
+            {
+                resolved = null;
+                return false;
+            }
+
+            resolved = indirectObject.Value;
+        }
+
+        return true;
+    }
+
+    private static bool TryResolveDictionaryFromMap(
+        PdfObject? source,
+        IReadOnlyDictionary<PdfObjectId, PdfIndirectObject> objectMap,
+        out PdfDictionaryObject? dictionary)
+    {
+        dictionary = null;
+        if (!TryResolveObjectFromMap(source, objectMap, out PdfObject? resolved))
+        {
+            return false;
+        }
+
+        dictionary = resolved as PdfDictionaryObject;
+        return dictionary is not null;
+    }
+
+    private static bool TryResolveArrayFromMap(
+        PdfObject? source,
+        IReadOnlyDictionary<PdfObjectId, PdfIndirectObject> objectMap,
+        out PdfArrayObject? array)
+    {
+        array = null;
+        if (!TryResolveObjectFromMap(source, objectMap, out PdfObject? resolved))
+        {
+            return false;
+        }
+
+        array = resolved as PdfArrayObject;
+        return array is not null;
+    }
+
     private static IEnumerable<PdfObjectId> EnumerateContentStreamReferences(PdfObject? contents)
     {
         if (contents is null)
@@ -5510,11 +5804,13 @@ public sealed class PdfDocument
             PdfPageModel page = _model.Pages[currentPageIndex];
             IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont =
                 PdfTextExtractor.BuildToUnicodeMapsForPage(page.Resources, objectMap);
+            IReadOnlyDictionary<string, PdfFontGlyphWidths> fontWidthsByFont =
+                BuildFontWidthMapsForPage(page.Resources, objectMap);
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
                 string content = DecodeContentStreamText(stream, $"Page content stream {streamId}");
-                regions.AddRange(ExtractTextRegionsFromStream(content, currentPageIndex, streamId, toUnicodeByFont));
+                regions.AddRange(ExtractTextRegionsFromStream(content, currentPageIndex, streamId, toUnicodeByFont, fontWidthsByFont));
             }
         }
 
@@ -5525,16 +5821,21 @@ public sealed class PdfDocument
         string content,
         int pageIndex,
         PdfObjectId streamId,
-        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont,
+        IReadOnlyDictionary<string, PdfFontGlyphWidths> fontWidthsByFont)
     {
         IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         List<PdfTextRegion> regions = [];
 
         bool inTextObject = false;
         IReadOnlyDictionary<int, string>? activeToUnicode = null;
+        PdfFontGlyphWidths? activeFontWidths = null;
         double fontSize = 12;
         double textX = 0;
         double textY = 0;
+        double characterSpacing = 0;
+        double wordSpacing = 0;
+        double horizontalScale = 100;
         double lineHeightEstimate = fontSize * 1.2;
         double? lastShownBaselineY = null;
         int index = 0;
@@ -5549,12 +5850,54 @@ public sealed class PdfDocument
                     inTextObject = true;
                     textX = 0;
                     textY = 0;
+                    characterSpacing = 0;
+                    wordSpacing = 0;
+                    horizontalScale = 100;
                     lineHeightEstimate = fontSize * 1.2;
                     lastShownBaselineY = null;
                 }
                 else if (string.Equals(token.Lexeme, "ET", StringComparison.Ordinal))
                 {
                     inTextObject = false;
+                }
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 1 < tokens.Count
+                && tokens[index + 1].Kind == PdfTokenKind.Keyword)
+            {
+                if (string.Equals(tokens[index + 1].Lexeme, "Tc", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedCharacterSpacing))
+                    {
+                        characterSpacing = parsedCharacterSpacing;
+                    }
+
+                    index += 2;
+                    continue;
+                }
+
+                if (string.Equals(tokens[index + 1].Lexeme, "Tw", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedWordSpacing))
+                    {
+                        wordSpacing = parsedWordSpacing;
+                    }
+
+                    index += 2;
+                    continue;
+                }
+
+                if (string.Equals(tokens[index + 1].Lexeme, "Tz", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedHorizontalScale) && double.IsFinite(parsedHorizontalScale))
+                    {
+                        horizontalScale = parsedHorizontalScale;
+                    }
+
+                    index += 2;
+                    continue;
                 }
             }
 
@@ -5567,6 +5910,9 @@ public sealed class PdfDocument
             {
                 activeToUnicode = toUnicodeByFont.TryGetValue(token.Lexeme, out IReadOnlyDictionary<int, string>? map)
                     ? map
+                    : null;
+                activeFontWidths = fontWidthsByFont.TryGetValue(token.Lexeme, out PdfFontGlyphWidths? widths)
+                    ? widths
                     : null;
                 fontSize = Math.Abs(parsedFontSize);
                 lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
@@ -5639,8 +5985,17 @@ public sealed class PdfDocument
                 }
 
                 double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
-                AddTextRegion(regions, pageIndex, segment, textX, textY, fontSize, effectiveLineHeight, streamId, index);
-                textX += EstimateRedactionTextWidth(segment, fontSize);
+                double segmentWidth = MeasureTokenTextWidth(
+                    token,
+                    segment,
+                    activeToUnicode,
+                    activeFontWidths,
+                    fontSize,
+                    characterSpacing,
+                    wordSpacing,
+                    horizontalScale);
+                AddTextRegion(regions, pageIndex, segment, textX, textY, segmentWidth, fontSize, effectiveLineHeight, streamId, index);
+                textX += segmentWidth;
                 lastShownBaselineY = textY;
                 index += 2;
                 continue;
@@ -5709,13 +6064,22 @@ public sealed class PdfDocument
                             }
 
                             double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
-                            AddTextRegion(regions, pageIndex, segment, textX, textY, fontSize, effectiveLineHeight, streamId, itemIndex);
-                            textX += EstimateRedactionTextWidth(segment, fontSize);
+                            double segmentWidth = MeasureTokenTextWidth(
+                                item,
+                                segment,
+                                activeToUnicode,
+                                activeFontWidths,
+                                fontSize,
+                                characterSpacing,
+                                wordSpacing,
+                                horizontalScale);
+                            AddTextRegion(regions, pageIndex, segment, textX, textY, segmentWidth, fontSize, effectiveLineHeight, streamId, itemIndex);
+                            textX += segmentWidth;
                             lastShownBaselineY = textY;
                         }
                         else if (IsNumberToken(item) && TryParseTokenDouble(item, out double adjustment))
                         {
-                            textX -= adjustment * fontSize / 1000.0;
+                            textX -= ResolveTjAdjustmentWidth(adjustment, fontSize, horizontalScale);
                         }
                     }
 
@@ -5736,6 +6100,7 @@ public sealed class PdfDocument
         string segment,
         double textX,
         double textY,
+        double width,
         double fontSize,
         double lineHeight,
         PdfObjectId streamId,
@@ -5746,7 +6111,6 @@ public sealed class PdfDocument
             return;
         }
 
-        double width = EstimateRedactionTextWidth(segment, fontSize);
         if (width <= 0)
         {
             return;
@@ -5947,6 +6311,8 @@ public sealed class PdfDocument
             PdfPageModel page = _model.Pages[pageIndex];
             IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont =
                 PdfTextExtractor.BuildToUnicodeMapsForPage(page.Resources, objectMap);
+            IReadOnlyDictionary<string, PdfFontGlyphWidths> fontWidthsByFont =
+                BuildFontWidthMapsForPage(page.Resources, objectMap);
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
@@ -5960,7 +6326,8 @@ public sealed class PdfDocument
                         streamId,
                         rangesByAnchor,
                         options,
-                        toUnicodeByFont);
+                        toUnicodeByFont,
+                        fontWidthsByFont);
                     if (duplicateRectangles.Count > 0)
                     {
                         redactionRectangles.AddRange(duplicateRectangles);
@@ -5975,7 +6342,8 @@ public sealed class PdfDocument
                     streamId,
                     rangesByAnchor,
                     options,
-                    toUnicodeByFont);
+                    toUnicodeByFont,
+                    fontWidthsByFont);
                 totalReplacements += replacements;
                 if (streamRectangles.Count > 0)
                 {
@@ -6018,7 +6386,8 @@ public sealed class PdfDocument
         PdfObjectId streamId,
         IReadOnlyDictionary<PdfTextAnchorKey, List<PdfTextSelectionRange>> rangesByAnchor,
         PdfHardRedactionOptions options,
-        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont,
+        IReadOnlyDictionary<string, PdfFontGlyphWidths> fontWidthsByFont)
     {
         IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         Dictionary<int, string> rawTokenOverrides = [];
@@ -6028,9 +6397,13 @@ public sealed class PdfDocument
 
         bool inTextObject = false;
         IReadOnlyDictionary<int, string>? activeToUnicode = null;
+        PdfFontGlyphWidths? activeFontWidths = null;
         double fontSize = 12;
         double textX = 0;
         double textY = 0;
+        double characterSpacing = 0;
+        double wordSpacing = 0;
+        double horizontalScale = 100;
         double lineHeightEstimate = fontSize * 1.2;
         double? lastShownBaselineY = null;
         int index = 0;
@@ -6045,12 +6418,54 @@ public sealed class PdfDocument
                     inTextObject = true;
                     textX = 0;
                     textY = 0;
+                    characterSpacing = 0;
+                    wordSpacing = 0;
+                    horizontalScale = 100;
                     lineHeightEstimate = fontSize * 1.2;
                     lastShownBaselineY = null;
                 }
                 else if (string.Equals(token.Lexeme, "ET", StringComparison.Ordinal))
                 {
                     inTextObject = false;
+                }
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 1 < tokens.Count
+                && tokens[index + 1].Kind == PdfTokenKind.Keyword)
+            {
+                if (string.Equals(tokens[index + 1].Lexeme, "Tc", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedCharacterSpacing))
+                    {
+                        characterSpacing = parsedCharacterSpacing;
+                    }
+
+                    index += 2;
+                    continue;
+                }
+
+                if (string.Equals(tokens[index + 1].Lexeme, "Tw", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedWordSpacing))
+                    {
+                        wordSpacing = parsedWordSpacing;
+                    }
+
+                    index += 2;
+                    continue;
+                }
+
+                if (string.Equals(tokens[index + 1].Lexeme, "Tz", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedHorizontalScale) && double.IsFinite(parsedHorizontalScale))
+                    {
+                        horizontalScale = parsedHorizontalScale;
+                    }
+
+                    index += 2;
+                    continue;
                 }
             }
 
@@ -6063,6 +6478,9 @@ public sealed class PdfDocument
             {
                 activeToUnicode = toUnicodeByFont.TryGetValue(token.Lexeme, out IReadOnlyDictionary<int, string>? map)
                     ? map
+                    : null;
+                activeFontWidths = fontWidthsByFont.TryGetValue(token.Lexeme, out PdfFontGlyphWidths? widths)
+                    ? widths
                     : null;
                 fontSize = Math.Abs(parsedFontSize);
                 lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
@@ -6138,18 +6556,41 @@ public sealed class PdfDocument
                 PdfTextAnchorKey anchorKey = new(streamId.ObjectNumber, streamId.GenerationNumber, index);
                 double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
                 if (rangesByAnchor.TryGetValue(anchorKey, out List<PdfTextSelectionRange>? ranges)
-                    && TryBuildAnchoredHardRedactionParts(
-                        segment,
-                        ranges,
-                        fontSize,
-                        textX,
-                        textY,
-                        effectiveLineHeight,
-                        pageIndex,
-                        options,
-                        out string hardParts,
-                        out int rangeReplacements,
-                        out List<PdfRedactionRectangle> rangeRectangles))
+                    && (token.Kind == PdfTokenKind.HexString
+                        ? TryBuildAnchoredHardRedactionHexParts(
+                            token.Lexeme,
+                            activeToUnicode,
+                            activeFontWidths,
+                            segment,
+                            ranges,
+                            fontSize,
+                            characterSpacing,
+                            wordSpacing,
+                            horizontalScale,
+                            textX,
+                            textY,
+                            effectiveLineHeight,
+                            pageIndex,
+                            options,
+                            out string hardParts,
+                            out int rangeReplacements,
+                            out List<PdfRedactionRectangle> rangeRectangles)
+                        : TryBuildAnchoredHardRedactionParts(
+                            segment,
+                            ranges,
+                            activeFontWidths,
+                            fontSize,
+                            characterSpacing,
+                            wordSpacing,
+                            horizontalScale,
+                            textX,
+                            textY,
+                            effectiveLineHeight,
+                            pageIndex,
+                            options,
+                            out hardParts,
+                            out rangeReplacements,
+                            out rangeRectangles)))
                 {
                     replacements += rangeReplacements;
                     if (rangeRectangles.Count > 0)
@@ -6183,7 +6624,15 @@ public sealed class PdfDocument
                     }
                 }
 
-                textX += EstimateRedactionTextWidth(segment, fontSize);
+                textX += MeasureTokenTextWidth(
+                    token,
+                    segment,
+                    activeToUnicode,
+                    activeFontWidths,
+                    fontSize,
+                    characterSpacing,
+                    wordSpacing,
+                    horizontalScale);
                 lastShownBaselineY = textY;
                 index += 2;
                 continue;
@@ -6254,18 +6703,41 @@ public sealed class PdfDocument
                             PdfTextAnchorKey anchorKey = new(streamId.ObjectNumber, streamId.GenerationNumber, itemIndex);
                             double effectiveLineHeight = ResolveRedactionLineHeight(fontSize, lineHeightEstimate);
                             if (rangesByAnchor.TryGetValue(anchorKey, out List<PdfTextSelectionRange>? ranges)
-                                && TryBuildAnchoredHardRedactionParts(
-                                    segment,
-                                    ranges,
-                                    fontSize,
-                                    textX,
-                                    textY,
-                                    effectiveLineHeight,
-                                    pageIndex,
-                                    options,
-                                    out string hardParts,
-                                    out int rangeReplacements,
-                                    out List<PdfRedactionRectangle> rangeRectangles))
+                                && (item.Kind == PdfTokenKind.HexString
+                                    ? TryBuildAnchoredHardRedactionHexParts(
+                                        item.Lexeme,
+                                        activeToUnicode,
+                                        activeFontWidths,
+                                        segment,
+                                        ranges,
+                                        fontSize,
+                                        characterSpacing,
+                                        wordSpacing,
+                                        horizontalScale,
+                                        textX,
+                                        textY,
+                                        effectiveLineHeight,
+                                        pageIndex,
+                                        options,
+                                        out string hardParts,
+                                        out int rangeReplacements,
+                                        out List<PdfRedactionRectangle> rangeRectangles)
+                                    : TryBuildAnchoredHardRedactionParts(
+                                        segment,
+                                        ranges,
+                                        activeFontWidths,
+                                        fontSize,
+                                        characterSpacing,
+                                        wordSpacing,
+                                        horizontalScale,
+                                        textX,
+                                        textY,
+                                        effectiveLineHeight,
+                                        pageIndex,
+                                        options,
+                                        out hardParts,
+                                        out rangeReplacements,
+                                        out rangeRectangles)))
                             {
                                 replacements += rangeReplacements;
                                 if (rangeRectangles.Count > 0)
@@ -6276,12 +6748,20 @@ public sealed class PdfDocument
                                 rawTokenOverrides[itemIndex] = hardParts;
                             }
 
-                            textX += EstimateRedactionTextWidth(segment, fontSize);
+                            textX += MeasureTokenTextWidth(
+                                item,
+                                segment,
+                                activeToUnicode,
+                                activeFontWidths,
+                                fontSize,
+                                characterSpacing,
+                                wordSpacing,
+                                horizontalScale);
                             lastShownBaselineY = textY;
                         }
                         else if (IsNumberToken(item) && TryParseTokenDouble(item, out double adjustment))
                         {
-                            textX -= adjustment * fontSize / 1000.0;
+                            textX -= ResolveTjAdjustmentWidth(adjustment, fontSize, horizontalScale);
                         }
                     }
 
@@ -6304,7 +6784,11 @@ public sealed class PdfDocument
     private static bool TryBuildAnchoredHardRedactionParts(
         string segment,
         IReadOnlyList<PdfTextSelectionRange> ranges,
+        PdfFontGlyphWidths? fontWidths,
         double fontSize,
+        double characterSpacing,
+        double wordSpacing,
+        double horizontalScale,
         double textX,
         double textY,
         double lineHeight,
@@ -6346,8 +6830,15 @@ public sealed class PdfDocument
                 builder.Append(')');
             }
 
-            string removedText = segment[clampedStart..clampedEnd];
-            double removedWidth = EstimateRedactionTextWidth(removedText, fontSize);
+            double removedWidth = MeasureLiteralSubstringWidth(
+                segment,
+                clampedStart,
+                clampedEnd - clampedStart,
+                fontWidths,
+                fontSize,
+                characterSpacing,
+                wordSpacing,
+                horizontalScale);
             if (removedWidth > 0 && fontSize > 0)
             {
                 if (builder.Length > 0)
@@ -6359,7 +6850,15 @@ public sealed class PdfDocument
                 builder.Append(kerningAdjustment.ToString("0.###", CultureInfo.InvariantCulture));
             }
 
-            double removedX = textX + EstimateRedactionTextWidth(segment[..clampedStart], fontSize) - options.HorizontalPadding;
+            double removedX = textX + MeasureLiteralSubstringWidth(
+                segment,
+                0,
+                clampedStart,
+                fontWidths,
+                fontSize,
+                characterSpacing,
+                wordSpacing,
+                horizontalScale) - options.HorizontalPadding;
             double removedRectWidth = removedWidth + (options.HorizontalPadding * 2);
             (double removedY, double removedHeight) = ComputeRedactionVerticalPlacement(textY, fontSize, lineHeight, options);
             if (removedRectWidth > 0 && removedHeight > 0)
@@ -6399,6 +6898,454 @@ public sealed class PdfDocument
         return true;
     }
 
+    private readonly record struct PdfHexTextUnit(string HexSlice, string Text, double WidthUnits, bool AppliesWordSpacing);
+
+    private static bool TryBuildAnchoredHardRedactionHexParts(
+        string hexLexeme,
+        IReadOnlyDictionary<int, string>? cidToUnicode,
+        PdfFontGlyphWidths? fontWidths,
+        string segment,
+        IReadOnlyList<PdfTextSelectionRange> ranges,
+        double fontSize,
+        double characterSpacing,
+        double wordSpacing,
+        double horizontalScale,
+        double textX,
+        double textY,
+        double lineHeight,
+        int pageIndex,
+        PdfHardRedactionOptions options,
+        out string parts,
+        out int replacements,
+        out List<PdfRedactionRectangle> rectangles)
+    {
+        if (!TryDecodeHexTokenUnits(hexLexeme, cidToUnicode, fontWidths, out List<PdfHexTextUnit>? units, out string decodedText)
+            || !string.Equals(decodedText, segment, StringComparison.Ordinal))
+        {
+            parts = string.Empty;
+            replacements = 0;
+            rectangles = [];
+            return false;
+        }
+
+        return TryBuildHexHardRedactionPartsFromRanges(
+            decodedText,
+            units,
+            ranges,
+            fontSize,
+            characterSpacing,
+            wordSpacing,
+            horizontalScale,
+            textX,
+            textY,
+            lineHeight,
+            pageIndex,
+            options,
+            out parts,
+            out replacements,
+            out rectangles);
+    }
+
+    private static bool TryBuildHardRedactionHexParts(
+        string hexLexeme,
+        IReadOnlyDictionary<int, string>? cidToUnicode,
+        PdfFontGlyphWidths? fontWidths,
+        string segment,
+        string target,
+        double fontSize,
+        double characterSpacing,
+        double wordSpacing,
+        double horizontalScale,
+        out string parts,
+        out int replacements)
+    {
+        if (!TryDecodeHexTokenUnits(hexLexeme, cidToUnicode, fontWidths, out List<PdfHexTextUnit>? units, out string decodedText)
+            || !string.Equals(decodedText, segment, StringComparison.Ordinal))
+        {
+            parts = string.Empty;
+            replacements = 0;
+            return false;
+        }
+
+        List<PdfTextSelectionRange> ranges = [];
+        int searchStart = 0;
+        while (searchStart <= decodedText.Length)
+        {
+            int found = decodedText.IndexOf(target, searchStart, StringComparison.Ordinal);
+            if (found < 0)
+            {
+                break;
+            }
+
+            ranges.Add(new PdfTextSelectionRange(found, target.Length));
+            searchStart = found + target.Length;
+        }
+
+        if (ranges.Count == 0)
+        {
+            parts = string.Empty;
+            replacements = 0;
+            return false;
+        }
+
+        bool built = TryBuildHexHardRedactionPartsFromRanges(
+            decodedText,
+            units,
+            ranges,
+            fontSize,
+            characterSpacing,
+            wordSpacing,
+            horizontalScale,
+            textX: 0,
+            textY: 0,
+            lineHeight: 0,
+            pageIndex: 0,
+            options: null,
+            out parts,
+            out replacements,
+            out _);
+        return built;
+    }
+
+    private static List<PdfRedactionRectangle> MergeRedactionRectangles(IReadOnlyList<PdfRedactionRectangle> rectangles)
+    {
+        if (rectangles.Count <= 1)
+        {
+            return [.. rectangles];
+        }
+
+        const double epsilon = 0.01;
+        List<PdfRedactionRectangle> merged = rectangles
+            .Where(static rectangle => rectangle.Width > 0 && rectangle.Height > 0)
+            .OrderBy(static rectangle => rectangle.PageIndex)
+            .ThenBy(static rectangle => rectangle.Y)
+            .ThenBy(static rectangle => rectangle.X)
+            .ToList();
+
+        bool hasMerged;
+        do
+        {
+            hasMerged = false;
+            for (int index = 0; index < merged.Count; index++)
+            {
+                PdfRedactionRectangle current = merged[index];
+                for (int candidateIndex = index + 1; candidateIndex < merged.Count; candidateIndex++)
+                {
+                    PdfRedactionRectangle candidate = merged[candidateIndex];
+                    if (!CanMergeRedactionRectangles(current, candidate, epsilon))
+                    {
+                        continue;
+                    }
+
+                    double left = Math.Min(current.X, candidate.X);
+                    double bottom = Math.Min(current.Y, candidate.Y);
+                    double right = Math.Max(current.X + current.Width, candidate.X + candidate.Width);
+                    double top = Math.Max(current.Y + current.Height, candidate.Y + candidate.Height);
+                    merged[index] = new PdfRedactionRectangle(current.PageIndex, left, bottom, right - left, top - bottom);
+                    merged.RemoveAt(candidateIndex);
+                    hasMerged = true;
+                    break;
+                }
+
+                if (hasMerged)
+                {
+                    break;
+                }
+            }
+        } while (hasMerged);
+
+        return merged;
+    }
+
+    private static bool CanMergeRedactionRectangles(
+        PdfRedactionRectangle first,
+        PdfRedactionRectangle second,
+        double epsilon)
+    {
+        if (first.PageIndex != second.PageIndex)
+        {
+            return false;
+        }
+
+        double firstRight = first.X + first.Width;
+        double secondRight = second.X + second.Width;
+        double firstTop = first.Y + first.Height;
+        double secondTop = second.Y + second.Height;
+
+        bool horizontallyTouching = first.X <= secondRight + epsilon && second.X <= firstRight + epsilon;
+        bool verticallyTouching = first.Y <= secondTop + epsilon && second.Y <= firstTop + epsilon;
+        return horizontallyTouching && verticallyTouching;
+    }
+
+    private static bool TryBuildHexHardRedactionPartsFromRanges(
+        string decodedText,
+        IReadOnlyList<PdfHexTextUnit> units,
+        IReadOnlyList<PdfTextSelectionRange> ranges,
+        double fontSize,
+        double characterSpacing,
+        double wordSpacing,
+        double horizontalScale,
+        double textX,
+        double textY,
+        double lineHeight,
+        int pageIndex,
+        PdfHardRedactionOptions? options,
+        out string parts,
+        out int replacements,
+        out List<PdfRedactionRectangle> rectangles)
+    {
+        StringBuilder builder = new();
+        rectangles = [];
+        replacements = 0;
+        int cursorUnit = 0;
+
+        foreach (PdfTextSelectionRange range in ranges)
+        {
+            if (range.Start < 0 || range.Length <= 0 || range.Start >= decodedText.Length)
+            {
+                continue;
+            }
+
+            int clampedLength = Math.Min(range.Length, decodedText.Length - range.Start);
+            int clampedStart = range.Start;
+            int clampedEnd = clampedStart + clampedLength;
+            if (clampedEnd <= clampedStart)
+            {
+                continue;
+            }
+
+            if (!TryResolveHexUnitRange(units, clampedStart, clampedEnd, out int startUnit, out int endUnitExclusive))
+            {
+                parts = string.Empty;
+                rectangles.Clear();
+                replacements = 0;
+                return false;
+            }
+
+            if (startUnit < cursorUnit)
+            {
+                startUnit = cursorUnit;
+            }
+
+            if (startUnit > cursorUnit)
+            {
+                AppendHexTokenSlice(builder, units, cursorUnit, startUnit);
+            }
+
+            double removedWidth = MeasureHexUnitsWidth(
+                units,
+                startUnit,
+                endUnitExclusive,
+                fontSize,
+                characterSpacing,
+                wordSpacing,
+                horizontalScale);
+            if (removedWidth > 0 && fontSize > 0)
+            {
+                if (builder.Length > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                double kerningAdjustment = -(removedWidth * 1000.0 / fontSize);
+                builder.Append(kerningAdjustment.ToString("0.###", CultureInfo.InvariantCulture));
+            }
+
+            if (options is not null)
+            {
+                double removedX = textX + MeasureHexUnitsWidth(
+                    units,
+                    0,
+                    startUnit,
+                    fontSize,
+                    characterSpacing,
+                    wordSpacing,
+                    horizontalScale) - options.HorizontalPadding;
+                double removedRectWidth = removedWidth + (options.HorizontalPadding * 2);
+                (double removedY, double removedHeight) = ComputeRedactionVerticalPlacement(textY, fontSize, lineHeight, options);
+                if (removedRectWidth > 0 && removedHeight > 0)
+                {
+                    rectangles.Add(new PdfRedactionRectangle(pageIndex, removedX, removedY, removedRectWidth, removedHeight));
+                }
+            }
+
+            replacements++;
+            cursorUnit = endUnitExclusive;
+        }
+
+        if (replacements == 0)
+        {
+            parts = string.Empty;
+            rectangles.Clear();
+            return false;
+        }
+
+        if (cursorUnit < units.Count)
+        {
+            AppendHexTokenSlice(builder, units, cursorUnit, units.Count);
+        }
+
+        if (builder.Length == 0)
+        {
+            builder.Append("()");
+        }
+
+        parts = builder.ToString();
+        return true;
+    }
+
+    private static bool TryDecodeHexTokenUnits(
+        string hexLexeme,
+        IReadOnlyDictionary<int, string>? cidToUnicode,
+        PdfFontGlyphWidths? fontWidths,
+        out List<PdfHexTextUnit> units,
+        out string decodedText)
+    {
+        units = [];
+        StringBuilder decodedBuilder = new();
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromHexString(hexLexeme);
+        }
+        catch (FormatException)
+        {
+            decodedText = string.Empty;
+            return false;
+        }
+
+        if (bytes.Length == 0)
+        {
+            decodedText = string.Empty;
+            return true;
+        }
+
+        if ((bytes.Length & 1) == 0)
+        {
+            for (int byteIndex = 0; byteIndex < bytes.Length; byteIndex += 2)
+            {
+                string text;
+                int cid = (bytes[byteIndex] << 8) | bytes[byteIndex + 1];
+                if (cidToUnicode is not null)
+                {
+                    text = cidToUnicode.TryGetValue(cid, out string? mapped)
+                        ? mapped
+                        : ((char)cid).ToString();
+                }
+                else
+                {
+                    text = Encoding.BigEndianUnicode.GetString(bytes, byteIndex, 2);
+                }
+
+                if (text.Length == 0)
+                {
+                    decodedText = string.Empty;
+                    return false;
+                }
+
+                string hexSlice = hexLexeme.Substring(byteIndex * 2, 4);
+                double widthUnits = fontWidths?.GetGlyphWidthUnits(cid)
+                    ?? EstimateRedactionTextUnits(text);
+                units.Add(new PdfHexTextUnit(hexSlice, text, widthUnits, AppliesWordSpacing: false));
+                decodedBuilder.Append(text);
+            }
+
+            decodedText = decodedBuilder.ToString();
+            return true;
+        }
+
+        for (int byteIndex = 0; byteIndex < bytes.Length; byteIndex++)
+        {
+            string hexSlice = hexLexeme.Substring(byteIndex * 2, 2);
+            string text = ((char)bytes[byteIndex]).ToString();
+            int charCode = bytes[byteIndex];
+            double widthUnits = fontWidths?.GetGlyphWidthUnits(charCode)
+                ?? EstimateRedactionTextUnits(text);
+            bool appliesWordSpacing = charCode == 0x20;
+            units.Add(new PdfHexTextUnit(hexSlice, text, widthUnits, appliesWordSpacing));
+            decodedBuilder.Append(text);
+        }
+
+        decodedText = decodedBuilder.ToString();
+        return true;
+    }
+
+    private static bool TryResolveHexUnitRange(
+        IReadOnlyList<PdfHexTextUnit> units,
+        int startIndex,
+        int endIndex,
+        out int startUnit,
+        out int endUnitExclusive)
+    {
+        startUnit = -1;
+        endUnitExclusive = -1;
+        int cursor = 0;
+
+        for (int unitIndex = 0; unitIndex < units.Count; unitIndex++)
+        {
+            if (cursor == startIndex)
+            {
+                startUnit = unitIndex;
+            }
+
+            int unitLength = units[unitIndex].Text.Length;
+            if (unitLength == 0)
+            {
+                return false;
+            }
+
+            cursor += unitLength;
+            if (cursor == endIndex)
+            {
+                endUnitExclusive = unitIndex + 1;
+                break;
+            }
+
+            if (cursor > endIndex)
+            {
+                return false;
+            }
+        }
+
+        if (startIndex == cursor && startUnit < 0)
+        {
+            startUnit = units.Count;
+        }
+
+        if (endIndex == cursor && endUnitExclusive < 0)
+        {
+            endUnitExclusive = units.Count;
+        }
+
+        return startUnit >= 0 && endUnitExclusive >= startUnit;
+    }
+
+    private static void AppendHexTokenSlice(
+        StringBuilder builder,
+        IReadOnlyList<PdfHexTextUnit> units,
+        int startUnit,
+        int endUnitExclusive)
+    {
+        if (startUnit >= endUnitExclusive)
+        {
+            return;
+        }
+
+        if (builder.Length > 0)
+        {
+            builder.Append(' ');
+        }
+
+        builder.Append('<');
+        for (int index = startUnit; index < endUnitExclusive; index++)
+        {
+            builder.Append(units[index].HexSlice);
+        }
+
+        builder.Append('>');
+    }
+
     private int RewriteTextInContentStreams(
         Func<string, (string Updated, int Replacements)> rewriteSegment,
         string? hardTarget,
@@ -6419,6 +7366,8 @@ public sealed class PdfDocument
             PdfPageModel page = _model.Pages[pageIndex];
             IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont =
                 PdfTextExtractor.BuildToUnicodeMapsForPage(page.Resources, objectMap);
+            IReadOnlyDictionary<string, PdfFontGlyphWidths> fontWidthsByFont =
+                BuildFontWidthMapsForPage(page.Resources, objectMap);
             foreach (PdfObjectId streamId in EnumerateContentStreamReferences(page.Contents))
             {
                 PdfStreamObject stream = RequireStreamObject(streamId, "Page contents");
@@ -6428,11 +7377,11 @@ public sealed class PdfDocument
                 {
                     if (hardTarget is not null && hardOptions is not null)
                     {
-                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget, hardOptions, rewriteWithLayoutAndRectangles: null, toUnicodeByFont));
+                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget, hardOptions, rewriteWithLayoutAndRectangles: null, toUnicodeByFont, fontWidthsByFont));
                     }
                     else if (rewriteWithLayoutAndRectangles is not null)
                     {
-                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget: null, hardOptions: null, rewriteWithLayoutAndRectangles, toUnicodeByFont));
+                        hardRectangles.AddRange(CollectRedactionRectangles(content, pageIndex, hardTarget: null, hardOptions: null, rewriteWithLayoutAndRectangles, toUnicodeByFont, fontWidthsByFont));
                     }
 
                     continue;
@@ -6446,7 +7395,8 @@ public sealed class PdfDocument
                     hardOptions,
                     rewriteWithLayout,
                     rewriteWithLayoutAndRectangles,
-                    toUnicodeByFont);
+                    toUnicodeByFont,
+                    fontWidthsByFont);
 
                 totalReplacements += replacements;
                 if (rectangles.Count > 0)
@@ -6492,7 +7442,8 @@ public sealed class PdfDocument
         PdfHardRedactionOptions? hardOptions,
         Func<string, double, (bool Matched, string Parts, int Replacements)>? rewriteWithLayout,
         Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles,
-        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont,
+        IReadOnlyDictionary<string, PdfFontGlyphWidths> fontWidthsByFont)
     {
         IReadOnlyList<PdfToken> tokens = PdfTokenizer.Tokenize(ContentStreamEncoding.GetBytes(content));
         Dictionary<int, string> rewrittenStringTokens = [];
@@ -6503,12 +7454,17 @@ public sealed class PdfDocument
 
         bool inTextObject = false;
         IReadOnlyDictionary<int, string>? activeToUnicode = null;
+        PdfFontGlyphWidths? activeFontWidths = null;
         double fontSize = 12;
         double textX = 0;
         double textY = 0;
+        double characterSpacing = 0;
+        double wordSpacing = 0;
+        double horizontalScale = 100;
         double lineHeightEstimate = fontSize * 1.2;
         double? lastShownBaselineY = null;
         int index = 0;
+
 
         while (index < tokens.Count)
         {
@@ -6520,12 +7476,54 @@ public sealed class PdfDocument
                     inTextObject = true;
                     textX = 0;
                     textY = 0;
+                    characterSpacing = 0;
+                    wordSpacing = 0;
+                    horizontalScale = 100;
                     lineHeightEstimate = fontSize * 1.2;
                     lastShownBaselineY = null;
                 }
                 else if (string.Equals(token.Lexeme, "ET", StringComparison.Ordinal))
                 {
                     inTextObject = false;
+                }
+            }
+
+            if (inTextObject
+                && IsNumberToken(token)
+                && index + 1 < tokens.Count
+                && tokens[index + 1].Kind == PdfTokenKind.Keyword)
+            {
+                if (string.Equals(tokens[index + 1].Lexeme, "Tc", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedCharacterSpacing))
+                    {
+                        characterSpacing = parsedCharacterSpacing;
+                    }
+
+                    index += 2;
+                    continue;
+                }
+
+                if (string.Equals(tokens[index + 1].Lexeme, "Tw", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedWordSpacing))
+                    {
+                        wordSpacing = parsedWordSpacing;
+                    }
+
+                    index += 2;
+                    continue;
+                }
+
+                if (string.Equals(tokens[index + 1].Lexeme, "Tz", StringComparison.Ordinal))
+                {
+                    if (TryParseTokenDouble(token, out double parsedHorizontalScale) && double.IsFinite(parsedHorizontalScale))
+                    {
+                        horizontalScale = parsedHorizontalScale;
+                    }
+
+                    index += 2;
+                    continue;
                 }
             }
 
@@ -6538,6 +7536,9 @@ public sealed class PdfDocument
             {
                 activeToUnicode = toUnicodeByFont.TryGetValue(token.Lexeme, out IReadOnlyDictionary<int, string>? map)
                     ? map
+                    : null;
+                activeFontWidths = fontWidthsByFont.TryGetValue(token.Lexeme, out PdfFontGlyphWidths? widths)
+                    ? widths
                     : null;
                 fontSize = Math.Abs(parsedFontSize);
                 lineHeightEstimate = Math.Max(lineHeightEstimate, fontSize * 1.2);
@@ -6625,7 +7626,21 @@ public sealed class PdfDocument
                         effectiveLineHeight,
                         hardOptions);
 
-                    if (TryBuildHardRedactionParts(segment, hardTarget, fontSize, out string hardParts, out int hardMatches))
+                    bool matched = token.Kind == PdfTokenKind.HexString
+                        ? TryBuildHardRedactionHexParts(
+                            token.Lexeme,
+                            activeToUnicode,
+                            activeFontWidths,
+                            segment,
+                            hardTarget,
+                            fontSize,
+                            characterSpacing,
+                            wordSpacing,
+                            horizontalScale,
+                            out string hardParts,
+                            out int hardMatches)
+                        : TryBuildHardRedactionParts(segment, hardTarget, fontSize, out hardParts, out hardMatches);
+                    if (matched)
                     {
                         replacements += hardMatches;
                         if (string.Equals(textOperator, "Tj", StringComparison.Ordinal))
@@ -6653,7 +7668,15 @@ public sealed class PdfDocument
                             removedTokenIndices.Add(index + 1);
                         }
 
-                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        textX += MeasureTokenTextWidth(
+                            token,
+                            segment,
+                            activeToUnicode,
+                            activeFontWidths,
+                            fontSize,
+                            characterSpacing,
+                            wordSpacing,
+                            horizontalScale);
                         index += 2;
                         continue;
                     }
@@ -6662,7 +7685,15 @@ public sealed class PdfDocument
                 {
                     if (!supportsLiteralRewrite)
                     {
-                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        textX += MeasureTokenTextWidth(
+                            token,
+                            segment,
+                            activeToUnicode,
+                            activeFontWidths,
+                            fontSize,
+                            characterSpacing,
+                            wordSpacing,
+                            horizontalScale);
                         lastShownBaselineY = textY;
                         index += 2;
                         continue;
@@ -6697,7 +7728,15 @@ public sealed class PdfDocument
                             removedTokenIndices.Add(index + 1);
                         }
 
-                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        textX += MeasureTokenTextWidth(
+                            token,
+                            segment,
+                            activeToUnicode,
+                            activeFontWidths,
+                            fontSize,
+                            characterSpacing,
+                            wordSpacing,
+                            horizontalScale);
                         index += 2;
                         continue;
                     }
@@ -6706,7 +7745,15 @@ public sealed class PdfDocument
                 {
                     if (!supportsLiteralRewrite)
                     {
-                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        textX += MeasureTokenTextWidth(
+                            token,
+                            segment,
+                            activeToUnicode,
+                            activeFontWidths,
+                            fontSize,
+                            characterSpacing,
+                            wordSpacing,
+                            horizontalScale);
                         lastShownBaselineY = textY;
                         index += 2;
                         continue;
@@ -6747,7 +7794,15 @@ public sealed class PdfDocument
                             removedTokenIndices.Add(index + 1);
                         }
 
-                        textX += EstimateRedactionTextWidth(segment, fontSize);
+                        textX += MeasureTokenTextWidth(
+                            token,
+                            segment,
+                            activeToUnicode,
+                            activeFontWidths,
+                            fontSize,
+                            characterSpacing,
+                            wordSpacing,
+                            horizontalScale);
                         index += 2;
                         continue;
                     }
@@ -6755,7 +7810,15 @@ public sealed class PdfDocument
 
                 if (!supportsLiteralRewrite)
                 {
-                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                    textX += MeasureTokenTextWidth(
+                        token,
+                        segment,
+                        activeToUnicode,
+                        activeFontWidths,
+                        fontSize,
+                        characterSpacing,
+                        wordSpacing,
+                        horizontalScale);
                     lastShownBaselineY = textY;
                     index += 2;
                     continue;
@@ -6768,7 +7831,15 @@ public sealed class PdfDocument
                     rewrittenStringTokens[index] = updatedSegment;
                 }
 
-                textX += EstimateRedactionTextWidth(segment, fontSize);
+                textX += MeasureTokenTextWidth(
+                    token,
+                    segment,
+                    activeToUnicode,
+                    activeFontWidths,
+                    fontSize,
+                    characterSpacing,
+                    wordSpacing,
+                    horizontalScale);
                 lastShownBaselineY = textY;
                 index += 2;
                 continue;
@@ -6850,11 +7921,33 @@ public sealed class PdfDocument
                                     effectiveLineHeight,
                                     hardOptions);
 
-                                if (TryBuildHardRedactionParts(segment, hardTarget, fontSize, out string hardParts, out int hardMatches))
+                                bool matched = item.Kind == PdfTokenKind.HexString
+                                    ? TryBuildHardRedactionHexParts(
+                                        item.Lexeme,
+                                        activeToUnicode,
+                                        activeFontWidths,
+                                        segment,
+                                        hardTarget,
+                                        fontSize,
+                                        characterSpacing,
+                                        wordSpacing,
+                                        horizontalScale,
+                                        out string hardParts,
+                                        out int hardMatches)
+                                    : TryBuildHardRedactionParts(segment, hardTarget, fontSize, out hardParts, out hardMatches);
+                                if (matched)
                                 {
                                     replacements += hardMatches;
                                     rawTokenOverrides[itemIndex] = hardParts;
-                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    textX += MeasureTokenTextWidth(
+                                        item,
+                                        segment,
+                                        activeToUnicode,
+                                        activeFontWidths,
+                                        fontSize,
+                                        characterSpacing,
+                                        wordSpacing,
+                                        horizontalScale);
                                     continue;
                                 }
                             }
@@ -6862,7 +7955,15 @@ public sealed class PdfDocument
                             {
                                 if (!supportsLiteralRewrite)
                                 {
-                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    textX += MeasureTokenTextWidth(
+                                        item,
+                                        segment,
+                                        activeToUnicode,
+                                        activeFontWidths,
+                                        fontSize,
+                                        characterSpacing,
+                                        wordSpacing,
+                                        horizontalScale);
                                     lastShownBaselineY = textY;
                                     continue;
                                 }
@@ -6872,7 +7973,15 @@ public sealed class PdfDocument
                                 {
                                     replacements += layoutReplacements;
                                     rawTokenOverrides[itemIndex] = parts;
-                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    textX += MeasureTokenTextWidth(
+                                        item,
+                                        segment,
+                                        activeToUnicode,
+                                        activeFontWidths,
+                                        fontSize,
+                                        characterSpacing,
+                                        wordSpacing,
+                                        horizontalScale);
                                     continue;
                                 }
                             }
@@ -6880,7 +7989,15 @@ public sealed class PdfDocument
                             {
                                 if (!supportsLiteralRewrite)
                                 {
-                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    textX += MeasureTokenTextWidth(
+                                        item,
+                                        segment,
+                                        activeToUnicode,
+                                        activeFontWidths,
+                                        fontSize,
+                                        characterSpacing,
+                                        wordSpacing,
+                                        horizontalScale);
                                     lastShownBaselineY = textY;
                                     continue;
                                 }
@@ -6896,14 +8013,30 @@ public sealed class PdfDocument
                                     }
 
                                     rawTokenOverrides[itemIndex] = parts;
-                                    textX += EstimateRedactionTextWidth(segment, fontSize);
+                                    textX += MeasureTokenTextWidth(
+                                        item,
+                                        segment,
+                                        activeToUnicode,
+                                        activeFontWidths,
+                                        fontSize,
+                                        characterSpacing,
+                                        wordSpacing,
+                                        horizontalScale);
                                     continue;
                                 }
                             }
 
                             if (!supportsLiteralRewrite)
                             {
-                                textX += EstimateRedactionTextWidth(segment, fontSize);
+                                textX += MeasureTokenTextWidth(
+                                    item,
+                                    segment,
+                                    activeToUnicode,
+                                    activeFontWidths,
+                                    fontSize,
+                                    characterSpacing,
+                                    wordSpacing,
+                                    horizontalScale);
                                 lastShownBaselineY = textY;
                                 continue;
                             }
@@ -6915,12 +8048,20 @@ public sealed class PdfDocument
                                 rewrittenStringTokens[itemIndex] = updatedSegment;
                             }
 
-                            textX += EstimateRedactionTextWidth(segment, fontSize);
+                            textX += MeasureTokenTextWidth(
+                                item,
+                                segment,
+                                activeToUnicode,
+                                activeFontWidths,
+                                fontSize,
+                                characterSpacing,
+                                wordSpacing,
+                                horizontalScale);
                             lastShownBaselineY = textY;
                         }
                         else if (IsNumberToken(item) && TryParseTokenDouble(item, out double adjustment))
                         {
-                            textX -= adjustment * fontSize / 1000.0;
+                            textX -= ResolveTjAdjustmentWidth(adjustment, fontSize, horizontalScale);
                         }
                     }
 
@@ -6948,7 +8089,8 @@ public sealed class PdfDocument
         string? hardTarget,
         PdfHardRedactionOptions? hardOptions,
         Func<string, double, double, double, double, int, (bool Matched, string Parts, int Replacements, List<PdfRedactionRectangle> Rectangles)>? rewriteWithLayoutAndRectangles,
-        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont)
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, string>> toUnicodeByFont,
+        IReadOnlyDictionary<string, PdfFontGlyphWidths> fontWidthsByFont)
     {
         (_, _, List<PdfRedactionRectangle> rectangles) = RewriteTextOperatorsInStream(
             content,
@@ -6958,7 +8100,8 @@ public sealed class PdfDocument
             hardOptions,
             rewriteWithLayout: null,
             rewriteWithLayoutAndRectangles: rewriteWithLayoutAndRectangles,
-            toUnicodeByFont);
+            toUnicodeByFont,
+            fontWidthsByFont);
         return rectangles;
     }
 
@@ -7325,6 +8468,175 @@ public sealed class PdfDocument
         double centeredOffset = Math.Min((effectiveLineHeight - textBandHeight) / 2, fontSize * 0.20);
         double y = lineBottom + centeredOffset;
         return (y, textBandHeight);
+    }
+
+    private static double MeasureTokenTextWidth(
+        PdfToken token,
+        string decodedText,
+        IReadOnlyDictionary<int, string>? cidToUnicode,
+        PdfFontGlyphWidths? fontWidths,
+        double fontSize,
+        double characterSpacing,
+        double wordSpacing,
+        double horizontalScale)
+    {
+        if (fontSize <= 0 || string.IsNullOrEmpty(decodedText))
+        {
+            return 0;
+        }
+
+        if (token.Kind == PdfTokenKind.HexString
+            && TryDecodeHexTokenUnits(token.Lexeme, cidToUnicode, fontWidths, out List<PdfHexTextUnit>? units, out string mappedText)
+            && string.Equals(mappedText, decodedText, StringComparison.Ordinal))
+        {
+            return MeasureHexUnitsWidth(units, 0, units.Count, fontSize, characterSpacing, wordSpacing, horizontalScale);
+        }
+
+        if (token.Kind == PdfTokenKind.String)
+        {
+            return MeasureLiteralSubstringWidth(
+                decodedText,
+                0,
+                decodedText.Length,
+                fontWidths,
+                fontSize,
+                characterSpacing,
+                wordSpacing,
+                horizontalScale);
+        }
+
+        return MeasureFallbackTextWidth(decodedText, fontSize, characterSpacing, wordSpacing, horizontalScale);
+    }
+
+    private static double MeasureLiteralSubstringWidth(
+        string segment,
+        int start,
+        int length,
+        PdfFontGlyphWidths? fontWidths,
+        double fontSize,
+        double characterSpacing,
+        double wordSpacing,
+        double horizontalScale)
+    {
+        if (fontSize <= 0 || length <= 0 || start < 0 || start >= segment.Length)
+        {
+            return 0;
+        }
+
+        int end = Math.Min(segment.Length, start + length);
+        if (end <= start)
+        {
+            return 0;
+        }
+
+        double widthUnits = 0;
+        int glyphCount = 0;
+        int spaceCount = 0;
+        for (int index = start; index < end; index++)
+        {
+            int characterCode = segment[index] & 0xFF;
+            if (fontWidths is not null)
+            {
+                widthUnits += fontWidths.GetGlyphWidthUnits(characterCode);
+            }
+            else
+            {
+                Rune rune = Rune.TryCreate(segment[index], out Rune parsedRune)
+                    ? parsedRune
+                    : Rune.ReplacementChar;
+                widthUnits += GetApproximateRedactionHelveticaWidth(rune);
+            }
+            glyphCount++;
+            if (characterCode == 0x20)
+            {
+                spaceCount++;
+            }
+        }
+
+        double horizontalScaleFactor = horizontalScale / 100.0;
+        return ((widthUnits * fontSize / 1000.0) + (glyphCount * characterSpacing) + (spaceCount * wordSpacing)) * horizontalScaleFactor;
+    }
+
+    private static double MeasureHexUnitsWidth(
+        IReadOnlyList<PdfHexTextUnit> units,
+        int startUnit,
+        int endUnitExclusive,
+        double fontSize,
+        double characterSpacing,
+        double wordSpacing,
+        double horizontalScale)
+    {
+        if (fontSize <= 0 || endUnitExclusive <= startUnit || startUnit < 0)
+        {
+            return 0;
+        }
+
+        endUnitExclusive = Math.Min(endUnitExclusive, units.Count);
+        if (startUnit >= endUnitExclusive)
+        {
+            return 0;
+        }
+
+        double widthUnits = 0;
+        int glyphCount = 0;
+        int spaceCount = 0;
+        for (int index = startUnit; index < endUnitExclusive; index++)
+        {
+            PdfHexTextUnit unit = units[index];
+            widthUnits += unit.WidthUnits;
+            glyphCount++;
+            if (unit.AppliesWordSpacing)
+            {
+                spaceCount++;
+            }
+        }
+
+        double horizontalScaleFactor = horizontalScale / 100.0;
+        return ((widthUnits * fontSize / 1000.0) + (glyphCount * characterSpacing) + (spaceCount * wordSpacing)) * horizontalScaleFactor;
+    }
+
+    private static double MeasureFallbackTextWidth(
+        string text,
+        double fontSize,
+        double characterSpacing,
+        double wordSpacing,
+        double horizontalScale)
+    {
+        if (fontSize <= 0 || string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        double baseWidth = EstimateRedactionTextWidth(text, fontSize);
+        int glyphCount = text.Length;
+        int spaceCount = 0;
+        foreach (char character in text)
+        {
+            if (character == ' ')
+            {
+                spaceCount++;
+            }
+        }
+
+        double horizontalScaleFactor = horizontalScale / 100.0;
+        return (baseWidth + (glyphCount * characterSpacing) + (spaceCount * wordSpacing)) * horizontalScaleFactor;
+    }
+
+    private static double ResolveTjAdjustmentWidth(double adjustment, double fontSize, double horizontalScale)
+    {
+        double horizontalScaleFactor = horizontalScale / 100.0;
+        return adjustment * fontSize * horizontalScaleFactor / 1000.0;
+    }
+
+    private static double EstimateRedactionTextUnits(string text)
+    {
+        double widthUnits = 0;
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            widthUnits += GetApproximateRedactionHelveticaWidth(rune);
+        }
+
+        return widthUnits;
     }
 
     private static double ResolveRedactionLineHeight(double fontSize, double lineHeightEstimate)
@@ -9268,9 +10580,29 @@ public sealed class PdfDocument
         UnicodeCategory category = Rune.GetUnicodeCategory(rune);
         return category switch
         {
-            UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark => 0,
-            UnicodeCategory.SpaceSeparator => 500,
-            _ => 1000,
+            UnicodeCategory.NonSpacingMark
+                or UnicodeCategory.EnclosingMark
+                or UnicodeCategory.Control
+                or UnicodeCategory.Format => 0,
+            UnicodeCategory.SpaceSeparator => 278,
+            UnicodeCategory.DecimalDigitNumber => 556,
+            UnicodeCategory.UppercaseLetter => 667,
+            UnicodeCategory.LowercaseLetter
+                or UnicodeCategory.TitlecaseLetter
+                or UnicodeCategory.ModifierLetter
+                or UnicodeCategory.OtherLetter => 556,
+            UnicodeCategory.DashPunctuation => 333,
+            UnicodeCategory.OpenPunctuation
+                or UnicodeCategory.ClosePunctuation
+                or UnicodeCategory.InitialQuotePunctuation
+                or UnicodeCategory.FinalQuotePunctuation
+                or UnicodeCategory.OtherPunctuation
+                or UnicodeCategory.ConnectorPunctuation => 333,
+            UnicodeCategory.MathSymbol
+                or UnicodeCategory.CurrencySymbol
+                or UnicodeCategory.ModifierSymbol
+                or UnicodeCategory.OtherSymbol => 584,
+            _ => 500,
         };
     }
 
