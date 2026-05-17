@@ -636,7 +636,9 @@ internal static class PdfFileWriter
 
         foreach (PdfDictionaryEntry entry in originalTrailer.Entries)
         {
-            if (!string.Equals(entry.Key, "Size", StringComparison.Ordinal))
+            if (!string.Equals(entry.Key, "Size", StringComparison.Ordinal)
+                && !string.Equals(entry.Key, "Prev", StringComparison.Ordinal)
+                && !string.Equals(entry.Key, "XRefStm", StringComparison.Ordinal))
             {
                 entries.Add(entry);
             }

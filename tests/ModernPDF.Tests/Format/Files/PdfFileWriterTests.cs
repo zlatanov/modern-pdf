@@ -97,6 +97,25 @@ public sealed class PdfFileWriterTests
     }
 
     [Fact]
+    public void WriteRemovesLegacyCrossReferenceTrailerEntries()
+    {
+        PdfFile file = new(
+            "2.0",
+            [new PdfIndirectObject(new PdfObjectId(1, 0), new PdfDictionaryObject([new PdfDictionaryEntry("Type", new PdfNameObject("Catalog"))]))],
+            new PdfDictionaryObject(
+            [
+                new PdfDictionaryEntry("Root", new PdfReferenceObject(new PdfObjectId(1, 0))),
+                new PdfDictionaryEntry("Prev", new PdfNumberObject(12345, isInteger: true)),
+                new PdfDictionaryEntry("XRefStm", new PdfNumberObject(67890, isInteger: true)),
+            ]));
+
+        string text = Encoding.ASCII.GetString(PdfFileWriter.Write(file));
+
+        Assert.DoesNotContain("/Prev", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("/XRefStm", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WriteWithXrefStreamAndObjectStreamRoundTrips()
     {
         PdfFile file = CreateTwoObjectFile();
